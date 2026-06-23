@@ -1,0 +1,24 @@
+# зависимости
+node_modules/
+
+# артефакты сборки TS (на случай перехода с noEmit на dist/)
+dist/
+*.tsbuildinfo
+
+# логи npm
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# атомарная запись infra/fs.ts (temp + rename) — на случай оборванного прогона
+*.tmp
+
+# окружение
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# редакторы
+.idea/

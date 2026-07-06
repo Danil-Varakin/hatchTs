@@ -45,5 +45,5 @@ function modeLexeme(mode: GapMode): string | null {
 }
 
 function assertNever(x: never): never {
-  throw new Error(`Необработанный вариант: ${JSON.stringify(x)}`);
+  throw new Error(`The raw version: ${JSON.stringify(x)}`);
 }

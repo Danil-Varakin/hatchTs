@@ -52,9 +52,9 @@ class PatternBuilder {
   addGapMode(mode: GapMode, mdLine: number): void {
     if (this.skipSeen) {
       throw new ParseError(
-        'два оператора пропуска в одном зазоре',
+        'two skip operators in one gap',
         mdLine,
-        'метки прозрачны: «... >>> ...» — тоже два пропуска подряд; оставьте один',
+        'the labels are transparent: "... >>> ..." — also two passes in a row; leave one',
       );
     }
     this.gap.mode = mode;
@@ -64,9 +64,9 @@ class PatternBuilder {
   addInsert(mdLine: number): void {
     if (this.insertMark !== null) {
       throw new ParseError(
-        `повторная точка вставки >>> (первая — на строке ${this.insertMark.mdLine})`,
+        `repeat insertion point >>> (the first one is on the line ${this.insertMark.mdLine})`,
         mdLine,
-        'нужно два места вставки — сделайте два ханка match/patch',
+        'you need two insertion points — make two match/patch hanks',
       );
     }
     const placed: PlacedMark = {
@@ -80,9 +80,9 @@ class PatternBuilder {
   addReplaceEnd(mdLine: number): void {
     if (this.insertMark === null) {
       throw new ParseError(
-        'маркер <<< без предшествующего >>>: конец диапазона раньше начала',
+        'marker <<< without preceding >>>: end of range before start',
         mdLine,
-        '<<< всегда после >>> — это конец диапазона замены, начатого вставкой',
+        '<<< always after >>> is the end of the replacement range started by the insertion',
       );
     }
     if (this.replaceEndMark !== null) {
@@ -110,9 +110,9 @@ class PatternBuilder {
     }
     if (this.insertMark === null) {
       throw new ParseError(
-        'в блоке match нет точки вставки >>>',
+        'there is no insertion point in the match block >>>',
         this.blockLine,
-        'каждому телу патча нужна ровно одна позиция вставки',
+        'each patch body needs exactly one insertion position.',
       );
     }
     return { steps: this.steps };
@@ -125,64 +125,64 @@ const OP_RE =
 
 const ESCAPE_RE = /\\(?=(\.\.\.|>>>|<<<|\^\.\.|\.\.\^|\^\d+\.\.))/g;
 
-function scanLineInto(line: string, mdLine: number, b: PatternBuilder): void {
+function scanLineInto(line: string, mdLine: number, builder: PatternBuilder): void {
   let last = 0;
-  let atLineStart = true; 
+  let atLineStart = true;
   for (const m of line.matchAll(OP_RE)) {
     const idx = m.index ?? 0;
     const op = m[0] ?? '';
-    feedFragment(line.slice(last, idx), atLineStart, mdLine, b);
-    feedOperator(op, m.groups?.['n'], mdLine, b);
+    feedFragment(line.slice(last, idx), atLineStart, mdLine, builder);
+    feedOperator(op, m.groups?.['n'], mdLine, builder);
     last = idx + op.length;
     atLineStart = false;
   }
-  feedFragment(line.slice(last), atLineStart, mdLine, b);
+  feedFragment(line.slice(last), atLineStart, mdLine, builder);
 }
 
 function feedFragment(
   frag: string,
   atLineStart: boolean,
   mdLine: number,
-  b: PatternBuilder,
+  builder: PatternBuilder,
 ): void {
   const unescaped = frag.replace(ESCAPE_RE, '');
   const raw = atLineStart ? unescaped.trimEnd() : unescaped.trim();
   if (raw === '') return;
-  b.addLiteral(raw, mdLine);
+  builder.addLiteral(raw, mdLine);
 }
 
 function feedOperator(
   op: string,
   n: string | undefined,
   mdLine: number,
-  b: PatternBuilder,
+  builder: PatternBuilder,
 ): void {
   switch (op) {
     case '...':
-      b.addGapMode({ op: 'skipAny' }, mdLine);
+      builder.addGapMode({ op: 'skipAny' }, mdLine);
       break;
     case '^..':
-      b.addGapMode({ op: 'skipToFirst' }, mdLine);
+      builder.addGapMode({ op: 'skipToFirst' }, mdLine);
       break;
     case '..^':
-      b.addGapMode({ op: 'skipToLast' }, mdLine);
+      builder.addGapMode({ op: 'skipToLast' }, mdLine);
       break;
     case '>>>':
-      b.addInsert(mdLine);
+      builder.addInsert(mdLine);
       break;
     case '<<<':
-      b.addReplaceEnd(mdLine);
+      builder.addReplaceEnd(mdLine);
       break;
     default: {
       const num = Number(n);
       if (!Number.isInteger(num) || num < 1) {
         throw new ParseError(
-          `некорректный номер вхождения в операторе ^${n}..`,
+          `invalid occurrence number in the operator ^${n}..`,
           mdLine,
-          'нумерация вхождений с 1: ^1.. эквивалентно ^..',
+          'numbering of occurrences from 1: ^1.. equivalent to ^..',
         );
       }
-      b.addGapMode({ op: 'skipToNth', n: num }, mdLine);
+      builder.addGapMode({ op: 'skipToNth', n: num }, mdLine);
     }
   }
 }
@@ -212,13 +212,13 @@ export function parseHatchFile(md: string): HatchFile {
   let hunkStart = 0;
 
   for (const [i, line] of lines.entries()) {
-    const no = i + 1;
+    const lineNo = i + 1;
 
     switch (state) {
       case 'scan':
         if (MATCH_HEADING.test(line)) {
           state = 'wantMatchFence';
-          hunkStart = no;
+          hunkStart = lineNo;
         }
         break;
 
@@ -230,23 +230,23 @@ export function parseHatchFile(md: string): HatchFile {
           builder = new PatternBuilder(hunkStart);
           state = 'inMatch';
         } else if (line.trim() !== '') {
-          throw new ParseError('после заголовка match ожидается блок ```', no);
+          throw new ParseError('a block is expected after the match header. ```', lineNo);
         }
         break;
       }
 
       case 'inMatch':
         if (FENCE_CLOSE.test(line)) state = 'wantPatchHeading';
-        else scanLineInto(line, no, builder!);
+        else scanLineInto(line, lineNo, builder!);
         break;
 
       case 'wantPatchHeading':
         if (PATCH_HEADING.test(line)) state = 'wantPatchFence';
         else if (line.trim() !== '') {
           throw new ParseError(
-            'после блока match ожидается заголовок patch',
-            no,
-            'блок match без patch не имеет смысла',
+            'the patch header is expected after the match block.',
+            lineNo,
+            'A match block without a patch doesn\'t make sense.',
           );
         }
         break;
@@ -256,7 +256,7 @@ export function parseHatchFile(md: string): HatchFile {
           patchLines = [];
           state = 'inPatch';
         } else if (line.trim() !== '') {
-          throw new ParseError('после заголовка patch ожидается блок ```', no);
+          throw new ParseError('a block is expected after the patch header ```', lineNo);
         }
         break;
 
@@ -266,7 +266,7 @@ export function parseHatchFile(md: string): HatchFile {
           hunks.push({
             match,
             patch: patchLines.join('\n'),
-            mdSpan: [hunkStart, no],
+            mdSpan: [hunkStart, lineNo],
           });
           builder = null;
           state = 'scan';
@@ -279,13 +279,13 @@ export function parseHatchFile(md: string): HatchFile {
 
   if (state !== 'scan') {
     throw new ParseError(
-      `файл оборван посреди блока (состояние: ${state})`,
+      `the file is cut off in the middle of the block (condition: ${state})`,
       lines.length,
-      'не закрыт ``` или нет пары patch к последнему match',
+      'not closed `` or there is no patch pair to the last match',
     );
   }
   if (hunks.length === 0) {
-    throw new ParseError('в файле не найдено ни одной пары match/patch', 1);
+    throw new ParseError('no match/patch pairs were found in the file.', 1);
   }
 
   const file: HatchFile = { hunks };

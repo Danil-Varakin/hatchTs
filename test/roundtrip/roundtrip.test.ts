@@ -1,30 +1,24 @@
-// ============================================================================
-// test/roundtrip/roundtrip.test.ts — инвариант §6: parse(print(ast)) ≡ ast.
-// Сравнение структурное (strip игнорирует mdLine).
-// Запуск: node --test --experimental-strip-types test/roundtrip/roundtrip.test.ts
-// ============================================================================
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { strip, firstMatch, wrapMatch, roundtrip } from '../helpers.ts';
 
-// Каждое тело match-блока содержит ровно один >>> (требование finish()).
 const CASES: ReadonlyArray<readonly [name: string, body: string, lang?: string]> = [
-  ['простая вставка после литерала', '#include "a.h"\n>>>'],
-  ['инлайн вставка между литералами', 'foo >>> bar'],
-  ['вложенный namespace + skipAny + }', 'namespace features {\n...\nkFoo,\n>>>\n}'],
-  ['многострочный литерал (склейка смежных строк)', 'a\nb\nc\n>>>'],
-  ['многострочный с отступами (Python)', 'def f():\n    x = 1\n    y = 2\n>>>', 'python'],
-  ['диапазон замены A >>> ... <<< B', 'A >>> ... <<< B'],
-  ['старый код >>> A <<<', '>>> A <<<'],
-  ['пустой диапазон >>> <<<', '>>> <<<'],
+  ['simple insertion after a literal', '#include "a.h"\n>>>'],
+  ['inline insertion between literals', 'foo >>> bar'],
+  ['nested namespace + skipAny + }', 'namespace features {\n...\nkFoo,\n>>>\n}'],
+  ['multiline literal (gluing adjacent lines)', 'a\nb\nc\n>>>'],
+  ['multi-line with indents (Python)', 'def f():\n    x = 1\n    y = 2\n>>>', 'python'],
+  ['replacement range A >>> ... <<< B', 'A >>> ... <<< B'],
+  ['old code >>> A <<<', '>>> A <<<'],
+  ['empty range >>> <<<', '>>> <<<'],
   ['skipToFirst ^..', '^.. foo >>>'],
   ['skipToLast ..^', '..^ foo >>>'],
   ['skipToNth ^3..', '^3.. foo >>>'],
-  ['вставка в конец файла ... >>>', '... >>>'],
-  ['вставка в начало файла >>> foo', '>>> foo'],
-  ['Python с отступом в raw', 'def foo():\n    return None\n>>>', 'python'],
-  ['include с ведущим пробелом', '  #include "x.h"\n>>>'],
+  ['paste at the end of the file ... >>>', '... >>>'],
+  ['inserting at the beginning of the file >>> foo', '>>> foo'],
+  ['Python indented in raw', 'def foo():\n    return None\n>>>', 'python'],
+  ['include with a leading space', '  #include "x.h"\n>>>'],
 ];
 
 for (const [name, body, lang] of CASES) {
@@ -35,7 +29,6 @@ for (const [name, body, lang] of CASES) {
   });
 }
 
-// Двойной прогон должен быть стабильной точкой (идемпотентность печати).
 test('round-trip стабилен при двойном прогоне', () => {
   const original = firstMatch(wrapMatch('namespace N {\n...\n>>>\n}'));
   const once = roundtrip(original);
@@ -43,17 +36,15 @@ test('round-trip стабилен при двойном прогоне', () => {
   assert.deepStrictEqual(strip(twice), strip(once));
 });
 
-// ── экранирование операторов в литералах (принтер реэкранирует) ──────────────
-// raw содержит текст, совпадающий с оператором (пришёл из «\...»); принтер обязан
-// вернуть «\», иначе перепечатка оттокенизирует его обратно в оператор.
+
 for (const [name, body] of [
-  ['обособленный «...» как литерал', '\\... >>> foo'],
-  ['оператор в середине литерала', 'a \\... b >>>'],
-  ['экранированный оператор внутри склейки', 'a\n\\... \nb\n>>>'],
-  ['несколько экранированных подряд', '\\>>> \\<<< >>> x'],
-  ['экранированный ^2..', '\\^2.. foo >>>'],
+  ['a separate "..." as a literal', '\\... >>> foo'],
+  ['the operator in the middle of the literal', 'a \\... b >>>'],
+  ['the escaped operator inside the gluing', 'a\n\\... \nb\n>>>'],
+  ['several screened ones in a row', '\\>>> \\<<< >>> x'],
+  ['shielded ^2..', '\\^2.. foo >>>'],
 ] as const) {
-  test(`round-trip (экранирование): ${name}`, () => {
+  test(`round-trip (screening): ${name}`, () => {
     const original = firstMatch(wrapMatch(body));
     const reparsed = roundtrip(original);
     assert.deepStrictEqual(strip(reparsed), strip(original));

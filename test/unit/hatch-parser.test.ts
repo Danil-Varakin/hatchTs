@@ -1,22 +1,16 @@
-// ============================================================================
-// test/unit/parser.test.ts — постоянные тесты ядра-парсера (фаза 1).
-// Запуск: node --test --experimental-strip-types test/unit/parser.test.ts
-// ============================================================================
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseHatchFile } from '../../src/core/parser.ts';
+import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { ParseError } from '../../src/core/errors.ts';
 import { strip, firstMatch, wrapMatch, type FlatStep } from '../helpers.ts';
 
-// ── helpers ────────────────────────────────────────────────────────────────
 
 function lit(raw: string): FlatStep['anchor'] {
   return { kind: 'literal', raw };
 }
 const EOF: FlatStep['anchor'] = { kind: 'eof' };
 
-/** Утверждение: разбор md бросает ParseError с кодом 2 и номером строки. */
 function expectParseError(md: string, msgPart?: string): ParseError {
   let thrown: unknown;
   try {
@@ -24,23 +18,22 @@ function expectParseError(md: string, msgPart?: string): ParseError {
   } catch (e) {
     thrown = e;
   }
-  assert.ok(thrown instanceof ParseError, 'ожидался ParseError');
+  assert.ok(thrown instanceof ParseError, 'a ParseError was expected');
   const err = thrown as ParseError;
-  assert.equal(err.exitCode, 2, 'ParseError → код выхода 2');
-  assert.equal(typeof err.mdLine, 'number', 'у ParseError есть номер строки');
-  assert.ok(err.mdLine >= 1, 'номер строки 1-based');
+  assert.equal(err.exitCode, 2,'ParseError → exit code 2');
+  assert.equal(typeof err.mdLine, 'number', 'ParseError has a line number');
+  assert.ok(err.mdLine >= 1, 'line number 1-based');
   if (msgPart !== undefined) {
     assert.ok(
       err.message.includes(msgPart),
-      `сообщение должно содержать «${msgPart}», получено: ${err.message}`,
+      `the message must contain "${msgPart}", received: ${err.message}`,
     );
   }
   return err;
 }
 
-// ── валидные паттерны: структура AST ─────────────────────────────────────────
 
-test('точка вставки в конце блока → eof-шаг с insert=left', () => {
+test('insertion point at the end of the block → eof-step with insert=left', () => {
   const m = firstMatch(wrapMatch('#include "a.h"\n>>>'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: null, replaceEnd: null, anchor: lit('#include "a.h"') },
@@ -48,7 +41,7 @@ test('точка вставки в конце блока → eof-шаг с inser
   ]);
 });
 
-test('инлайн «foo >>> bar»: вставка между литералами (side=left)', () => {
+test('inline "foo >>> bar": insert between literals (side=left)', () => {
   const m = firstMatch(wrapMatch('foo >>> bar'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: null, replaceEnd: null, anchor: lit('foo') },
@@ -56,7 +49,7 @@ test('инлайн «foo >>> bar»: вставка между литералам
   ]);
 });
 
-test('вложенный namespace: skipAny + закрывающая «}» как литерал', () => {
+test('nested namespace: skipAny + closing "}" as literal', () => {
   const m = firstMatch(wrapMatch('namespace features {\n...\nkFoo,\n>>>\n}'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: null, replaceEnd: null, anchor: lit('namespace features {') },
@@ -65,7 +58,7 @@ test('вложенный namespace: skipAny + закрывающая «}» ка�
   ]);
 });
 
-test('диапазон замены «A >>> ... <<< B»: обе метки на одном зазоре', () => {
+test('the replacement range is "A >>> ... <<< B": both labels on the same gap', () => {
   const m = firstMatch(wrapMatch('A >>> ... <<< B'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: null, replaceEnd: null, anchor: lit('A') },
@@ -73,7 +66,7 @@ test('диапазон замены «A >>> ... <<< B»: обе метки на 
   ]);
 });
 
-test('«>>> A <<<»: A — старый код (insert/replaceEnd=left по обе стороны литерала)', () => {
+test('">>> A <<<": A is the old code (insert/replace=left on both sides of the literal)', () => {
   const m = firstMatch(wrapMatch('>>> A <<<'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: 'left', replaceEnd: null, anchor: lit('A') },
@@ -81,41 +74,39 @@ test('«>>> A <<<»: A — старый код (insert/replaceEnd=left по об
   ]);
 });
 
-test('операторы пропуска: ^.. → skipToFirst', () => {
+test('skip operators: ^.. → skipToFirst', () => {
   const m = firstMatch(wrapMatch('^.. foo >>>'));
   assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToFirst' });
 });
 
-test('операторы пропуска: ..^ → skipToLast', () => {
+test('skip operators: ..^ → skipToLast', () => {
   const m = firstMatch(wrapMatch('..^ foo >>>'));
   assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToLast' });
 });
 
-test('операторы пропуска: ^3.. → skipToNth n=3 (1-based)', () => {
+test('skip operators: ^3.. → skipToNth n=3 (1-based)', () => {
   const m = firstMatch(wrapMatch('^3.. foo >>>'));
   assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToNth', n: 3 });
 });
 
-test('вставка в конец файла «... >>>»', () => {
+test('insert at the end of the file "... >>>"', () => {
   const m = firstMatch(wrapMatch('... >>>'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'skipAny' }, insert: 'right', replaceEnd: null, anchor: EOF },
   ]);
 });
 
-test('вставка в начало файла «>>> foo»', () => {
+test('insert at the beginning of the file ">>> foo"', () => {
   const m = firstMatch(wrapMatch('>>> foo'));
   assert.deepStrictEqual(strip(m), [
     { mode: { op: 'tight' }, insert: 'left', replaceEnd: null, anchor: lit('foo') },
   ]);
 });
 
-// ── ведущие пробелы сохраняются в raw (нужно Python-адаптеру) ─────────────────
 
-test('склейка: смежные литералы → ОДИН многострочный литерал', () => {
+test('gluing: adjacent literals → ONE multiline literal', () => {
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
-  // три строки подряд без оператора между ними склеились в один литерал,
-  // дальше — eof-шаг с точкой вставки. Итого 2 шага, не 4.
+  
   assert.deepStrictEqual(strip(m), [
     {
       mode: { op: 'tight' },
@@ -127,85 +118,80 @@ test('склейка: смежные литералы → ОДИН многос�
   ]);
 });
 
-test('склейка: mdSpan покрывает [перваяСтрока, последняяСтрока]', () => {
-  // строки .md:  1:# match 2:```cpp 3:line one 4:line two 5:line three 6:>>> ...
+test('gluing: mdSpan covers [First line, Last line]', () => {
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
   const a = m.steps[0]!.anchor;
   assert.equal(a.target, 'literal');
   assert.deepStrictEqual(a.target === 'literal' ? a.literal.mdSpan : null, [3, 5]);
 });
 
-test('склейка НЕ происходит через оператор (... разрывает смежность)', () => {
-  // между литералами есть ..., значит зазор не «чистый tight» — два отдельных шага
+test('gluing does NOT occur via the operator (... breaks the adjacency)', () => {
   const m = firstMatch(wrapMatch('a\n...\nb\n>>>'));
   assert.equal(strip(m).length, 3); // a | b(skipAny) | eof(insert)
   assert.equal(strip(m)[1]!.mode.op, 'skipAny');
 });
 
-test('Python: ведущий отступ внутренней строки сохранён в склеенном raw', () => {
+test('Python:the leading indentation of the inner line is preserved in the glued raw', () => {
   const m = firstMatch(wrapMatch('def foo():\n    return None\n>>>', 'python'));
-  // склейка языко-нейтральна: парсер лишь джойнит через \n, отступ строки цел
   assert.equal(strip(m)[0]!.anchor.raw, 'def foo():\n    return None');
   assert.equal(strip(m).length, 2);
 });
 
-test('include с ведущим пробелом: пробелы сохранены в raw', () => {
+test('include with a leading space: spaces are saved in raw', () => {
   const m = firstMatch(wrapMatch('  #include "x.h"\n>>>'));
   assert.equal(strip(m)[0]!.anchor.raw, '  #include "x.h"');
 });
 
-test('экранированный «\\...» становится литералом «...» (не оператором)', () => {
+test('the escaped "\\..." becomes the literal "..." (not an operator)', () => {
   const m = firstMatch(wrapMatch('\\... >>> foo'));
   assert.equal(strip(m)[0]!.anchor.kind, 'literal');
   assert.equal(strip(m)[0]!.anchor.raw, '...');
 });
 
-// ── язык берётся из fence ────────────────────────────────────────────────────
 
-test('язык определяется по info-string первого fence', () => {
+test('the language is determined by the info string of the first fence', () => {
   const file = parseHatchFile(wrapMatch('foo >>>', 'cpp'));
   assert.equal(file.language, 'cpp');
 });
 
-// ── запрещённые комбинации → ParseError, код 2 ───────────────────────────────
 
-test('FAIL: <<< без предшествующего >>>', () => {
-  expectParseError(wrapMatch('foo\n<<<\n>>>'), 'конец диапазона раньше начала');
+test('FAIL: <<< without preceding >>>', () => {
+  expectParseError(wrapMatch('foo\n<<<\n>>>'), 'end of range before start');
 });
 
-test('FAIL: повторная точка вставки >>>', () => {
-  expectParseError(wrapMatch('foo >>> bar >>> baz'), 'повторная точка вставки');
+test('FAIL: repeat insertion point >>>', () => {
+  expectParseError(wrapMatch('foo >>> bar >>> baz'), 'repeat insertion point');
 });
 
-test('FAIL: два оператора пропуска в одном зазоре (метка прозрачна)', () => {
-  expectParseError(wrapMatch('foo ... >>> ... bar'), 'два оператора пропуска');
+test('FAIL: two skip operators in one gap (mark is transparent)', () => {
+  expectParseError(wrapMatch('foo ... >>> ... bar'), 'two skip operators');
 });
 
-test('FAIL: ^.. сразу после ... — тоже два пропуска', () => {
-  expectParseError(wrapMatch('foo ... ^.. bar >>>'), 'два оператора пропуска');
+test('FAIL: ^.. right after ... — also two skips', () => {
+  expectParseError(wrapMatch('foo ... ^.. bar >>>'), 'two skip operators');
 });
 
-test('FAIL: некорректный номер вхождения ^0..', () => {
-  expectParseError(wrapMatch('^0.. foo >>>'), 'некорректный номер');
+test('FAIL: invalid occurrence number ^0..', () => {
+  expectParseError(wrapMatch('^0.. foo >>>'), 'invalid occurrence number');
 });
 
-test('FAIL: блок match без точки вставки >>>', () => {
-  expectParseError(wrapMatch('foo\nbar'), 'нет точки вставки');
+test('FAIL: match block with no insertion point >>>', () => {
+  expectParseError(wrapMatch('foo\nbar'), 'no insertion point');
 });
 
-test('FAIL: после заголовка match нет блока ```', () => {
-  expectParseError('# match\nне fence строка\n', 'ожидается блок');
+test('FAIL: match heading not followed by a ``` block', () => {
+  expectParseError('# match\nnot a fence line\n', 'block is expected');
 });
 
-test('FAIL: после блока match нет заголовка patch', () => {
-  const md = '# match\n```cpp\nfoo >>>\n```\nмусор вместо patch\n';
-  expectParseError(md, 'ожидается заголовок patch');
+test('FAIL: match block not followed by a patch heading', () => {
+  const md = '# match\n```cpp\nfoo >>>\n```\ngarbage instead of patch\n';
+  expectParseError(md, 'patch header is expected');
 });
 
-test('FAIL: файл оборван посреди блока', () => {
-  expectParseError('# match\n```cpp\nfoo >>>\n```\n', 'оборван');
+test('FAIL: file truncated mid-block', () => {
+  expectParseError('# match\n```cpp\nfoo >>>\n```\n', 'cut off');
 });
 
-test('FAIL: в файле нет ни одной пары match/patch', () => {
-  expectParseError('просто текст без хатча\n', 'ни одной пары');
+test('FAIL: file has no match/patch pairs at all', () => {
+  expectParseError('just text, no hatch here\n', 'no match/patch pairs');
 });

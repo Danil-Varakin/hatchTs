@@ -1,6 +1,6 @@
 import type { MatchPattern } from '../src/core/ast.ts';
-import { parseHatchFile } from '../src/core/parser.ts';
-import { printPattern } from '../src/core/printer.ts';
+import { parseHatchFile } from '../src/core/hatch-parser.ts';
+import { printPattern } from '../src/core/hatch-printer.ts';
 
 export interface FlatAnchor {
   kind: 'literal' | 'eof';

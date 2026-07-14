@@ -120,10 +120,13 @@ class PatternBuilder {
 }
 
 
-const OP_RE =
-  /(?<=^|\s)(\.\.\.|>>>|<<<|\^\.\.|\.\.\^|\^(?<n>\d+)\.\.)(?=\s|$)/g;
+const OP_RE = /(?<=^|\s)(\.\.\.|>>>|<<<)(?=\s|$)/g;
 
-const ESCAPE_RE = /\\(?=(\.\.\.|>>>|<<<|\^\.\.|\.\.\^|\^\d+\.\.))/g;
+// Экран снимается ТОЛЬКО там, где оператор без '\' был бы распознан как
+// обособленное слово; снимается ОДНА '\' с начала цепочки. '\...' в середине
+// слова (например, внутри строкового литерала C++) — обычный текст, не трогаем.
+// Принтер симметрично ДОБАВЛЯЕТ одну '\' — round-trip не теряет и не плодит слэши.
+const ESCAPE_RE = /(?<=^|\s)\\(?=\\*(?:\.\.\.|>>>|<<<)(?:\s|$))/g;
 
 function scanLineInto(line: string, mdLine: number, builder: PatternBuilder): void {
   let last = 0;
@@ -132,7 +135,7 @@ function scanLineInto(line: string, mdLine: number, builder: PatternBuilder): vo
     const idx = m.index ?? 0;
     const op = m[0] ?? '';
     feedFragment(line.slice(last, idx), atLineStart, mdLine, builder);
-    feedOperator(op, m.groups?.['n'], mdLine, builder);
+    feedOperator(op, mdLine, builder);
     last = idx + op.length;
     atLineStart = false;
   }
@@ -151,21 +154,10 @@ function feedFragment(
   builder.addLiteral(raw, mdLine);
 }
 
-function feedOperator(
-  op: string,
-  n: string | undefined,
-  mdLine: number,
-  builder: PatternBuilder,
-): void {
+function feedOperator(op: string, mdLine: number, builder: PatternBuilder): void {
   switch (op) {
     case '...':
       builder.addGapMode({ op: 'skipAny' }, mdLine);
-      break;
-    case '^..':
-      builder.addGapMode({ op: 'skipToFirst' }, mdLine);
-      break;
-    case '..^':
-      builder.addGapMode({ op: 'skipToLast' }, mdLine);
       break;
     case '>>>':
       builder.addInsert(mdLine);
@@ -173,17 +165,6 @@ function feedOperator(
     case '<<<':
       builder.addReplaceEnd(mdLine);
       break;
-    default: {
-      const num = Number(n);
-      if (!Number.isInteger(num) || num < 1) {
-        throw new ParseError(
-          `invalid occurrence number in the operator ^${n}..`,
-          mdLine,
-          'numbering of occurrences from 1: ^1.. equivalent to ^..',
-        );
-      }
-      builder.addGapMode({ op: 'skipToNth', n: num }, mdLine);
-    }
   }
 }
 
@@ -226,7 +207,16 @@ export function parseHatchFile(md: string): HatchFile {
         const m = line.match(FENCE_OPEN);
         if (m !== null) {
           const lang = m[1];
-          if (language === undefined && lang) language = lang;
+          if (lang) {
+            if (language === undefined) language = lang;
+            else if (language !== lang) {
+              throw new ParseError(
+                `match block declares language '${lang}', but the file already uses '${language}'`,
+                lineNo,
+                'one .md file — one language; split the hunks into separate files',
+              );
+            }
+          }
           builder = new PatternBuilder(hunkStart);
           state = 'inMatch';
         } else if (line.trim() !== '') {

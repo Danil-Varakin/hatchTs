@@ -25,6 +25,7 @@ export const cppAdapter: LanguageAdapter = {
 
   buildMap(source: string): SourceMap {
     if (grammar === null) throw new Error('cppAdapter: init() не вызван перед buildMap');
+    if (typeof source !== 'string') throw new TypeError('cppAdapter.buildMap: source не строка');
     const tree = parse(grammar, source);
     try {
       const canon = buildCanon(source, normalize);

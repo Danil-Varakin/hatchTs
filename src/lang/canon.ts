@@ -1,8 +1,3 @@
-// lang/canon.ts — ОБЩИЙ: канон исходника + точечный перевод координат канон↔оригинал.
-// Опора (00-general-rules §2): normalize трогает ТОЛЬКО пробелы, значит
-// подпоследовательность непробельных символов в оригинале и каноне тождественна.
-// Выравниваемся по ней; перевод в обе стороны — бинарным поиском по этим позициям.
-
 export interface Canon {
   text: string;
   toCanonPos(origPos: number): number;
@@ -27,10 +22,19 @@ export function buildCanon(
   return {
     text,
     toCanonPos(origPos: number): number {
+      if (!Number.isInteger(origPos) || origPos < 0 || origPos > source.length) {
+        throw new RangeError(`canon.toCanonPos: origPos=${origPos} вне [0, ${source.length}]`);
+      }
       const rank = lowerBound(origAt, origPos);
       return rank < nonWsCount ? canonAt[rank]! : text.length;
     },
     toOriginalPos(canonPos: number, side: 'left' | 'right'): number {
+      if (!Number.isInteger(canonPos) || canonPos < 0 || canonPos > text.length) {
+        throw new RangeError(`canon.toOriginalPos: canonPos=${canonPos} вне [0, ${text.length}]`);
+      }
+      if (side !== 'left' && side !== 'right') {
+        throw new Error(`canon.toOriginalPos: side='${String(side)}'`);
+      }
       const cnt = lowerBound(canonAt, canonPos);
       if (side === 'left') return cnt === 0 ? 0 : origAt[cnt - 1]! + 1;
       return cnt < nonWsCount ? origAt[cnt]! : source.length;
@@ -46,7 +50,6 @@ function nonWsIndices(s: string): number[] {
   return out;
 }
 
-// Первый индекс i, где arr[i] >= x (= количество элементов строго меньше x).
 function lowerBound(arr: number[], x: number): number {
   let lo = 0;
   let hi = arr.length;
@@ -58,7 +61,6 @@ function lowerBound(arr: number[], x: number): number {
   return lo;
 }
 
-// Совпадает с семантикой JS-регэкспа \s (тем, что схлопывает normalize).
 function isSpace(code: number): boolean {
   return (
     code === 0x20 ||

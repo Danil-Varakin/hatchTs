@@ -12,9 +12,6 @@ const CASES: ReadonlyArray<readonly [name: string, body: string, lang?: string]>
   ['replacement range A >>> ... <<< B', 'A >>> ... <<< B'],
   ['old code >>> A <<<', '>>> A <<<'],
   ['empty range >>> <<<', '>>> <<<'],
-  ['skipToFirst ^..', '^.. foo >>>'],
-  ['skipToLast ..^', '..^ foo >>>'],
-  ['skipToNth ^3..', '^3.. foo >>>'],
   ['paste at the end of the file ... >>>', '... >>>'],
   ['inserting at the beginning of the file >>> foo', '>>> foo'],
   ['Python indented in raw', 'def foo():\n    return None\n>>>', 'python'],
@@ -42,7 +39,10 @@ for (const [name, body] of [
   ['the operator in the middle of the literal', 'a \\... b >>>'],
   ['the escaped operator inside the gluing', 'a\n\\... \nb\n>>>'],
   ['several screened ones in a row', '\\>>> \\<<< >>> x'],
-  ['shielded ^2..', '\\^2.. foo >>>'],
+  // md-текст `x \\... y`: parse снимает одну '\' → raw `x \... y`; print обязан вернуть её
+  ['a real backslash before the operator survives', 'x \\\\... y >>>'],
+  // md-текст `foo\...bar`: '\' не в позиции экрана (не обособленно) — обычный текст
+  ['"\\..." in the middle of a word is plain text', 'foo\\...bar >>>'],
 ] as const) {
   test(`round-trip (screening): ${name}`, () => {
     const original = firstMatch(wrapMatch(body));

@@ -36,6 +36,10 @@ test('multiline literal: line by line + gluing through \\n (\\n is significant)'
   );
 });
 
+test('unicode: non-ASCII words in the body do not merge', () => {
+  assert.equal(normalize('    имя значение'), '    имя значение');
+});
+
 test('idempotence', () => {
   for (const s of ['    x = 1', 'def  foo():', 'def f():\n    return None']) {
     assert.equal(normalize(normalize(s)), normalize(s));

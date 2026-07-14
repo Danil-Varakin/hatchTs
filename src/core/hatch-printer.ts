@@ -11,11 +11,13 @@ export function printPattern(p: MatchPattern): string {
   return out.join('\n');
 }
 
-const OP_LEXEME_RE =
-  /(?<=^|\s)(\.\.\.|>>>|<<<|\^\.\.|\.\.\^|\^\d+\.\.)(?=\s|$)/g;
+// Обособленный оператор в тексте литерала получает '\'; уже заэкранированный
+// ('\...', '\\...') — ЕЩЁ одну, потому что парсер снимает ровно одну. Без этого
+// round-trip терял бы '\' из литерала: print('x \... y') → parse → 'x ... y'.
+const OP_LEXEME_RE = /(?<=^|\s)(\\*)(\.\.\.|>>>|<<<)(?=\s|$)/g;
 
 function escapeLiteral(raw: string): string {
-  return raw.replace(OP_LEXEME_RE, '\\$1');
+  return raw.replace(OP_LEXEME_RE, '\\$1$2');
 }
 
 function emitGap(g: Gap, out: string[]): void {
@@ -33,12 +35,6 @@ function modeLexeme(mode: GapMode): string | null {
       return null;
     case 'skipAny':
       return '...';
-    case 'skipToFirst':
-      return '^..';
-    case 'skipToLast':
-      return '..^';
-    case 'skipToNth':
-      return `^${mode.n}..`;
     default:
       return assertNever(mode);
   }

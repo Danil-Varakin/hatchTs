@@ -1,5 +1,3 @@
-// lang/treesitter.ts — ОБЩИЙ движок tree-sitter, язык-нейтральный.
-// Parser.init один раз на процесс; грамматики кешируются по пути к .wasm.
 import { Parser, Language } from 'web-tree-sitter';
 import type { Tree, Node } from 'web-tree-sitter';
 
@@ -9,11 +7,31 @@ let initOnce: Promise<void> | null = null;
 let parser: Parser | null = null;
 const grammars = new Map<string, Promise<Language>>();
 
+// Отказ инициализации/загрузки НЕ кешируем: иначе первый сбой (нет файла, битый
+// .wasm) залипает в кеше навсегда и каждый следующий вызов получает ту же ошибку.
+function ensureInit(): Promise<void> {
+  if (initOnce === null) {
+    const p = Parser.init();
+    p.catch(() => {
+      if (initOnce === p) initOnce = null;
+    });
+    initOnce = p;
+  }
+  return initOnce;
+}
+
 export function loadGrammar(wasmPath: string): Promise<Language> {
+  if (typeof wasmPath !== 'string' || wasmPath.length === 0) {
+    throw new Error('loadGrammar: путь к .wasm пуст');
+  }
   let g = grammars.get(wasmPath);
   if (g === undefined) {
-    g = (initOnce ??= Parser.init()).then(() => Language.load(wasmPath));
-    grammars.set(wasmPath, g);
+    const p = ensureInit().then(() => Language.load(wasmPath));
+    p.catch(() => {
+      if (grammars.get(wasmPath) === p) grammars.delete(wasmPath);
+    });
+    grammars.set(wasmPath, p);
+    g = p;
   }
   return g;
 }
@@ -25,7 +43,6 @@ export function parse(grammar: Language, source: string): Tree {
   return tree;
 }
 
-// Преордер-обход через один TreeCursor (без рекурсии, минимум аллокаций узлов).
 export function* walk(tree: Tree): Generator<Node> {
   const cursor = tree.walk();
   try {

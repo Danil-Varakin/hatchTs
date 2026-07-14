@@ -74,21 +74,6 @@ test('">>> A <<<": A is the old code (insert/replace=left on both sides of the l
   ]);
 });
 
-test('skip operators: ^.. → skipToFirst', () => {
-  const m = firstMatch(wrapMatch('^.. foo >>>'));
-  assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToFirst' });
-});
-
-test('skip operators: ..^ → skipToLast', () => {
-  const m = firstMatch(wrapMatch('..^ foo >>>'));
-  assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToLast' });
-});
-
-test('skip operators: ^3.. → skipToNth n=3 (1-based)', () => {
-  const m = firstMatch(wrapMatch('^3.. foo >>>'));
-  assert.deepStrictEqual(strip(m)[0]!.mode, { op: 'skipToNth', n: 3 });
-});
-
 test('insert at the end of the file "... >>>"', () => {
   const m = firstMatch(wrapMatch('... >>>'));
   assert.deepStrictEqual(strip(m), [
@@ -148,10 +133,30 @@ test('the escaped "\\..." becomes the literal "..." (not an operator)', () => {
   assert.equal(strip(m)[0]!.anchor.raw, '...');
 });
 
+test('"\\..." in the middle of a word stays as-is (escape is positional)', () => {
+  const m = firstMatch(wrapMatch('foo\\...bar >>>'));
+  assert.equal(strip(m)[0]!.anchor.raw, 'foo\\...bar');
+});
+
+test('standalone "\\\\..." loses exactly ONE backslash (escape of the escape)', () => {
+  const m = firstMatch(wrapMatch('x \\\\... y >>>'));
+  assert.equal(strip(m)[0]!.anchor.raw, 'x \\... y');
+});
+
 
 test('the language is determined by the info string of the first fence', () => {
   const file = parseHatchFile(wrapMatch('foo >>>', 'cpp'));
   assert.equal(file.language, 'cpp');
+});
+
+test('the same language in several fences is fine', () => {
+  const md = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'cpp')].join('\n');
+  assert.equal(parseHatchFile(md).language, 'cpp');
+});
+
+test('FAIL: mixed fence languages in one file', () => {
+  const md = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'python')].join('\n');
+  expectParseError(md, 'language');
 });
 
 
@@ -167,12 +172,8 @@ test('FAIL: two skip operators in one gap (mark is transparent)', () => {
   expectParseError(wrapMatch('foo ... >>> ... bar'), 'two skip operators');
 });
 
-test('FAIL: ^.. right after ... — also two skips', () => {
-  expectParseError(wrapMatch('foo ... ^.. bar >>>'), 'two skip operators');
-});
-
-test('FAIL: invalid occurrence number ^0..', () => {
-  expectParseError(wrapMatch('^0.. foo >>>'), 'invalid occurrence number');
+test('FAIL: два ... подряд — тоже два пропуска', () => {
+  expectParseError(wrapMatch('foo ... ... bar >>>'), 'two skip operators');
 });
 
 test('FAIL: match block with no insertion point >>>', () => {

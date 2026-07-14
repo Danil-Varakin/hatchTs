@@ -1,9 +1,6 @@
 export type GapMode =
-  | { op: 'tight' } // There is no pass
-  | { op: 'skipAny' } // ...
-  | { op: 'skipToFirst' } // ^..
-  | { op: 'skipToLast' } // ..^
-  | { op: 'skipToNth'; n: number }; // ^n.. (1-based)
+  | { op: 'tight' } // нет пропуска
+  | { op: 'skipAny' }; // ...
 
 export interface PlacedMark {
   side: 'left' | 'right'; // left = cursor position BEFORE the jump; right = AFTER

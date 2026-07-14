@@ -22,7 +22,7 @@ function ensureInit(): Promise<void> {
 
 export function loadGrammar(wasmPath: string): Promise<Language> {
   if (typeof wasmPath !== 'string' || wasmPath.length === 0) {
-    throw new Error('loadGrammar: путь к .wasm пуст');
+    throw new Error('loadGrammar: empty path to .wasm');
   }
   let g = grammars.get(wasmPath);
   if (g === undefined) {
@@ -39,7 +39,7 @@ export function loadGrammar(wasmPath: string): Promise<Language> {
 export function parse(grammar: Language, source: string): Tree {
   (parser ??= new Parser()).setLanguage(grammar);
   const tree = parser.parse(source);
-  if (tree === null) throw new Error('tree-sitter: parse() вернул null');
+  if (tree === null) throw new Error('tree-sitter: parse() returned null');
   return tree;
 }
 

@@ -15,7 +15,7 @@ export function buildCanon(
 
   if (nonWsCount !== canonAt.length) {
     throw new Error(
-      `canon: рассинхрон непробельных (${nonWsCount} в оригинале, ${canonAt.length} в каноне) — normalize тронул НЕ только пробелы`,
+      `canon: non-whitespace desync (${nonWsCount} in original, ${canonAt.length} in canon) — normalize touched more than whitespace`,
     );
   }
 
@@ -23,14 +23,14 @@ export function buildCanon(
     text,
     toCanonPos(origPos: number): number {
       if (!Number.isInteger(origPos) || origPos < 0 || origPos > source.length) {
-        throw new RangeError(`canon.toCanonPos: origPos=${origPos} вне [0, ${source.length}]`);
+        throw new RangeError(`canon.toCanonPos: origPos=${origPos} out of [0, ${source.length}]`);
       }
       const rank = lowerBound(origAt, origPos);
       return rank < nonWsCount ? canonAt[rank]! : text.length;
     },
     toOriginalPos(canonPos: number, side: 'left' | 'right'): number {
       if (!Number.isInteger(canonPos) || canonPos < 0 || canonPos > text.length) {
-        throw new RangeError(`canon.toOriginalPos: canonPos=${canonPos} вне [0, ${text.length}]`);
+        throw new RangeError(`canon.toOriginalPos: canonPos=${canonPos} out of [0, ${text.length}]`);
       }
       if (side !== 'left' && side !== 'right') {
         throw new Error(`canon.toOriginalPos: side='${String(side)}'`);

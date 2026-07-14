@@ -146,14 +146,3 @@ npx tsc -p tsconfig.json   # только проверка типов (noEmit)
 кросс-платформенно, без нативной сборки); грузятся разово на старте. Рабочий
 процесс и обоснование строгого tsconfig — в [CONTRIBUTING.ru.md](./CONTRIBUTING.ru.md).
 
-## Благодарности
-
-Порт Python-прототипа: [Danil-Varakin/Hatch](https://github.com/Danil-Varakin/Hatch)
-и [Kirillkadr/MatchPatch](https://github.com/Kirillkadr/MatchPatch) (источник
-реальных примеров патчей). API библиотек выверены по Context7: commander,
-jsdiff, simple-git, tree-sitter.
-
-## Лицензия
-
-Определить до первого публичного релиза (MPL-2.0 или MIT, оба
-естественные кандидаты). Добавить файл `LICENSE` соответственно.

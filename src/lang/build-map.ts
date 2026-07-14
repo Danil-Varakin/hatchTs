@@ -3,14 +3,12 @@
 // Кривой вход (pos вне [0,eof], пустой литерал, from>to) — баг вызывающего: бросаем.
 import type { Canon } from './canon.ts';
 import type { SourceMap } from './source-map.ts';
+import { isWordChar } from './word.ts';
 
 export interface BlockSpan {
   open: number; // канон-позиция открывающей скобки
   close: number; // канон-позиция парной закрывающей
 }
-
-// Словесный символ ЛЮБОГО языка (не только ASCII): буквы, цифры, '_'.
-const WORD = /[\p{L}\p{N}_]/u;
 
 export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): SourceMap {
   const text = canon.text;
@@ -18,11 +16,11 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
 
   const assertPos = (pos: number, name: string): void => {
     if (!Number.isInteger(pos) || pos < 0 || pos > eof) {
-      throw new RangeError(`SourceMap: ${name}=${pos} вне [0, ${eof}]`);
+      throw new RangeError(`SourceMap: ${name}=${pos} out of [0, ${eof}]`);
     }
   };
   const assertNorm = (norm: string): void => {
-    if (norm.length === 0) throw new Error('SourceMap: пустой литерал');
+    if (norm.length === 0) throw new Error('SourceMap: empty literal');
   };
 
   // «внутри блока» = зазор в (open, close]: курсор вошёл, ПРОЙДЯ '{', и остаётся до
@@ -82,13 +80,16 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       assertPos(pos, 'pos');
       const opens: number[] = [];
       for (const s of spans) if (inside(s, pos)) opens.push(s.open);
-      opens.sort((a, b) => a - b);
+      // ВНУТРЬ→НАРУЖУ: ближайший (самый глубокий) блок первым. Больший open =
+      // позже открылся = глубже вложен. Порядок под synth (phase-4): он берёт
+      // ближайший контекст вокруг правки и расширяет наружу до уникальности.
+      opens.sort((a, b) => b - a);
       return opens;
     },
 
     toOriginalPos(pos: number, side: 'left' | 'right'): number {
       assertPos(pos, 'pos');
-      if (side !== 'left' && side !== 'right') throw new Error(`SourceMap: side='${String(side)}'`);
+      if (side !== 'left' && side !== 'right') throw new Error(`SourceMap: invalid side='${String(side)}'`);
       return canon.toOriginalPos(pos, side);
     },
   };
@@ -103,8 +104,4 @@ function boundaryOk(text: string, norm: string, pos: number): boolean {
   const right = pos + n;
   if (isWordChar(norm[n - 1]!) && right < text.length && isWordChar(text[right]!)) return false;
   return true;
-}
-
-function isWordChar(ch: string): boolean {
-  return WORD.test(ch);
 }

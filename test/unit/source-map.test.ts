@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 import { makeSourceMap } from '../../src/lang/build-map.ts';
 import { buildCanon } from '../../src/lang/canon.ts';
-import { normalize } from '../../src/lang/cpp/normalize.ts';
+import { normalize } from '../../src/lang/cpp/index.ts';
 
 // позиция курсора сразу после первого вхождения anchor (в каноне).
 // Через matchesAt (точечный, без глубино-фильтра), т.к. occurrences теперь

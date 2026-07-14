@@ -15,7 +15,7 @@ test('ParseError → code 2, carries a string and (optional) a hint', () => {
   assert.equal(e.exitCode, 2);
   assert.equal(e.mdLine, 7);
   assert.equal(e.hint, 'advice');
-  assert.ok(e.message.includes('string 7'));
+  assert.ok(e.message.includes('line 7'));
   assert.ok(e.message.includes('advice'));
 });
 

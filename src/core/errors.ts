@@ -15,7 +15,7 @@ export class ParseError extends HatchError {
 
   constructor(message: string, mdLine: number, hint?: string) {
     super(
-      `string ${mdLine}: ${message}` +
+      `line ${mdLine}: ${message}` +
         (hint !== undefined ? `\n  hint: ${hint}` : ''),
     );
     this.mdLine = mdLine;

@@ -4,10 +4,10 @@
 // Без аргумента берётся встроенный пример.
 // ============================================================================
 import { readFileSync } from 'node:fs';
-import { parseHatchFile } from '../src/core/parser.ts';
-import { printPattern } from '../src/core/printer.ts';
+import { parseHatchFile } from '../src/core/hatch-parser.ts';
+import { printPattern } from '../src/core/hatch-printer.ts';
 
-const path = "/Users/varakinde/PycharmProjects/Hatch/test/PassedTests/unique14.md"
+const path = process.argv[2];
 
 const md =
   path !== undefined
@@ -29,7 +29,7 @@ const md =
 
 const file = parseHatchFile(md); // <-- ВОТ функция: .md (строка) -> AST
 
-console.log('language:', file.language ?? '(не указан)');
+console.log('language:', file.language ?? '(not specified)');
 console.log('hunks:', file.hunks.length);
 console.log(JSON.stringify(file, null, 2));
 

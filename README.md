@@ -150,14 +150,3 @@ cross-platform, no native build); these load once at startup. See
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow and the
 reasoning behind the strict tsconfig.
 
-## Credits
-
-Port of the Python prototype: [Danil-Varakin/Hatch](https://github.com/Danil-Varakin/Hatch)
-and [Kirillkadr/MatchPatch](https://github.com/Kirillkadr/MatchPatch) (the source
-of the real-world patch examples). Library APIs verified via Context7:
-commander, jsdiff, simple-git, tree-sitter.
-
-## License
-
-To be decided before the first public release (MPL-2.0 or MIT are the natural
-candidates). Add a `LICENSE` file accordingly.

@@ -87,8 +87,9 @@ class PatternBuilder {
     }
     if (this.replaceEndMark !== null) {
       throw new ParseError(
-        `повторный маркер <<< (первый — на строке ${this.replaceEndMark.mdLine})`,
+        `repeat end-of-range marker <<< (the first one is on the line ${this.replaceEndMark.mdLine})`,
         mdLine,
+        'a replacement range has exactly one end; remove the extra <<<',
       );
     }
     const placed: PlacedMark = {

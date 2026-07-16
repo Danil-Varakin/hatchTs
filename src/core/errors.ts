@@ -15,8 +15,8 @@ export class ParseError extends HatchError {
 
   constructor(message: string, mdLine: number, hint?: string) {
     super(
-      `строка ${mdLine}: ${message}` +
-        (hint !== undefined ? `\n  подсказка: ${hint}` : ''),
+      `line ${mdLine}: ${message}` +
+        (hint !== undefined ? `\n  hint: ${hint}` : ''),
     );
     this.mdLine = mdLine;
     if (hint !== undefined) this.hint = hint;
@@ -42,13 +42,5 @@ export class AmbiguityError extends HatchError {
   constructor(message: string, positions: number[]) {
     super(message);
     this.positions = positions;
-  }
-}
-
-export class AlreadyAppliedError extends HatchError {
-  readonly exitCode = 5;
-
-  constructor(message: string) {
-    super(message);
   }
 }

@@ -6,44 +6,38 @@ import {
   ParseError,
   MatchError,
   AmbiguityError,
-  AlreadyAppliedError,
 } from '../../src/core/errors.ts';
 
-test('ParseError → код 2, несёт строку и (опц.) подсказку', () => {
-  const e = new ParseError('боль', 7, 'совет');
+test('ParseError → code 2, carries a string and (optional) a hint', () => {
+  const e = new ParseError('pain', 7, 'advice');
   assert.ok(e instanceof HatchError);
   assert.equal(e.exitCode, 2);
   assert.equal(e.mdLine, 7);
-  assert.equal(e.hint, 'совет');
-  assert.ok(e.message.includes('строка 7'));
-  assert.ok(e.message.includes('совет'));
+  assert.equal(e.hint, 'advice');
+  assert.ok(e.message.includes('line 7'));
+  assert.ok(e.message.includes('advice'));
 });
 
-test('ParseError без подсказки не выставляет hint', () => {
-  const e = new ParseError('боль', 3);
+test('ParseError does not set a hint without a hint', () => {
+  const e = new ParseError('pain', 3);
   assert.equal(e.hint, undefined);
-  assert.ok(!e.message.includes('подсказка'));
+  assert.ok(!e.message.includes('hint'));
 });
 
-test('MatchError → код 3, несёт deepestPos и индекс шага', () => {
-  const e = new MatchError('не нашёл', 42, 1);
+test('MatchError → code 3, carries deepestPos and step index', () => {
+  const e = new MatchError('I didn\'t find it', 42, 1);
   assert.equal(e.exitCode, 3);
   assert.equal(e.deepestPos, 42);
   assert.equal(e.failedStepIndex, 1);
 });
 
-test('AmbiguityError → код 4, несёт позиции совпадений', () => {
-  const e = new AmbiguityError('двусмысленно', [10, 99]);
+test('AmbiguityError → code 4, carries match positions', () => {
+  const e = new AmbiguityError('ambiguous', [10, 99]);
   assert.equal(e.exitCode, 4);
   assert.deepStrictEqual(e.positions, [10, 99]);
 });
 
-test('AlreadyAppliedError → код 5', () => {
-  const e = new AlreadyAppliedError('уже наложен');
-  assert.equal(e.exitCode, 5);
-});
-
-test('имена классов сохраняются (instanceof через цепочку прототипов)', () => {
+test('class names are saved (instanceof via prototype chain)', () => {
   const e: HatchError = new ParseError('x', 1);
   assert.equal(e.name, 'ParseError');
   assert.ok(e instanceof Error);

@@ -6,7 +6,7 @@
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json && tsc -p test/tsconfig.json",
     "check": "npm run typecheck && npm test",
-    "example": "node --experimental-strip-types examples/dump-ast.ts"
+    "apply": "node --experimental-strip-types src/cli/apply.ts"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

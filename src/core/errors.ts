@@ -44,11 +44,3 @@ export class AmbiguityError extends HatchError {
     this.positions = positions;
   }
 }
-
-export class AlreadyAppliedError extends HatchError {
-  readonly exitCode = 5;
-
-  constructor(message: string) {
-    super(message);
-  }
-}

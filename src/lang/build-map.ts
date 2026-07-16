@@ -2,13 +2,8 @@
 // Всё в КАНОНИЧЕСКИХ координатах; в оригинал переводит только toOriginalPos (через canon).
 // Кривой вход (pos вне [0,eof], пустой литерал, from>to) — баг вызывающего: бросаем.
 import type { Canon } from './canon.ts';
-import type { SourceMap } from './source-map.ts';
+import type { SourceMap, BlockSpan } from './source-map.ts';
 import { isWordChar } from './word.ts';
-
-export interface BlockSpan {
-  open: number; // канон-позиция открывающей скобки
-  close: number; // канон-позиция парной закрывающей
-}
 
 export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): SourceMap {
   const text = canon.text;
@@ -42,18 +37,18 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       return text.startsWith(norm, pos) && boundaryOk(text, norm, pos);
     },
 
-    // Вхождения на ТОЙ ЖЕ глубине, что from (сбалансированный пропуск для '...'),
-    // целиком в окне [from, to). Вложенные (более глубокие) — отсеиваются.
+    // ЧИСТО ТЕКСТОВЫЕ вхождения: старт в [from, to] — to ВКЛЮЧИТЕЛЬНО (литерал
+    // `}`/`} else {` начинается прямо на закрывающем токене); хвост может выходить
+    // за to. Фильтра глубины НЕТ — структурный отбор делает матчер (обязательство/
+    // поиск, docs/matcher-window-stack.md §0; он зовёт с to=eof, окна-стены нет).
     occurrences(norm: string, from: number, to: number): number[] {
       assertNorm(norm);
       assertPos(from, 'from');
       assertPos(to, 'to');
       if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);
       const out: number[] = [];
-      const len = norm.length;
-      const fromDepth = depthOf(from);
-      for (let p = text.indexOf(norm, from); p !== -1 && p + len <= to; p = text.indexOf(norm, p + 1)) {
-        if (boundaryOk(text, norm, p) && depthOf(p) === fromDepth) out.push(p);
+      for (let p = text.indexOf(norm, from); p !== -1 && p <= to; p = text.indexOf(norm, p + 1)) {
+        if (boundaryOk(text, norm, p)) out.push(p);
       }
       return out;
     },
@@ -76,15 +71,17 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       return depthOf(pos);
     },
 
-    enclosing(pos: number): number[] {
+    // Пролёты ЦЕЛИКОМ ({open, close}): пары уже посчитаны при сборке карты, матчер
+    // берёт close для стека окон в момент съедания open — искать пару не нужно.
+    enclosing(pos: number): BlockSpan[] {
       assertPos(pos, 'pos');
-      const opens: number[] = [];
-      for (const s of spans) if (inside(s, pos)) opens.push(s.open);
+      const out: BlockSpan[] = [];
+      for (const s of spans) if (inside(s, pos)) out.push({ open: s.open, close: s.close });
       // ВНУТРЬ→НАРУЖУ: ближайший (самый глубокий) блок первым. Больший open =
       // позже открылся = глубже вложен. Порядок под synth (phase-4): он берёт
       // ближайший контекст вокруг правки и расширяет наружу до уникальности.
-      opens.sort((a, b) => b - a);
-      return opens;
+      out.sort((a, b) => b.open - a.open);
+      return out;
     },
 
     toOriginalPos(pos: number, side: 'left' | 'right'): number {

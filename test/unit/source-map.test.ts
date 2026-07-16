@@ -7,8 +7,6 @@ import { buildCanon } from '../../src/lang/canon.ts';
 import { normalize } from '../../src/lang/cpp/index.ts';
 
 // позиция курсора сразу после первого вхождения anchor (в каноне).
-// Через matchesAt (точечный, без глубино-фильтра), т.к. occurrences теперь
-// балансированный и «где угодно» им не найти.
 function cursorAfter(map: ReturnType<typeof cppAdapter.buildMap>, anchor: string): number {
   for (let p = 0; p + anchor.length <= map.eof; p++) {
     if (map.matchesAt(anchor, p)) return p + anchor.length;
@@ -22,6 +20,22 @@ test('вложенность: enclosingEnd прыгает на "}" своего 
   const cur = cursorAfter(map, 'g();');
   assert.equal(map.depthAt(cur), 3); // namespace + class + функция
   assert.ok(map.matchesAt('}', map.enclosingEnd(cur))); // цель = закрывающая f
+});
+
+test('enclosing отдаёт пролёты ЦЕЛИКОМ ({open, close}), внутрь→наружу', async () => {
+  await cppAdapter.init();
+  const map = cppAdapter.buildMap('namespace a { class B { void f(){ g(); } }; }');
+  const cur = cursorAfter(map, 'g();');
+  const spans = map.enclosing(cur);
+  assert.equal(spans.length, 3); // тело f + тело класса + тело namespace
+  for (const s of spans) {
+    assert.ok(map.matchesAt('{', s.open)); // open — открывающая скобка
+    assert.ok(map.matchesAt('}', s.close)); // close — её пара, уже посчитана
+    assert.ok(s.open < cur && cur <= s.close);
+  }
+  // внутрь→наружу: ближайший (самый глубокий) первым
+  for (let i = 1; i < spans.length; i++) assert.ok(spans[i]!.open < spans[i - 1]!.open);
+  assert.equal(spans[0]!.close, map.enclosingEnd(cur)); // согласован с enclosingEnd
 });
 
 test('скобки в строке/char/комментарии не создают блоков', async () => {
@@ -84,12 +98,36 @@ test('вложенные () дают разные уровни и enclosingEnd',
   assert.notEqual(map.enclosingEnd(outer), map.enclosingEnd(inner));
 });
 
-test('occurrences отсеивает более глубокие вхождения (баланс ...)', async () => {
+// occurrences — ЧИСТО текстовый поиск: отдаёт и вложенные вхождения. Структурный
+// отбор — работа матчера (обязательство/поиск, docs/matcher-window-stack.md §0).
+// Прежний кейс «карта отсеивает глубокие ','» переехал в тесты матчера (phase-3).
+// Здесь проверяем контракт карты: оба вхождения отдаются, а enclosingEnd (для
+// synth/диагностики) различает внешнее от вложенного.
+test('occurrences отдаёт ВСЕ текстовые вхождения; enclosingEnd различает уровень', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void h(){ f(a, g(b, c)); }');
-  const cur = cursorAfter(map, 'f('); // внутри внешних () — глубина этого уровня
-  const commas = map.occurrences(',', cur, map.enclosingEnd(cur));
-  assert.equal(commas.length, 1); // только верхняя ',', не из g(b, c)
+  const cur = cursorAfter(map, 'f('); // внутри внешних ()
+  const outerClose = map.enclosingEnd(cur); // закрывающая ')' внешнего вызова
+  const commas = map.occurrences(',', cur, map.eof);
+  assert.equal(commas.length, 2); // обе ',' — и верхняя, и из g(b, c)
+  const atOuterLevel = commas.filter((p) => map.enclosingEnd(p) === outerClose);
+  assert.equal(atOuterLevel.length, 1); // на уровне внешнего вызова — одна
+});
+
+// Контракт карты: старт вхождения в [from, to] с to ВКЛЮЧИТЕЛЬНО, хвост может
+// выходить за to. (Матчер зовёт occurrences с to=eof, но карта обязана
+// поддерживать и оконный запрос — на нём стоит этот контракт.)
+test('occurrences: старт на границе to (включительно), хвост может за to', async () => {
+  await cppAdapter.init();
+  const map = cppAdapter.buildMap('void f(){ if(x){ a(); } else { b(); } }');
+  const cur = cursorAfter(map, 'a();'); // внутри тела if
+  const closeIf = map.enclosingEnd(cur); // '}' тела if
+  // '} else {' начинается РОВНО на закрывашке и продолжается за ней:
+  // старт == to допустим, хвосту выходить за to можно.
+  const occ = map.occurrences(normalize('} else {'), cur, closeIf);
+  assert.deepEqual(occ, [closeIf]);
+  // а текст, лежащий ЦЕЛИКОМ за to, не найдётся — старт ограничен to
+  assert.deepEqual(map.occurrences(normalize('b();'), cur, closeIf), []);
 });
 
 test('[] и <> — блоки, а бинарный < — нет', async () => {

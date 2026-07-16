@@ -4,7 +4,7 @@
 // экземпляре, а в папке языка остаётся только правило вложенности.
 import { walk } from './treesitter.ts';
 import type { Tree, Node } from './treesitter.ts';
-import type { BlockSpan } from './build-map.ts';
+import type { BlockSpan } from './source-map.ts';
 
 // Пролёт в ОРИГИНАЛЬНЫХ смещениях (startIndex/endIndex узлов), ДО переноса в канон.
 export interface OrigSpan {

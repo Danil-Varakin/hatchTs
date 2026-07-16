@@ -6,7 +6,6 @@ import {
   ParseError,
   MatchError,
   AmbiguityError,
-  AlreadyAppliedError,
 } from '../../src/core/errors.ts';
 
 test('ParseError → code 2, carries a string and (optional) a hint', () => {
@@ -36,11 +35,6 @@ test('AmbiguityError → code 4, carries match positions', () => {
   const e = new AmbiguityError('ambiguous', [10, 99]);
   assert.equal(e.exitCode, 4);
   assert.deepStrictEqual(e.positions, [10, 99]);
-});
-
-test('AlreadyAppliedError → code 5', () => {
-  const e = new AlreadyAppliedError('already applied');
-  assert.equal(e.exitCode, 5);
 });
 
 test('class names are saved (instanceof via prototype chain)', () => {

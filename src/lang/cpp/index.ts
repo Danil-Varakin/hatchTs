@@ -43,7 +43,9 @@ const PAIR = new Map<string, string>([
   ['<', '>'],
 ]);
 
-const cppBlockOf: BlockOf = (node: Node): OrigSpan | null => {
+// Скобочный ли узел (первый потомок — открывашка, последний — её пара). Вынесено,
+// потому что правило нужно ДВАЖДЫ: сам блок и проверка «а владелец — не блок ли».
+function bracketPair(node: Node): { first: Node; last: Node } | null {
   if (!node.isNamed) return null;
   const first = node.firstChild;
   if (first === null) return null;
@@ -51,7 +53,28 @@ const cppBlockOf: BlockOf = (node: Node): OrigSpan | null => {
   if (wantClose === undefined) return null;
   const last = node.lastChild;
   if (last === null || last.type !== wantClose) return null;
-  return { open: first.startIndex, close: last.startIndex };
+  return { first, last };
+}
+
+const cppBlockOf: BlockOf = (node: Node): OrigSpan | null => {
+  const pair = bracketPair(node);
+  if (pair === null) return null;
+  const { first, last } = pair;
+  // close — начало закрывашки (граница блока), closeEnd — её конец: текст между ними
+  // и есть токен `}`, которым synth закрывает блок в шаблоне (см. BlockSpan.closeEnd).
+  const span: OrigSpan = { open: first.startIndex, close: last.startIndex, closeEnd: last.endIndex };
+  // Заголовок блока — начало узла-ВЛАДЕЛЬЦА: у тела скобки-узел (compound_statement,
+  // field_declaration_list, argument_list…) вложен в конструкцию (function_definition,
+  // class_specifier, call_expression…), чей startIndex и есть начало сигнатуры/имени.
+  // Так якорь-родитель в synth = `void foo(int a)`, а не «строка с `{`» (важно для
+  // Allman-стиля и многострочных сигнатур).
+  // Владелец — САМ скобочный узел (голый вложенный блок `{ … }`, вложенный
+  // initializer_list) → заголовка НЕТ: «текст от `{` владельца до нашей `{`» — это не
+  // заголовок, а соседние операторы, привязка к ним нарушает структурность (§0.1).
+  // Нет родителя (корень) — заголовка тоже нет.
+  const parent = node.parent;
+  if (parent !== null && bracketPair(parent) === null) span.headerStart = parent.startIndex;
+  return span;
 };
 
 // ── Сборка адаптера: четыре правила → общий конструктор ─────────────────────

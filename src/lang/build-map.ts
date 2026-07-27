@@ -17,7 +17,8 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
   const assertNorm = (norm: string): void => {
     if (norm.length === 0) throw new Error('SourceMap: empty literal');
   };
-
+  const assertFromTo = (from: number, to: number): void => {
+    if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);}
   // «внутри блока» = зазор в (open, close]: курсор вошёл, ПРОЙДЯ '{', и остаётся до
   // '}'. Глубина меняется ПОСЛЕ прохода скобки — отсюда несимметричные '<' и '<='.
   const inside = (s: BlockSpan, pos: number): boolean => s.open < pos && pos <= s.close;
@@ -45,7 +46,7 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       assertNorm(norm);
       assertPos(from, 'from');
       assertPos(to, 'to');
-      if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);
+      assertFromTo(from, to);
       const out: number[] = [];
       for (let p = text.indexOf(norm, from); p !== -1 && p <= to; p = text.indexOf(norm, p + 1)) {
         if (boundaryOk(text, norm, p)) out.push(p);
@@ -76,11 +77,23 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     enclosing(pos: number): BlockSpan[] {
       assertPos(pos, 'pos');
       const out: BlockSpan[] = [];
-      for (const s of spans) if (inside(s, pos)) out.push({ open: s.open, close: s.close });
+      for (const s of spans) if (inside(s, pos)) out.push(cloneSpan(s));
       // ВНУТРЬ→НАРУЖУ: ближайший (самый глубокий) блок первым. Больший open =
       // позже открылся = глубже вложен. Порядок под synth (phase-4): он берёт
       // ближайший контекст вокруг правки и расширяет наружу до уникальности.
       out.sort((a, b) => b.open - a.open);
+      return out;
+    },
+
+    // Пролёты, ЦЕЛИКОМ внутри [from, to): open >= from, close < to. По open
+    // возрастающе. Для обобщения якорей в synth (нутро скобок → `...`).
+    blocksWithin(from: number, to: number): BlockSpan[] {
+      assertPos(from, 'from');
+      assertPos(to, 'to');
+      assertFromTo(from, to);
+      const out: BlockSpan[] = [];
+      for (const s of spans) if (s.open >= from && s.close < to) out.push(cloneSpan(s));
+      out.sort((a, b) => a.open - b.open);
       return out;
     },
 
@@ -89,7 +102,20 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       if (side !== 'left' && side !== 'right') throw new Error(`SourceMap: invalid side='${String(side)}'`);
       return canon.toOriginalPos(pos, side);
     },
+
+    toCanonPos(origPos: number): number {
+      return canon.toCanonPos(origPos); // canon сам валидирует диапазон оригинала
+    },
   };
+}
+
+// Копия пролёта с сохранением опциональных полей (exactOptionalPropertyTypes:
+// поле присваиваем только когда оно есть, undefined в объект не кладём).
+function cloneSpan(s: BlockSpan): BlockSpan {
+  const out: BlockSpan = { open: s.open, close: s.close };
+  if (s.headerStart !== undefined) out.headerStart = s.headerStart;
+  if (s.closeEnd !== undefined) out.closeEnd = s.closeEnd;
+  return out;
 }
 
 // Границы токенов: словесный край литерала не должен продолжаться словесным символом

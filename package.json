@@ -6,13 +6,16 @@
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json && tsc -p test/tsconfig.json",
     "check": "npm run typecheck && npm test",
-    "apply": "node --experimental-strip-types src/cli/apply.ts"
+    "apply": "node --experimental-strip-types src/cli/apply.ts",
+    "generate": "node --experimental-strip-types src/cli/generate.ts"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
     "typescript": "^6.0.3"
   },
   "dependencies": {
+    "diff": "^8.0.4",
+    "simple-git": "^3.36.0",
     "web-tree-sitter": "^0.26.10"
   }
 }

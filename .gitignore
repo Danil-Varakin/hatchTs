@@ -25,3 +25,7 @@ yarn-error.log*
 
 # редакторы
 .idea/
+.vscode/
+
+# мусорные выводы ручных прогонов CLI (apply --out) — в git не хранятся
+/out.cpp

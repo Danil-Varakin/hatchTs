@@ -153,6 +153,32 @@ test('соседние блоки: enclosingEnd различает своих р
   assert.ok(map.matchesAt('}', map.enclosingEnd(betweenFns))); // '}' самого namespace
 });
 
+// ── заголовок узла (headerStart) и обобщение скобок (blocksWithin) ─────────────
+
+test('headerStart: пролёт тела несёт начало ЗАГОЛОВКА узла, не строку с "{"', async () => {
+  await cppAdapter.init();
+  // Allman-стиль: '{' на своей строке — «строка со скобкой» бесполезна как якорь,
+  // а headerStart указывает на начало сигнатуры.
+  const map = cppAdapter.buildMap('void foo(int a)\n{\n  g();\n}\n');
+  const s = map.enclosing(cursorAfter(map, 'g();'))[0]!; // тело foo
+  assert.ok(s.headerStart !== undefined);
+  assert.ok(map.matchesAt('void', s.headerStart!)); // заголовок начинается с 'void', не с '{'
+  assert.ok(s.headerStart! < s.open); // и лежит ЛЕВЕЕ открывающей скобки
+});
+
+test('blocksWithin: отдаёт скобочные пролёты ЦЕЛИКОМ внутри диапазона (для обобщения)', async () => {
+  await cppAdapter.init();
+  const map = cppAdapter.buildMap('void foo(int a, int b) {\n  g();\n}\n');
+  const s = map.enclosing(cursorAfter(map, 'g();'))[0]!;
+  const inHeader = map.blocksWithin(s.headerStart!, s.open); // скобки заголовка foo(...)
+  assert.equal(inHeader.length, 1); // ровно параметры (int a, int b)
+  assert.ok(map.matchesAt('(', inHeader[0]!.open));
+  assert.ok(map.matchesAt(')', inHeader[0]!.close));
+  // тело блока (его '{') НЕ попадает — close вне [from, to)
+  assert.deepEqual(map.blocksWithin(0, 1), []); // пустой диапазон — пусто
+  assert.throws(() => map.blocksWithin(2, 1)); // from > to — бросок
+});
+
 // ── границы токенов юникод-осознанные ─────────────────────────────────────────
 
 test('границы токенов работают для не-ASCII (кириллица)', () => {

@@ -34,7 +34,7 @@ export interface MatchPattern {
 export interface Hunk {
   match: MatchPattern;
   patch: string;
-  mdSpan: [number, number];
+  mdSpan?: [number, number]; // происхождение из .md (parser); синтезу не нужно
 }
 
 export interface HatchFile {

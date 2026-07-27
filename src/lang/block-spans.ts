@@ -10,6 +10,8 @@ import type { BlockSpan } from './source-map.ts';
 export interface OrigSpan {
   open: number; // оригинальное смещение начала блока (у C++ — '{', у Python — тело)
   close: number; // оригинальное смещение конца блока (у C++ — '}', у Python — конец тела)
+  headerStart?: number; // начало заголовка конструкции (у C++ — старт узла-владельца); см. BlockSpan
+  closeEnd?: number; // конец закрывающего ТОКЕНА (у C++ — за '}'); нет токена → нет поля
 }
 
 // Правило языка: пролёт блока для узла ИЛИ null, если узел блоком не является.
@@ -27,7 +29,10 @@ export function collectBlockSpans(
   for (const node of walk(tree)) {
     const span = blockOf(node);
     if (span === null) continue;
-    spans.push({ open: toCanonPos(span.open), close: toCanonPos(span.close) });
+    const out: BlockSpan = { open: toCanonPos(span.open), close: toCanonPos(span.close) };
+    if (span.headerStart !== undefined) out.headerStart = toCanonPos(span.headerStart);
+    if (span.closeEnd !== undefined) out.closeEnd = toCanonPos(span.closeEnd);
+    spans.push(out);
   }
   return spans;
 }

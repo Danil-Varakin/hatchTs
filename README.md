@@ -16,7 +16,7 @@ build).
 Patching a fast-moving upstream codebase with classic `.patch` files breaks
 constantly: a few inserted lines upstream and every hunk's line numbers drift.
 Hatch describes a change declaratively — "insert this *after that include*,
-*before the namespace*" — using six operators. The position is resolved against
+*inside that function*" — using three operators. The position is resolved against
 the parsed structure of the file, so reformatting and unrelated edits upstream
 don't invalidate the patch.
 
@@ -26,114 +26,171 @@ Two commands:
 - **`generate`** — diff two versions of a file and emit the `.md` instructions.
 
 `generate` then `apply` round-trips: applying a generated patch to the old file
-reproduces the new file.
+reproduces the new file. `generate` guarantees this by construction — it applies
+each candidate hunk with the real patcher and keeps only what reproduces the
+change.
 
-## The language: six operators
+## The language: three operators
 
 A patch is Markdown containing `match`/`patch` block pairs. The `match` block is
 written in the target language with operators interleaved:
 
 | Operator | Meaning |
 |----------|---------|
-| `...`    | skip a balanced span up to the next anchor (tries all occurrences, with backtracking) |
+| `...`    | skip ahead to the next anchor (all occurrences are tried, with backtracking) |
 | `>>>`    | insertion point |
-| `<<<`    | end of replacement range (from `>>>`) |
-| `^..`    | skip to the **first** occurrence of the anchor |
-| `..^`    | skip to the **last** occurrence |
-| `^n..`   | skip to the **n-th** occurrence (1-based) |
+| `<<<`    | end of the replacement range (which starts at `>>>`) |
+
+Everything that isn't an operator is a **literal anchor** — a piece of the target
+file that must be there. A pattern describes the file **as a whole**: no `...`
+before the first literal means "starts at the very beginning of the file", and no
+`...` after the last one means "ends at end of file".
+
+Whitespace between literals and operators is insignificant for C-like languages,
+so the anchors can be copied out of the source and reindented freely.
 
 Operators are recognized only as standalone *words* (whitespace or line edge on
-both sides), so `template <typename... Args>` stays literal. A genuine `...` in
-code is escaped as `\...`.
+both sides), so `template <typename... Args>` stays literal. A genuine standalone
+`...` in code is escaped as `\...`.
 
-## Example
+## Examples
 
-Insert `#include "base/feature_override.h"` right after an existing include,
-before the standard-library includes (`content/common/features.cc`):
+Insert a call at the end of a function body:
 
 ````markdown
-### match
+# match
 ```cpp
 ...
-// found in the LICENSE file.
- #include "content/common/features.h"
-
- >>>
-#include "base/feature_list.h"
-
- ...
+void RegisterFeatures(FeatureList* list) {
+  list->Add(kFastPath);
+>>>
+}
+...
 ```
-### patch
+# patch
 ```cpp
-#include "base/feature_override.h"
-#include "build/build_config.h"
+
+  list->Add(kNewPath);
 ```
 ````
 
-Read it as: *skip anything, find the LICENSE line, then the `features.h` include
-immediately after it, **insert here**, the `feature_list.h` include must follow,
-then anything to end of file.* More worked examples (nested namespaces, inserting
-a method after another method's closing brace) live in the test fixtures.
+Read it as: *skip anything, find that function header, then that call, **insert
+here**, and the very next thing must be the closing `}` — then anything to end of
+file.* The `}` is not decoration: it is what pins the insertion **inside** this
+function (see the third fixed rule below).
+
+Replace a range — everything between `>>>` and `<<<` is old code that must match
+and is thrown away:
+
+````markdown
+# match
+```cpp
+...
+namespace content {
+...
+>>>
+void RegisterFeatures( ... ) {
+<<<
+...
+```
+# patch
+```cpp
+// Registers every content feature.
+void RegisterFeatures( FeatureList* list ) {
+```
+````
+
+Note the `...` **inside** the anchor: the balanced innards of a bracket pair can
+be skipped, so the anchor survives edits to the argument list. `generate` writes
+its anchors this way by default.
 
 ## Usage
 
 ```bash
 # apply
-hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
+npm run apply -- --match changes.md --in src/main.cpp --out src/main.cpp
 
 # generate
-hatch generate --in new.cpp --in-old old.cpp --out changes.md
-# ...or compare against a git branch
-hatch generate --in src/main.cpp --branch master --out changes.md
+npm run generate -- --in new.cpp --in-old old.cpp --out changes.md
+
+# ...or take the old version from a git branch
+npm run generate -- --in src/main.cpp --branch master --out changes.md
+```
+
+Both commands are plain `.ts` entry points, so they can also be run directly:
+
+```bash
+node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/main.cpp --out src/main.cpp
 ```
 
 ### `apply` options
 ```
---match <file>     path to the .md with match/patch blocks
---patch <file>     separate patch file (optional)
---in <file>        input source file
---out <file>       output file
---language <lang>  cpp | python (auto-detected from extension if omitted)
---dry-run          show the edits, write nothing
---verify           check applicability only; exit code for CI
+--match, -m <file.md>   patch instructions (match/patch hunks)   [required]
+--in,    -i <file>      source file to patch                     [required]
+--out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
+--language, -l <lang>   force language (else: fence in .md, else file extension)
+--dry-run               show planned edits, write nothing
+--verify                exit code only (0 = applies cleanly), write nothing
+--help,  -h             this help
 ```
 
 ### `generate` options
 ```
---in <file>        the new version of the file
---in-old <file>    the old version
---branch <branch>  git branch to compare against (default: master)
---language <lang>  cpp | python (auto-detected if omitted)
--a, --agreement    confirm each match interactively
+--in,     -i <file>     new version of the file                    [required]
+--in-old     <file>     old version (from a file)      [one of --in-old/--branch]
+--branch, -b <branch>   old version = <branch>:<--in path> (git)
+--out,    -o <file>     write .md here (default: stdout)
+--language,-l <lang>    force language (else: extension of --in)
+--agreement,-a          confirm each hunk before writing
+--exact,  -e            reproduce the new file byte for byte; without it every
+                        line only has to match after normalization (indentation
+                        and inner spacing are free, the set of lines is not)
+--debug,  -v            trace synthesis to stderr: every segment, each probe
+                        attempt (incl. non-unique) and the chosen hunk
+--help,   -h            this help
 ```
 
+When a patch won't apply, `--debug` on `generate` is the fastest way to see how
+the anchors were chosen; `--dry-run` on `apply` shows the exact edits without
+touching the file.
+
 ### Exit codes (for CI)
-`0` success · `2` parse error · `3` no match (reports the deepest failure point)
-· `4` ambiguous match (reports the competing positions) · `5` already applied
-(idempotency) · `1` unexpected.
+`0` success · `2` parse error · `3` no match (reports the deepest point the
+pattern reached) · `4` ambiguous match (reports the competing positions) · `1`
+unexpected.
+
+Ambiguity is an **error**, never a silent pick: if a pattern fits in two places
+with different results, you get exit `4` and the positions, and the fix is more
+context.
 
 ## Three rules fixed by decision (not derivable from syntax)
 
 These are intentional and stable; patches rely on them:
 
-1. **`^n..` is 1-based.** `^1..` ≡ `^..`.
-2. **`<<<` replaces *inclusively*.** Literals between `>>>` and `<<<` are "old
+1. **`<<<` replaces *inclusively*.** Literals between `>>>` and `<<<` are "old
    code": they must match but are not emitted — the patch body takes their place.
    Literals *outside* the markers are context and are preserved.
-3. **Region closing differs by language.** In C++ a region is closed by a literal
-   `}`. In Python there is no closing token — the end of a region is expressed by
-   an anchor literal at an outer indent, or implicitly by `...` reaching a
-   shallower-indented line.
+2. **A pattern describes the whole file.** `...` is the only way to skip. A
+   missing leading `...` means the first anchor sits at offset 0; a missing
+   trailing `...` means the last anchor ends at EOF.
+3. **An unclosed `{` orders, it does not lock.** Matching an opening brace only
+   means "the next anchor comes after it" — the search still runs to end of file,
+   and leaving the block is legal. To keep an edit *inside* a construct you must
+   write that construct's closing token in the pattern. This is why `generate`
+   emits both the header of an enclosing function and its `}`.
 
-## Status
+## Language support
 
-This is an in-progress port. Done and tested: the language-neutral parsing core
-(`src/core/` — AST, errors, single-pass parser, printer) and the C++ literal
-canonicalizer (`src/lang/cpp/normalize.ts`), all green under a strict tsconfig.
-In progress: the C++ `SourceMap` (tree-sitter-based, plus the shared canonical
-mapping), the matcher/patcher, the `generate` pipeline, and the Python adapter.
-See [docs/structure.md](./docs/structure.md) for the per-module status and the
-[docs/phase-*.md](./docs) plan.
+C++ / C-like today: `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`, `.inc`, and the fence /
+`--language` names `cpp`, `c++`, `cc`, `cxx`, `c`, `h`, `hpp`. Structure comes
+from tree-sitter, so preprocessor branches, raw strings and macros don't confuse
+the brace pairing.
+
+A language is one folder under `src/lang/` implementing two things — how nesting
+is balanced (`buildMap`) and how literal text is canonicalized (`normalize`).
+Nothing in `src/core/` changes. A Python canonicalizer
+(`src/lang/python/normalize.ts`) is in the tree; the Python structure provider is
+not wired into the adapter registry yet.
 
 ## Build & run
 
@@ -141,12 +198,12 @@ Sources are `.ts` and run directly on **Node 22+** via type-stripping — no bui
 step. TypeScript is used only to type-check.
 
 ```bash
-node --experimental-strip-types src/cli/index.ts apply --match ... --in ...
-npx tsc -p tsconfig.json   # type-check only (noEmit)
+npm test          # unit + round-trip suites
+npm run typecheck # tsc --noEmit over src/ and test/
+npm run check     # both
 ```
 
 Structure analysis uses **tree-sitter** via `web-tree-sitter` (WASM grammars —
 cross-platform, no native build); these load once at startup. See
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the development workflow and the
 reasoning behind the strict tsconfig.
-

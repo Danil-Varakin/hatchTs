@@ -29,3 +29,6 @@ yarn-error.log*
 
 # мусорные выводы ручных прогонов CLI (apply --out) — в git не хранятся
 /out.cpp
+
+# корпус ручных прогонов на chromium/brave (данные качаются, в git не хранятся)
+/corpus/

@@ -9,14 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 import { applyAll } from '../../src/cli/apply.ts';
+import { hatchMd } from '../helpers.ts';
 
 // ── applyAll: чистое ядро (без файлов) ────────────────────────────────────────
 
 test('applyAll: один ханк-вставка меняет текст', async () => {
   await cppAdapter.init();
-  const file = parseHatchFile(
-    ['# match', '```cpp', '... a(); >>> ...', '```', '# patch', '```cpp', 'X();', '```'].join('\n'),
-  );
+  const file = parseHatchFile(hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
   const { source, edits } = applyAll('void f(){ a(); b(); }', file, cppAdapter);
   assert.equal(edits.length, 1);
   assert.ok(source.includes('a();X(); b();'), source);
@@ -24,11 +23,12 @@ test('applyAll: один ханк-вставка меняет текст', async
 
 test('applyAll: второй ханк цепляется за вставку первого (последовательность)', async () => {
   await cppAdapter.init();
-  const md = [
-    '# match', '```cpp', '... namespace f { >>> ...', '```', '# patch', '```cpp', 'int a;', '```',
-    '# match', '```cpp', '... int a; >>> ...', '```', '# patch', '```cpp', 'int b;', '```',
-  ].join('\n');
-  const file = parseHatchFile(md);
+  const file = parseHatchFile(
+    hatchMd([
+      { match: '... namespace f { >>> ...', patch: 'int a;' },
+      { match: '... int a; >>> ...', patch: 'int b;' },
+    ]),
+  );
   const { source, edits } = applyAll('namespace f {\n}\n', file, cppAdapter);
   assert.equal(edits.length, 2); // оба применились
   // второй ханк нашёл 'int a;', вставленный первым, — против исходника его там не было
@@ -60,7 +60,7 @@ test('CLI apply: успех (exit 0) и файл записан', () => {
     const md = join(dir, 'p.md');
     const out = join(dir, 'out.cc');
     writeFileSync(src, 'void f(){ a(); b(); }');
-    writeFileSync(md, ['# match', '```cpp', '... a(); >>> ...', '```', '# patch', '```cpp', 'X();', '```'].join('\n'));
+    writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
 
     const r = runCli(['--match', md, '--in', src, '--out', out]);
     assert.equal(r.status, 0, r.stderr);
@@ -76,7 +76,7 @@ test('CLI apply --verify: патч ложится чисто → exit 0, фай�
     const src = join(dir, 'src.cc');
     const md = join(dir, 'p.md');
     writeFileSync(src, 'void f(){ a(); b(); }');
-    writeFileSync(md, ['# match', '```cpp', '... a(); >>> ...', '```', '# patch', '```cpp', 'X();', '```'].join('\n'));
+    writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
 
     const r = runCli(['--match', md, '--in', src, '--verify']);
     assert.equal(r.status, 0, r.stderr);
@@ -92,7 +92,7 @@ test('CLI apply: нет совпадения → exit 3 (MatchError)', () => {
     const src = join(dir, 'src.cc');
     const md = join(dir, 'p.md');
     writeFileSync(src, 'void f(){ a(); }');
-    writeFileSync(md, ['# match', '```cpp', '... nope(); >>> ...', '```', '# patch', '```cpp', 'X();', '```'].join('\n'));
+    writeFileSync(md, hatchMd([{ match: '... nope(); >>> ...', patch: 'X();' }]));
 
     const r = runCli(['--match', md, '--in', src, '--out', join(dir, 'o.cc')]);
     assert.equal(r.status, 3, r.stderr);

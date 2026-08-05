@@ -18,7 +18,7 @@ import { createInterface } from 'node:readline';
 import { synthesize } from '../generate/synth.ts';
 import type { Tracer, SynthEvent } from '../generate/synth.ts';
 import { printPattern } from '../core/hatch-printer.ts';
-import { printHatchFile } from '../generate/printer.ts';
+import { printHatchFile, trailingSpaceWarnings } from '../generate/printer.ts';
 import { reviewHunks } from '../generate/agreement.ts';
 import type { Confirm } from '../generate/agreement.ts';
 import { fileFromBranch } from '../infra/git.ts';
@@ -80,8 +80,8 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Метка языка для ограды ```lang: --language, иначе расширение --in без точки.
-function fenceLang(opts: Options): string | undefined {
+// Метка языка для заголовка `# match <lang>`: --language, иначе расширение --in без точки.
+function langLabel(opts: Options): string | undefined {
   if (opts.language !== undefined) return opts.language;
   const dot = opts.in!.lastIndexOf('.');
   return dot === -1 ? undefined : opts.in!.slice(dot + 1);
@@ -156,7 +156,9 @@ async function run(opts: Options): Promise<void> {
     }
   }
 
-  const md = printHatchFile(hunks, fenceLang(opts));
+  for (const w of trailingSpaceWarnings(hunks)) console.error(`warning: ${w}`);
+
+  const md = printHatchFile(hunks, langLabel(opts));
   if (opts.out !== undefined) {
     writeFileAtomic(opts.out, md);
     console.error(`generated ${hunks.length} hunk(s) → ${opts.out}`);

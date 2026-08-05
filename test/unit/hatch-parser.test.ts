@@ -11,10 +11,18 @@ function lit(raw: string): FlatStep['anchor'] {
 }
 const EOF: FlatStep['anchor'] = { kind: 'eof' };
 
-function expectParseError(md: string, msgPart?: string): ParseError {
+/**
+ * Файл .md из строк как есть. Тесты САМОГО формата пишутся так, а не через
+ * helpers-сборщик: жёлоб и `# end` должны быть видны в тексте теста глазами.
+ */
+function md(...lines: string[]): string {
+  return lines.join('\n') + '\n';
+}
+
+function expectParseError(text: string, msgPart?: string): ParseError {
   let thrown: unknown;
   try {
-    parseHatchFile(md);
+    parseHatchFile(text);
   } catch (e) {
     thrown = e;
   }
@@ -104,10 +112,11 @@ test('gluing: adjacent literals → ONE multiline literal', () => {
 });
 
 test('gluing: mdSpan covers [First line, Last line]', () => {
+  // '# match cpp' — строка 1, тело начинается со строки 2
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
   const a = m.steps[0]!.anchor;
   assert.equal(a.target, 'literal');
-  assert.deepStrictEqual(a.target === 'literal' ? a.literal.mdSpan : null, [3, 5]);
+  assert.deepStrictEqual(a.target === 'literal' ? a.literal.mdSpan : null, [2, 4]);
 });
 
 test('gluing does NOT occur via the operator (... breaks the adjacency)', () => {
@@ -144,19 +153,25 @@ test('standalone "\\\\..." loses exactly ONE backslash (escape of the escape)', 
 });
 
 
-test('the language is determined by the info string of the first fence', () => {
+test('the language is determined by the "# match <lang>" heading', () => {
   const file = parseHatchFile(wrapMatch('foo >>>', 'cpp'));
   assert.equal(file.language, 'cpp');
 });
 
-test('the same language in several fences is fine', () => {
-  const md = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'cpp')].join('\n');
-  assert.equal(parseHatchFile(md).language, 'cpp');
+test('a heading without a language is fine', () => {
+  const file = parseHatchFile(md('# match', '    foo >>>', '# end', '# patch', '    X', '# end'));
+  assert.equal(file.language, undefined);
+  assert.equal(file.hunks.length, 1);
 });
 
-test('FAIL: mixed fence languages in one file', () => {
-  const md = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'python')].join('\n');
-  expectParseError(md, 'language');
+test('the same language in several headings is fine', () => {
+  const text = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'cpp')].join('\n');
+  assert.equal(parseHatchFile(text).language, 'cpp');
+});
+
+test('FAIL: mixed languages in one file', () => {
+  const text = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'python')].join('\n');
+  expectParseError(text, 'language');
 });
 
 
@@ -180,19 +195,111 @@ test('FAIL: match block with no insertion point >>>', () => {
   expectParseError(wrapMatch('foo\nbar'), 'no insertion point');
 });
 
-test('FAIL: match heading not followed by a ``` block', () => {
-  expectParseError('# match\nnot a fence line\n', 'block is expected');
+test('FAIL: a body line without the four-space gutter', () => {
+  expectParseError(md('# match', 'not indented', '# end'), 'must start with four spaces');
 });
 
 test('FAIL: match block not followed by a patch heading', () => {
-  const md = '# match\n```cpp\nfoo >>>\n```\ngarbage instead of patch\n';
-  expectParseError(md, 'patch header is expected');
+  expectParseError(
+    md('# match', '    foo >>>', '# end', 'garbage instead of patch'),
+    'patch header is expected',
+  );
 });
 
-test('FAIL: file truncated mid-block', () => {
-  expectParseError('# match\n```cpp\nfoo >>>\n```\n', 'cut off');
+test('FAIL: file truncated mid-block ("# end" is missing)', () => {
+  expectParseError(md('# match', '    foo >>>'), 'not closed');
+});
+
+test('FAIL: a heading where "# end" was expected', () => {
+  expectParseError(md('# match', '    foo >>>', '# patch', '    X', '# end'), 'not closed');
 });
 
 test('FAIL: file has no match/patch pairs at all', () => {
   expectParseError('just text, no hatch here\n', 'no match/patch pairs');
+});
+
+test('FAIL: text between hunks', () => {
+  expectParseError(
+    wrapMatch('foo >>>') + '\nstray commentary\n' + wrapMatch('bar >>>'),
+    'text between hunks',
+  );
+});
+
+test('FAIL: the old fenced format is reported by name, with the fix in the hint', () => {
+  const err = expectParseError(
+    md('# match', '```cpp', 'foo >>>', '```', '# patch', '```cpp', 'X', '```'),
+    'fenced format is no longer supported',
+  );
+  assert.match(err.hint ?? '', /four spaces/);
+  assert.match(err.hint ?? '', /# end/);
+});
+
+
+// ── жёлоб: колонка 0 за структурой, нагрузка до неё не дотягивается ───────────
+
+test('a fence inside the patch body survives verbatim', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end',
+       '# patch', '    ```cpp', '    int sample = 1;', '    ```', '# end'),
+  );
+  assert.equal(file.hunks[0]!.patch, '```cpp\nint sample = 1;\n```');
+});
+
+test('a bare fence inside the match block is an ordinary literal', () => {
+  const m = firstMatch(md('# match cpp', '    ```', '    >>>', '# end',
+                          '# patch', '    X', '# end'));
+  assert.deepStrictEqual(strip(m)[0]!.anchor, { kind: 'literal', raw: '```' });
+});
+
+test('"# patch" and "# end" inside the payload are payload, not structure', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end',
+       '# patch', '    # patch', '    # end', '# end'),
+  );
+  assert.equal(file.hunks.length, 1);
+  assert.equal(file.hunks[0]!.patch, '# patch\n# end');
+});
+
+test('blank lines in the patch body are kept, trailing ones included', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end',
+       '# patch', '    a();', '', '    b();', '', '# end'),
+  );
+  assert.equal(file.hunks[0]!.patch, 'a();\n\nb();\n');
+});
+
+test('a patch body of blank lines only', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end', '# patch', '', '', '# end'),
+  );
+  assert.equal(file.hunks[0]!.patch, '\n');
+});
+
+test('an empty patch body is a deletion', () => {
+  const file = parseHatchFile(md('# match cpp', '    foo >>>', '# end', '# patch', '# end'));
+  assert.equal(file.hunks[0]!.patch, '');
+});
+
+test('a payload line of four spaces is an empty payload line, not a blank', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end', '# patch', '    a();', '    ', '# end'),
+  );
+  assert.equal(file.hunks[0]!.patch, 'a();\n');
+});
+
+test('the gutter is stripped exactly: deeper indentation is preserved', () => {
+  const file = parseHatchFile(
+    md('# match cpp', '    foo >>>', '# end', '# patch', '        deep();', '# end'),
+  );
+  assert.equal(file.hunks[0]!.patch, '    deep();');
+});
+
+test('prose before the first "# match" is ignored', () => {
+  const prose = 'Инструкции для foo.cc.\n\nЛюбой текст, даже ``` и # end.\n\n';
+  assert.equal(parseHatchFile(prose + wrapMatch('foo >>>')).hunks.length, 1);
+});
+
+test('mdSpan of a hunk spans the "# match" heading and the closing "# end"', () => {
+  const file = parseHatchFile(md('# match cpp', '    foo >>>', '# end', '# patch', '    X', '# end'));
+  assert.deepStrictEqual(file.hunks[0]!.mdSpan, [1, 6]);
 });

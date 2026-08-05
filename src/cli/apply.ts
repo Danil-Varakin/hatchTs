@@ -68,7 +68,8 @@ const USAGE = `hatch apply — apply .md instructions to a source file
   --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
   --in,    -i <file>      source file to patch                     [required]
   --out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
-  --language, -l <lang>   force language (else: fence in .md, else file extension)
+  --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
+                          the file extension)
   --dry-run               show planned edits, write nothing
   --verify                exit code only (0 = applies cleanly), write nothing
   --help,  -h             this help`;
@@ -97,10 +98,10 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Язык: --language > fence в .md > расширение исходника.
-function resolveAdapter(opts: Options, fenceLanguage: string | undefined): LanguageAdapter {
+// Язык: --language > заголовок `# match <lang>` в .md > расширение исходника.
+function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
   if (opts.language !== undefined) return adapterForLanguage(opts.language);
-  if (fenceLanguage !== undefined) return adapterForLanguage(fenceLanguage);
+  if (mdLanguage !== undefined) return adapterForLanguage(mdLanguage);
   return adapterForFile(opts.in!);
 }
 

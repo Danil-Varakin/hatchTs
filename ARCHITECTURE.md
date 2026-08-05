@@ -26,6 +26,33 @@ cleanly — both branches of an `#if/#else` land in the tree with correct nestin
 so there is no "undefined-depth zone" for brace imbalance. The residual risk is
 `ERROR` nodes on macro-heavy code.
 
+## The file format has no delimiter code can contain
+
+A patch file is `# match <lang>` … `# end` / `# patch` … `# end`, and **every
+payload line carries a four-space gutter** that is stripped on read. The headings
+are recognized in column 0 only, so a payload line can never reach column 0: a
+` ``` ` fence, a `# patch` heading or a `# end` inside a raw string is text.
+
+This is a correction, not an original design. Until 2026-08-04 blocks were
+delimited by Markdown fences — and chromium raw strings contain fences (embedded
+documentation, markdown in test data). A bare fence inside a patch body closed the
+block early, the file parsed and applied without complaint, and one line silently
+vanished from the output. Lengthening the fence when the payload contains one was
+rejected: it repairs only what *our* printer emits, while a hand-written `.md` —
+the primary input — keeps the trap.
+
+The rule that replaced it is checkable in one sentence, which is the point. Its
+consequences are load-bearing elsewhere: a payload line that forgets the gutter is
+a parse error rather than a silent loss; `# end` bounds the block, so blank lines
+inside it (trailing ones included) are payload and the patch body round-trips byte
+for byte; and the gutter is stripped by exactly four characters, so relative
+indentation survives — the precondition for Python, where indent is syntax.
+
+One limit is inherent and documented in the README: a payload line made of
+*significant trailing whitespace* is indistinguishable from junk to a
+whitespace fixer. Printing and parsing preserve it; `generate` warns when it emits
+such a line.
+
 ## The core ↔ lang boundary
 
 Complexity is split along two physical axes that meet at one narrow contract:
@@ -283,6 +310,9 @@ and the final check to byte-for-byte.
 
 - **Parser round-trip:** `parse(print(ast))` ≡ `ast` structurally, escaping
   included (the printer adds exactly the backslash the parser strips).
+- **Payload round-trip:** `parse(print(hunk)).patch` == `hunk.patch` byte for
+  byte — fences, Hatch headings and blank lines included. The patch body is
+  verbatim output, so corrupting it is invisible to every test further up.
 - **System round-trip:** `apply(generate(old,new), old) == new`, verified inside
   `generate` itself and again in the test suite.
 - **Map in isolation:** spans correct on tricky C++ inputs.

@@ -41,12 +41,13 @@ test('printer round-trip: литерал с оператором ... экран�
   await pipelineRoundtrip('int a = f(x, y);\nint z = 0;\n', 'int a = f(x, ...);\nint z = 0;\n');
 });
 
-test('printHatchFile: структура заголовков/оград читается парсером', async () => {
+test('printHatchFile: структура заголовков читается парсером', async () => {
   await cppAdapter.init();
   const md = printHatchFile(synthesize('int a = 1;\n', 'int a = 2;\n', cppAdapter), 'cpp');
-  assert.match(md, /# match/);
-  assert.match(md, /```cpp/);
-  assert.match(md, /# patch/);
+  assert.match(md, /^# match cpp$/m);
+  assert.match(md, /^# patch$/m);
+  assert.match(md, /^# end$/m);
+  assert.match(md, /^ {4}int a = 2;$/m);
   const file = parseHatchFile(md);
   assert.equal(file.hunks.length, 1);
   assert.equal(file.language, 'cpp');

@@ -2,13 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { cppAdapter, normalize } from '../../src/lang/cpp/index.ts';
-import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { matchPattern } from '../../src/core/matcher.ts';
 import { planEdit, applyEdit, patchHunk } from '../../src/core/patcher.ts';
+import { firstMatch, wrapMatch } from '../helpers.ts';
 
 function pattern(...lines: string[]) {
-  const md = ['# match', '```cpp', ...lines, '```', '# patch', '```cpp', 'X', '```'].join('\n');
-  return parseHatchFile(md).hunks[0]!.match;
+  return firstMatch(wrapMatch(lines.join('\n')));
 }
 
 test('planEdit: чистая вставка — start == end', async () => {

@@ -2,18 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { cppAdapter, normalize } from '../../src/lang/cpp/index.ts';
-import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { matchPattern } from '../../src/core/matcher.ts';
 import type { MatchMarks } from '../../src/core/matcher.ts';
 import type { MatchPattern } from '../../src/core/ast.ts';
 import { MatchError, AmbiguityError } from '../../src/core/errors.ts';
+import { firstMatch, wrapMatch } from '../helpers.ts';
 
 // ── помощники ─────────────────────────────────────────────────────────────────
 
 // Собрать MatchPattern из тела match-блока (обернув в минимальный ханк).
 function pattern(...matchLines: string[]): MatchPattern {
-  const md = ['# match', '```cpp', ...matchLines, '```', '# patch', '```cpp', 'X', '```'].join('\n');
-  return parseHatchFile(md).hunks[0]!.match;
+  return firstMatch(wrapMatch(matchLines.join('\n')));
 }
 
 // Применить найденные метки к исходнику (мини-патчер: вставка или замена диапазона).

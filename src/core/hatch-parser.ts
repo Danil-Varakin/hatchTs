@@ -170,111 +170,133 @@ function feedOperator(op: string, mdLine: number, builder: PatternBuilder): void
 }
 
 
-const MATCH_HEADING = /^#{1,6}\s*match:?\s*$/i;
-const PATCH_HEADING = /^#{1,6}\s*patch:?\s*$/i;
-const FENCE_OPEN = /^```(\S*)\s*$/;
-const FENCE_CLOSE = /^```\s*$/;
+const MATCH_HEADING = /^#{1,6}[ \t]*match:?(?:[ \t]+(\S+))?[ \t]*$/i;
+const PATCH_HEADING = /^#{1,6}[ \t]*patch:?[ \t]*$/i;
+const END_HEADING = /^#{1,6}[ \t]*end[ \t]*$/i;
 
-type ScanState =
-  | 'scan'
-  | 'wantMatchFence'
-  | 'inMatch'
-  | 'wantPatchHeading'
-  | 'wantPatchFence'
-  | 'inPatch';
+// Жёлоб. Колонка 0 отдана структуре целиком: КАЖДАЯ строка нагрузки несёт эти четыре
+// пробела, поэтому ни ограда ```, ни строка '# patch' внутри raw string разметкой быть
+// не могут — им негде оказаться в колонке 0. Разделителя, который можно случайно
+// написать в коде, в формате нет вовсе.
+const GUTTER = '    ';
+
+interface Block {
+  body: string[]; // строки нагрузки, жёлоб снят
+  firstLine: number; // номер строки первой строки тела (1-based)
+  endLine: number; // номер строки '# end'
+  next: number; // индекс следующей строки файла (0-based)
+}
+
+// Тело идёт до '# end'. Внутри допустимы только строки с жёлобом и пустые; пустая —
+// это пустая строка нагрузки (границу держит '# end', а не отступ, поэтому срезание
+// хвостовых пробелов редактором ничего не теряет).
+function readBlock(lines: string[], start: number, kind: 'match' | 'patch', headLine: number): Block {
+  const body: string[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (END_HEADING.test(line)) {
+      return { body, firstLine: start + 1, endLine: i + 1, next: i + 1 };
+    }
+    if (line.startsWith(GUTTER)) {
+      body.push(line.slice(GUTTER.length));
+    } else if (line.trim() === '') {
+      body.push('');
+    } else {
+      throw bodyLineError(line, i + 1, kind);
+    }
+  }
+  throw new ParseError(
+    `the ${kind} block is not closed`,
+    headLine,
+    "every block ends with a '# end' line in column 0",
+  );
+}
+
+function bodyLineError(line: string, mdLine: number, kind: 'match' | 'patch'): ParseError {
+  if (line.startsWith('```')) {
+    return new ParseError(
+      'the fenced format is no longer supported',
+      mdLine,
+      "drop the ``` fences, indent every payload line with four spaces and close each " +
+        "block with '# end'; the language goes into the heading: '# match cpp'",
+    );
+  }
+  if (MATCH_HEADING.test(line) || PATCH_HEADING.test(line)) {
+    return new ParseError(
+      `the ${kind} block is not closed: '${line.trim()}' found where '# end' was expected`,
+      mdLine,
+    );
+  }
+  const shown = line.trim();
+  return new ParseError(
+    `a line of the ${kind} block must start with four spaces`,
+    mdLine,
+    `indent '${shown.length > 40 ? shown.slice(0, 40) + '…' : shown}', or close the block with '# end'`,
+  );
+}
 
 export function parseHatchFile(md: string): HatchFile {
   const lines = md.split(/\r?\n/);
   const hunks: Hunk[] = [];
   let language: string | undefined;
 
-  let state: ScanState = 'scan';
-  let builder: PatternBuilder | null = null;
-  let patchLines: string[] = [];
-  let hunkStart = 0;
+  // Всё до первого '# match' — свободная проза, там живёт описание файла.
+  let i = 0;
+  while (i < lines.length && !MATCH_HEADING.test(lines[i]!)) i++;
 
-  for (const [i, line] of lines.entries()) {
-    const lineNo = i + 1;
-
-    switch (state) {
-      case 'scan':
-        if (MATCH_HEADING.test(line)) {
-          state = 'wantMatchFence';
-          hunkStart = lineNo;
-        }
-        break;
-
-      case 'wantMatchFence': {
-        const m = line.match(FENCE_OPEN);
-        if (m !== null) {
-          const lang = m[1];
-          if (lang) {
-            if (language === undefined) language = lang;
-            else if (language !== lang) {
-              throw new ParseError(
-                `match block declares language '${lang}', but the file already uses '${language}'`,
-                lineNo,
-                'one .md file — one language; split the hunks into separate files',
-              );
-            }
-          }
-          builder = new PatternBuilder(hunkStart);
-          state = 'inMatch';
-        } else if (line.trim() !== '') {
-          throw new ParseError('a block is expected after the match header. ```', lineNo);
-        }
-        break;
+  while (i < lines.length) {
+    const head = lines[i]!.match(MATCH_HEADING);
+    if (head === null) {
+      if (lines[i]!.trim() !== '') {
+        throw new ParseError(
+          'text between hunks is not supported',
+          i + 1,
+          "after '# end' only blank lines are allowed; put the commentary before the first '# match'",
+        );
       }
-
-      case 'inMatch':
-        if (FENCE_CLOSE.test(line)) state = 'wantPatchHeading';
-        else scanLineInto(line, lineNo, builder!);
-        break;
-
-      case 'wantPatchHeading':
-        if (PATCH_HEADING.test(line)) state = 'wantPatchFence';
-        else if (line.trim() !== '') {
-          throw new ParseError(
-            'the patch header is expected after the match block.',
-            lineNo,
-            'A match block without a patch doesn\'t make sense.',
-          );
-        }
-        break;
-
-      case 'wantPatchFence':
-        if (FENCE_OPEN.test(line)) {
-          patchLines = [];
-          state = 'inPatch';
-        } else if (line.trim() !== '') {
-          throw new ParseError('a block is expected after the patch header ```', lineNo);
-        }
-        break;
-
-      case 'inPatch':
-        if (FENCE_CLOSE.test(line)) {
-          const match = builder!.finish();
-          hunks.push({
-            match,
-            patch: patchLines.join('\n'),
-            mdSpan: [hunkStart, lineNo],
-          });
-          builder = null;
-          state = 'scan';
-        } else {
-          patchLines.push(line);
-        }
-        break;
+      i++;
+      continue;
     }
+
+    const hunkStart = i + 1;
+    const lang = head[1];
+    if (lang !== undefined) {
+      if (language === undefined) language = lang;
+      else if (language !== lang) {
+        throw new ParseError(
+          `match block declares language '${lang}', but the file already uses '${language}'`,
+          hunkStart,
+          'one .md file — one language; split the hunks into separate files',
+        );
+      }
+    }
+
+    const matchBlock = readBlock(lines, i + 1, 'match', hunkStart);
+
+    let j = matchBlock.next;
+    while (j < lines.length && lines[j]!.trim() === '') j++;
+    if (j >= lines.length || !PATCH_HEADING.test(lines[j]!)) {
+      throw new ParseError(
+        'the patch header is expected after the match block',
+        j >= lines.length ? lines.length : j + 1,
+        "a match block without a patch doesn't make sense",
+      );
+    }
+    const patchBlock = readBlock(lines, j + 1, 'patch', j + 1);
+
+    const builder = new PatternBuilder(hunkStart);
+    for (const [k, raw] of matchBlock.body.entries()) {
+      scanLineInto(raw, matchBlock.firstLine + k, builder);
+    }
+
+    hunks.push({
+      match: builder.finish(),
+      patch: patchBlock.body.join('\n'),
+      mdSpan: [hunkStart, patchBlock.endLine],
+    });
+    i = patchBlock.next;
   }
 
-  if (state !== 'scan') {
-    throw new ParseError(
-      `the file is cut off in the middle of the block (condition: ${state})`,
-      lines.length,
-      'not closed `` or there is no patch pair to the last match',
-    );
-  }
   if (hunks.length === 0) {
     throw new ParseError('no match/patch pairs were found in the file.', 1);
   }

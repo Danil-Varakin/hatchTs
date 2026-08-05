@@ -30,10 +30,39 @@ reproduces the new file. `generate` guarantees this by construction — it appli
 each candidate hunk with the real patcher and keeps only what reproduces the
 change.
 
+## The file format
+
+A patch is Markdown made of `match`/`patch` block pairs:
+
+```
+# match <language>
+    <pattern, one four-space gutter per line>
+# end
+# patch
+    <replacement text, same gutter>
+# end
+```
+
+Three rules, and they are the whole format:
+
+1. **Column 0 belongs to the structure.** `# match`, `# patch` and `# end` are
+   recognized only there.
+2. **Every payload line carries a four-space gutter**, which is stripped on read.
+   So a payload line can never reach column 0 — a ` ``` ` fence, a `# patch`
+   heading or a `# end` inside a raw string is just text. There is no delimiter
+   in this format that code could collide with.
+3. **`# end` closes a block.** Blank lines inside a block are payload, trailing
+   ones included; blank lines between hunks are not. Anything before the first
+   `# match` is free-form prose.
+
+A payload line that forgets the gutter is a parse error, never a silent loss.
+The one exception worth knowing: a payload line made of *significant trailing
+whitespace* is indistinguishable from junk to a whitespace fixer, so don't run
+one over an instruction file — `generate` warns when it emits such a line.
+
 ## The language: three operators
 
-A patch is Markdown containing `match`/`patch` block pairs. The `match` block is
-written in the target language with operators interleaved:
+The `match` block is written in the target language with operators interleaved:
 
 | Operator | Meaning |
 |----------|---------|
@@ -57,22 +86,20 @@ both sides), so `template <typename... Args>` stays literal. A genuine standalon
 
 Insert a call at the end of a function body:
 
-````markdown
-# match
-```cpp
-...
-void RegisterFeatures(FeatureList* list) {
-  list->Add(kFastPath);
->>>
-}
-...
-```
+```markdown
+# match cpp
+    ...
+    void RegisterFeatures(FeatureList* list) {
+      list->Add(kFastPath);
+    >>>
+    }
+    ...
+# end
 # patch
-```cpp
 
-  list->Add(kNewPath);
+      list->Add(kNewPath);
+# end
 ```
-````
 
 Read it as: *skip anything, find that function header, then that call, **insert
 here**, and the very next thing must be the closing `}` — then anything to end of
@@ -82,23 +109,21 @@ function (see the third fixed rule below).
 Replace a range — everything between `>>>` and `<<<` is old code that must match
 and is thrown away:
 
-````markdown
-# match
-```cpp
-...
-namespace content {
-...
->>>
-void RegisterFeatures( ... ) {
-<<<
-...
-```
+```markdown
+# match cpp
+    ...
+    namespace content {
+    ...
+    >>>
+    void RegisterFeatures( ... ) {
+    <<<
+    ...
+# end
 # patch
-```cpp
-// Registers every content feature.
-void RegisterFeatures( FeatureList* list ) {
+    // Registers every content feature.
+    void RegisterFeatures( FeatureList* list ) {
+# end
 ```
-````
 
 Note the `...` **inside** the anchor: the balanced innards of a bracket pair can
 be skipped, so the anchor survives edits to the argument list. `generate` writes
@@ -128,7 +153,8 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
 --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
 --in,    -i <file>      source file to patch                     [required]
 --out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
---language, -l <lang>   force language (else: fence in .md, else file extension)
+--language, -l <lang>   force language (else: '# match <lang>' in the .md, else
+                        the file extension)
 --dry-run               show planned edits, write nothing
 --verify                exit code only (0 = applies cleanly), write nothing
 --help,  -h             this help
@@ -181,7 +207,7 @@ These are intentional and stable; patches rely on them:
 
 ## Language support
 
-C++ / C-like today: `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`, `.inc`, and the fence /
+C++ / C-like today: `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`, `.inc`, and the heading /
 `--language` names `cpp`, `c++`, `cc`, `cxx`, `c`, `h`, `hpp`. Structure comes
 from tree-sitter, so preprocessor branches, raw strings and macros don't confuse
 the brace pairing.

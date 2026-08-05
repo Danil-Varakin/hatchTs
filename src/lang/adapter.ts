@@ -1,5 +1,5 @@
 // lang/adapter.ts — ЗАКРЫТЫЙ реестр адаптеров (whitelist). Единственная точка, где
-// имя языка (из fence ```lang или из --language) или расширение файла превращается
+// имя языка (из заголовка `# match <lang>` или из --language) или расширение файла превращается
 // в адаптер. НИКАКОГО динамического import() по строке из недоверенного .md: только
 // этот статический список. Добавить язык = импортировать его адаптер и дописать
 // две строки ниже (реестр + синонимы имени). Пошагово — docs/adapter-layer.md.
@@ -14,7 +14,7 @@ const REGISTRY: readonly LanguageAdapter[] = [
   // pythonAdapter,
 ];
 
-// Синонимы имени языка (из fence / --language) → адаптер. Ключи в НИЖНЕМ регистре.
+// Синонимы имени языка (из заголовка / --language) → адаптер. Ключи в НИЖНЕМ регистре.
 const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['cpp', cppAdapter],
   ['c++', cppAdapter],
@@ -26,18 +26,18 @@ const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   // ['python', pythonAdapter], ['py', pythonAdapter],
 ]);
 
-/** Имена языков, которые можно указать в fence или --language. */
+/** Имена языков, которые можно указать в заголовке `# match <lang>` или в --language. */
 export const supportedLanguages: readonly string[] = [...ALIASES.keys()];
 
 /**
- * Имя языка → адаптер. Пустое/undefined — «язык не задан» (укажите в fence или
- * --language); неизвестное — «язык не поддерживается». Оба случая — типичные
- * ошибки пользователя; CLI (phase-3) переводит бросок в код выхода.
+ * Имя языка → адаптер. Пустое/undefined — «язык не задан» (укажите в заголовке
+ * `# match <lang>` или в --language); неизвестное — «язык не поддерживается». Оба
+ * случая — типичные ошибки пользователя; CLI (phase-3) переводит бросок в код выхода.
  */
 export function adapterForLanguage(name: string | undefined): LanguageAdapter {
   if (name === undefined || name.trim() === '') {
     throw new Error(
-      `language is not specified: put it in the fence (\`\`\`cpp) or pass --language; ` +
+      `language is not specified: put it in the heading (# match cpp) or pass --language; ` +
         `supported: ${supportedLanguages.join(', ')}`,
     );
   }

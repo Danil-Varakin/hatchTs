@@ -1,5 +1,5 @@
 export type GapMode =
-  | { op: 'tight' } // нет пропуска
+  | { op: 'tight' } // no skipping
   | { op: 'skipAny' }; // ...
 
 export interface PlacedMark {
@@ -34,7 +34,7 @@ export interface MatchPattern {
 export interface Hunk {
   match: MatchPattern;
   patch: string;
-  mdSpan?: [number, number]; // происхождение из .md (parser); синтезу не нужно
+  mdSpan?: [number, number]; // origin in the .md; synthesis has none
 }
 
 export interface HatchFile {

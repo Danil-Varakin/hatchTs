@@ -35,6 +35,27 @@ export class MatchError extends HatchError {
   }
 }
 
+export class ConfigError extends HatchError {
+  readonly exitCode = 5;
+  readonly file: string | undefined;
+
+  constructor(message: string, file?: string) {
+    super(file !== undefined ? `${file}: ${message}` : message);
+    this.file = file;
+  }
+}
+
+
+export class GrammarError extends HatchError {
+  readonly exitCode = 6;
+  readonly grammar: string | undefined;
+
+  constructor(message: string, grammar?: string) {
+    super(grammar !== undefined ? `${grammar}: ${message}` : message);
+    this.grammar = grammar;
+  }
+}
+
 export class AmbiguityError extends HatchError {
   readonly exitCode = 4;
   readonly positions: number[];

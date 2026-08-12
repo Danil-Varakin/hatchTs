@@ -1,6 +1,3 @@
-// lang/build-map.ts — ОБЩИЙ: собирает SourceMap из канона + пролётов блоков.
-// Всё в КАНОНИЧЕСКИХ координатах; в оригинал переводит только toOriginalPos (через canon).
-// Кривой вход (pos вне [0,eof], пустой литерал, from>to) — баг вызывающего: бросаем.
 import type { Canon } from './canon.ts';
 import type { SourceMap, BlockSpan } from './source-map.ts';
 import { isWordChar } from './word.ts';
@@ -19,8 +16,7 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
   };
   const assertFromTo = (from: number, to: number): void => {
     if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);}
-  // «внутри блока» = зазор в (open, close]: курсор вошёл, ПРОЙДЯ '{', и остаётся до
-  // '}'. Глубина меняется ПОСЛЕ прохода скобки — отсюда несимметричные '<' и '<='.
+  // "inside a block" is (open, close]: depth changes after the brace is passed.
   const inside = (s: BlockSpan, pos: number): boolean => s.open < pos && pos <= s.close;
 
   const depthOf = (pos: number): number => {
@@ -38,10 +34,6 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       return text.startsWith(norm, pos) && boundaryOk(text, norm, pos);
     },
 
-    // ЧИСТО ТЕКСТОВЫЕ вхождения: старт в [from, to] — to ВКЛЮЧИТЕЛЬНО (литерал
-    // `}`/`} else {` начинается прямо на закрывающем токене); хвост может выходить
-    // за to. Фильтра глубины НЕТ — структурный отбор делает матчер (обязательство/
-    // поиск, docs/matcher-window-stack.md §0; он зовёт с to=eof, окна-стены нет).
     occurrences(norm: string, from: number, to: number): number[] {
       assertNorm(norm);
       assertPos(from, 'from');
@@ -72,21 +64,14 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       return depthOf(pos);
     },
 
-    // Пролёты ЦЕЛИКОМ ({open, close}): пары уже посчитаны при сборке карты, матчер
-    // берёт close для стека окон в момент съедания open — искать пару не нужно.
     enclosing(pos: number): BlockSpan[] {
       assertPos(pos, 'pos');
       const out: BlockSpan[] = [];
       for (const s of spans) if (inside(s, pos)) out.push(cloneSpan(s));
-      // ВНУТРЬ→НАРУЖУ: ближайший (самый глубокий) блок первым. Больший open =
-      // позже открылся = глубже вложен. Порядок под synth (phase-4): он берёт
-      // ближайший контекст вокруг правки и расширяет наружу до уникальности.
       out.sort((a, b) => b.open - a.open);
       return out;
     },
 
-    // Пролёты, ЦЕЛИКОМ внутри [from, to): open >= from, close < to. По open
-    // возрастающе. Для обобщения якорей в synth (нутро скобок → `...`).
     blocksWithin(from: number, to: number): BlockSpan[] {
       assertPos(from, 'from');
       assertPos(to, 'to');
@@ -104,13 +89,11 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     },
 
     toCanonPos(origPos: number): number {
-      return canon.toCanonPos(origPos); // canon сам валидирует диапазон оригинала
+      return canon.toCanonPos(origPos); 
     },
   };
 }
 
-// Копия пролёта с сохранением опциональных полей (exactOptionalPropertyTypes:
-// поле присваиваем только когда оно есть, undefined в объект не кладём).
 function cloneSpan(s: BlockSpan): BlockSpan {
   const out: BlockSpan = { open: s.open, close: s.close };
   if (s.headerStart !== undefined) out.headerStart = s.headerStart;
@@ -118,8 +101,6 @@ function cloneSpan(s: BlockSpan): BlockSpan {
   return out;
 }
 
-// Границы токенов: словесный край литерала не должен продолжаться словесным символом
-// канона (int x ≠ intx), а '{k', ';x' — разные токены, границу требовать не надо.
 function boundaryOk(text: string, norm: string, pos: number): boolean {
   const n = norm.length;
   if (n === 0) return true;

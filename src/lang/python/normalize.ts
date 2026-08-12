@@ -1,6 +1,5 @@
-// lang/python/normalize.ts — канон Python: ведущий отступ строки СОХРАНЯЕТСЯ
-// (маркер уровня вложенности), тело строки чистится тем же правилом, что C-подобные:
-// пробел значим только между словесными символами. Построчно; '\n' значим.
+// Python canon: leading indentation is KEPT as the level marker, the rest of the line
+// follows the C-like rule. Line by line; '\n' is significant.
 import { isWordChar } from '../word.ts';
 
 export function normalize(raw: string): string {

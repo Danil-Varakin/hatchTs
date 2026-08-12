@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,7 @@ import { printHatchFile } from '../../src/generate/printer.ts';
 import { reviewHunks } from '../../src/generate/agreement.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { applyAll } from '../../src/cli/apply.ts';
+import { resolveOutPath } from '../../src/cli/generate.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 
 // ── round-trip ЧЕРЕЗ .md: synth → printHatchFile → parseHatchFile → apply == new ──
@@ -104,6 +105,59 @@ test('CLI generate --in-old → .md, затем apply даёт new', () => {
     const ap = runCli(APPLY_CLI, ['--match', md, '--in', oldF, '--out', out]);
     assert.equal(ap.status, 0, ap.stderr);
     assert.equal(readFileSync(out, 'utf8'), newStr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveOutPath: файл как есть, директория и опущенный --out → <имя --in>.md', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-out-'));
+  try {
+    // полное имя файла — берётся как есть
+    assert.equal(resolveOutPath(join(dir, 'patch.md'), join(dir, 'in.cpp')), join(dir, 'patch.md'));
+    // существующая директория
+    assert.equal(resolveOutPath(dir, join(dir, 'in.cpp')), join(dir, 'in.cpp.md'));
+    // несуществующий путь с завершающим слешем — тоже директория
+    assert.equal(resolveOutPath(`${dir}/sub/`, join(dir, 'in.cpp')), join(dir, 'sub', 'in.cpp.md'));
+    // --out опущен — рядом с --in
+    assert.equal(resolveOutPath(undefined, join(dir, 'in.cpp')), join(dir, 'in.cpp.md'));
+    assert.equal(resolveOutPath(undefined, 'in.cpp'), 'in.cpp.md');
+    // stdout
+    assert.equal(resolveOutPath('-', join(dir, 'in.cpp')), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: --out = директория и без --out кладут <имя --in>.md', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-gen-out-'));
+  try {
+    const oldF = join(dir, 'old.cc');
+    const newF = join(dir, 'in.cc');
+    writeFileSync(oldF, 'void f() {\n  int a = 1;\n}\n');
+    writeFileSync(newF, 'void f() {\n  int a = 2;\n}\n');
+
+    // без --out — рядом с --in
+    const g1 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--language', 'cpp']);
+    assert.equal(g1.status, 0, g1.stderr);
+    assert.match(readFileSync(join(dir, 'in.cc.md'), 'utf8'), /# match/);
+
+    // --out = существующая директория
+    const sub = join(dir, 'sub');
+    mkdirSync(sub);
+    const g2 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', sub, '--language', 'cpp']);
+    assert.equal(g2.status, 0, g2.stderr);
+    assert.match(readFileSync(join(sub, 'in.cc.md'), 'utf8'), /# match/);
+
+    // --out = несуществующая директория → внятная ошибка, а не ENOENT
+    const g3 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', `${dir}/nope/`, '--language', 'cpp']);
+    assert.notEqual(g3.status, 0);
+    assert.match(g3.stderr, /no such directory/);
+
+    // --out - → stdout, файла нет
+    const g4 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', '-', '--language', 'cpp']);
+    assert.equal(g4.status, 0, g4.stderr);
+    assert.match(g4.stdout, /# match/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

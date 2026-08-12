@@ -11,9 +11,6 @@ export function printPattern(p: MatchPattern): string {
   return out.join('\n');
 }
 
-// Обособленный оператор в тексте литерала получает '\'; уже заэкранированный
-// ('\...', '\\...') — ЕЩЁ одну, потому что парсер снимает ровно одну. Без этого
-// round-trip терял бы '\' из литерала: print('x \... y') → parse → 'x ... y'.
 const OP_LEXEME_RE = /(?<=^|\s)(\\*)(\.\.\.|>>>|<<<)(?=\s|$)/g;
 
 function escapeLiteral(raw: string): string {

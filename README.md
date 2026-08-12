@@ -20,10 +20,11 @@ Hatch describes a change declaratively — "insert this *after that include*,
 the parsed structure of the file, so reformatting and unrelated edits upstream
 don't invalidate the patch.
 
-Two commands:
+Three commands:
 
 - **`apply`** — apply a `.md` instruction file to a source file.
 - **`generate`** — diff two versions of a file and emit the `.md` instructions.
+- **`grammars`** — put the tree-sitter grammars in place (see Grammars below).
 
 `generate` then `apply` round-trips: applying a generated patch to the old file
 reproduces the new file. `generate` guarantees this by construction — it applies
@@ -75,8 +76,11 @@ file that must be there. A pattern describes the file **as a whole**: no `...`
 before the first literal means "starts at the very beginning of the file", and no
 `...` after the last one means "ends at end of file".
 
-Whitespace between literals and operators is insignificant for C-like languages,
-so the anchors can be copied out of the source and reindented freely.
+Whitespace between literals and operators is insignificant for brace languages,
+so the anchors can be copied out of the source and reindented freely. In Python it
+is not: the leading indentation of a payload line is part of the anchor, and a
+multi-line anchor therefore pins the level of every line it spans. Copy Python
+anchors out of the source with their indentation intact.
 
 Operators are recognized only as standalone *words* (whitespace or line edge on
 both sides), so `template <typename... Args>` stays literal. A genuine standalone
@@ -157,6 +161,8 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
                         the file extension)
 --dry-run               show planned edits, write nothing
 --verify                exit code only (0 = applies cleanly), write nothing
+--download-grammars     allow fetching this language's grammar if it is missing
+                        (off by default, see Grammars below)
 --help,  -h             this help
 ```
 
@@ -165,7 +171,10 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
 --in,     -i <file>     new version of the file                    [required]
 --in-old     <file>     old version (from a file)      [one of --in-old/--branch]
 --branch, -b <branch>   old version = <branch>:<--in path> (git)
---out,    -o <file>     write .md here (default: stdout)
+--out,    -o <path>     where to write the .md. A file path is taken as is; a
+                        directory (existing, or ending with a slash) gets
+                        <name of --in>.md inside it; omitted means next to
+                        --in. `-` writes to stdout
 --language,-l <lang>    force language (else: extension of --in)
 --agreement,-a          confirm each hunk before writing
 --exact,  -e            reproduce the new file byte for byte; without it every
@@ -173,8 +182,89 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
                         and inner spacing are free, the set of lines is not)
 --debug,  -v            trace synthesis to stderr: every segment, each probe
                         attempt (incl. non-unique) and the chosen hunk
+--download-grammars     allow fetching this language's grammar if it is missing
+                        (off by default, see Grammars below)
 --help,   -h            this help
 ```
+
+#### Anchoring options (how much context a hunk carries)
+```
+--parents <n|all>       cap on climbing up: at most n enclosing blocks per
+                        pattern (default: all)
+--min-parents <n>       enclosing blocks EVERY pattern carries (1)
+--parent-detail <n>     bracket levels spelled out in parent headers, counting
+                        from the outermost: 0 gives `foo( ... )`, 1 gives
+                        `foo(bar( ... ))` (0)
+--parent-detail-limit <n>   how far the ladder may unfold parent headers when
+                        an anchor turns out ambiguous; unfolding goes OUTSIDE
+                        IN, one bracket layer per rung (2)
+--min-siblings <n>      neighbouring significant lines EVERY pattern carries,
+                        per side (1)
+--siblings <n>          cap of neighbouring significant lines per side (3);
+                        0 forbids leaning on neighbours at all
+--sibling-detail <n>        same bracket baseline for neighbour anchors (0)
+--sibling-detail-limit <n>  same unfolding ceiling for neighbour anchors (2)
+--require-parents       never fall back to a parentless pattern: fail instead
+--bridge-gap <n>        stitch edits split by up to n unchanged non-blank
+                        lines back into a single hunk (0)
+```
+
+These trade the two failure modes against each other. More parents and fewer
+siblings make an anchor **structural**: it survives neighbouring lines being
+edited by someone else's commit, because an unclosed `{` orders the walk and its
+closer keeps the edit inside that block. Fewer parents and more siblings make a
+shorter, more literal anchor that reads better but drifts. Ambiguity is answered
+by *detail* first (unfolding the anchor's own brackets), and only then by
+neighbours.
+
+`detail.base` is the readability knob: raising it keeps outer brackets spelled
+out in every hunk. It costs drift-tolerance, not correctness — a longer anchor is
+*more* specific, so uniqueness never suffers. That trade cannot be measured from
+one pair of file versions, which is why it is policy rather than automatic.
+
+### Configuration
+
+Anything above can be pinned as project policy in `hatch.config.json`, searched
+for **upwards from `--in`** (like eslint/prettier). Layers, weakest first:
+
+```
+built-in defaults  <  hatch.config.json  <  CLI flags
+```
+
+```json
+{
+  "$schema": "./hatch.config.schema.json",
+  "version": 1,
+  "generate": {
+    "out": "patches/",
+    "language": "cpp",
+    "exact": false,
+    "bridgeGap": 0,
+    "parents": {
+      "min": 1,
+      "max": "all",
+      "detail": { "base": 0, "limit": 2 },
+      "required": false
+    },
+    "siblings": { "min": 1, "max": 3, "detail": { "base": 0, "limit": 2 } }
+  }
+}
+```
+
+`generate.out` is a *place*, not necessarily a name: a directory there gets
+`<name of --in>.md` written inside it.
+
+```
+--config <file>         use this config instead of searching upwards
+--no-config             ignore config files (built-in defaults + flags only)
+--print-config          print the effective settings and where each came from
+```
+
+Only the **generate** side is configurable. A `.md` patch is a public contract
+and must mean the same thing on every machine, so nothing that changes how
+`apply` reads an existing patch is ever put in a config file — such things
+belong inside the `.md` itself. An unknown key is an error (exit `5`), not a
+silent default.
 
 When a patch won't apply, `--debug` on `generate` is the fastest way to see how
 the anchors were chosen; `--dry-run` on `apply` shows the exact edits without
@@ -182,12 +272,58 @@ touching the file.
 
 ### Exit codes (for CI)
 `0` success · `2` parse error · `3` no match (reports the deepest point the
-pattern reached) · `4` ambiguous match (reports the competing positions) · `1`
-unexpected.
+pattern reached) · `4` ambiguous match (reports the competing positions) · `5`
+bad configuration · `6` grammar missing or failing its checksum · `1` unexpected.
+
+`6` is deliberately its own code: it says the *environment* lacks a grammar (fix:
+`npm run grammars`), not that anything is wrong with the patch.
 
 Ambiguity is an **error**, never a silent pick: if a pattern fits in two places
 with different results, you get exit `4` and the positions, and the fix is more
 context.
+
+## Grammars
+
+Parsing is done by tree-sitter, so every language needs its `.wasm` grammar. They
+are **not** kept in the repository — the eleven of them weigh 22 MB, and most runs
+need exactly one. Instead each language pins its grammar in its own folder:
+
+```ts
+grammar: {
+  file: 'tree-sitter-go.wasm',
+  package: 'tree-sitter-go',
+  version: '0.25.0',
+  sha256: '9504573f352b20be7f2f1911754d710622aedc15afff16d5ed8fb5645681aee7',
+},
+```
+
+Fetch them once — this is the only command that goes to the network on purpose:
+
+```bash
+npm run grammars
+```
+
+Grammars land in a shared user cache (`~/.cache/hatch/grammars`, or the platform
+equivalent), so other checkouts reuse them.
+
+**Nothing is downloaded behind your back.** A `.wasm` is executable code, so a
+missing grammar is an error (exit `6`) naming the command that fixes it. To let a
+single run fetch what it needs, say so: `--download-grammars`, or
+`HATCH_GRAMMARS_DOWNLOAD=1` for CI. When it does download, the version is exact,
+the transport is https, and the bytes must match the pinned sha256 — a mismatch
+fails the run rather than falling back to another mirror.
+
+| Variable | Effect |
+|---|---|
+| `HATCH_GRAMMAR_DIR` | look here first — air-gapped builds, custom grammar builds |
+| `HATCH_GRAMMAR_CACHE` | where downloads are cached |
+| `HATCH_GRAMMARS_DOWNLOAD=1` | permission to download, for CI |
+
+`grammars` is a command like `apply` and `generate` (`src/cli/grammars.ts`), not a
+build script: `npm run grammars -- --list` shows what is registered and where each
+grammar sits now, `-- --language go` fetches just one, and
+`npm run grammars -- --pin <package@version>` prints the block to paste into a new
+language's `index.ts`.
 
 ## Three rules fixed by decision (not derivable from syntax)
 
@@ -207,16 +343,56 @@ These are intentional and stable; patches rely on them:
 
 ## Language support
 
-C++ / C-like today: `.cc`, `.cpp`, `.cxx`, `.h`, `.hpp`, `.inc`, and the heading /
-`--language` names `cpp`, `c++`, `cc`, `cxx`, `c`, `h`, `hpp`. Structure comes
-from tree-sitter, so preprocessor branches, raw strings and macros don't confuse
-the brace pairing.
+The languages Chromium is written in:
 
-A language is one folder under `src/lang/` implementing two things — how nesting
-is balanced (`buildMap`) and how literal text is canonicalized (`normalize`).
-Nothing in `src/core/` changes. A Python canonicalizer
-(`src/lang/python/normalize.ts`) is in the tree; the Python structure provider is
-not wired into the adapter registry yet.
+| Language | Extensions | Heading / `--language` |
+|----------|-----------|------------------------|
+| C++ | `.cc` `.cpp` `.cxx` `.h` `.hpp` `.inc` | `cpp`, `c++`, `cc`, `cxx`, `h`, `hpp` |
+| C | `.c` | `c` |
+| Objective-C | `.m` `.mm` | `objc`, `objective-c` |
+| Python | `.py` `.pyi` | `python`, `py` |
+| JavaScript (incl. JSX) | `.js` `.mjs` `.cjs` `.jsx` | `javascript`, `js`, `jsx` |
+| TypeScript | `.ts` `.mts` `.cts` | `typescript`, `ts` |
+| TSX | `.tsx` | `tsx` |
+| Rust | `.rs` | `rust`, `rs` |
+| Java | `.java` | `java` |
+| Kotlin | `.kt` `.kts` | `kotlin`, `kt` |
+| Go | `.go` | `go`, `golang` |
+
+Structure comes from tree-sitter, so preprocessor branches, raw strings, macros
+and generics (`Map<K, V>` is a bracket pair, `a < b` is not) don't confuse the
+pairing. `.h` is C++ by Chromium convention. `.mm` is Objective-C++, which no
+tree-sitter grammar covers fully — the Objective-C grammar handles it best and
+degrades to plain text matching on the C++-only parts.
+
+### Adding a language: the one-folder rule
+
+**A language is one folder under `src/lang/` and one `index.ts` inside it, holding
+all of its rules — the grammar to load, the extensions it claims, how nesting is
+balanced (`blockOf`) and how literal text is canonicalized (`normalize`). Rules are
+never lifted out into a module shared between languages, not even when two
+languages would spell them identically.**
+
+What that buys: to add a language you copy one folder and edit one file, knowing
+nothing about the others and touching none of them. The apparent duplication is
+the price, and it is deliberate — the rules do diverge in practice (the bracket
+pairs of C, Go, JavaScript and Python already differ, and Kotlin needs its own
+notion of where a block's header starts). A shared "C-like rules" module would
+turn every one of those into a flag.
+
+Only language-*neutral* machinery is common — grammar loading, tree walking,
+canonicalization plumbing, map building — because a language does not get to
+choose it. The one shared file an addition touches is the adapter registry, and
+only because that whitelist has to be a static list: a language name arrives from
+an untrusted `.md`, so it must never become a dynamic import.
+
+Nothing in `src/core/` changes either; that is the other test of the boundary, and
+none of the languages above needed an exception. Python is the odd one out among
+them — significant indentation, so its own canonicalizer and its own notion of a
+block, where the opening token is the colon.
+
+Grammars live in `grammars/*.wasm` and are copied from the official tree-sitter
+npm packages by `npm run grammars`.
 
 ## Build & run
 

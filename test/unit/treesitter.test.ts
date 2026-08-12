@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { join } from 'node:path';
 
 import { loadGrammar, parse, walk } from '../../src/lang/treesitter.ts';
+import { resolveGrammar } from '../../src/infra/grammar-store.ts';
+import { cppAdapter } from '../../src/lang/cpp/index.ts';
 
-const CPP = join(import.meta.dirname, '../../grammars/tree-sitter-cpp.wasm');
+// Грамматика берётся через store (вендор или кеш), а не по жёсткому пути: .wasm в git
+// не хранятся, положить их заранее — работа `npm run grammars` (он же pretest).
+const cpp = async () => loadGrammar('cpp-test', await resolveGrammar(cppAdapter.grammar));
 
 function blockSpans(src: string, tree: ReturnType<typeof parse>): [number, number][] {
   const spans: [number, number][] = [];
@@ -17,7 +20,7 @@ function blockSpans(src: string, tree: ReturnType<typeof parse>): [number, numbe
 }
 
 test('parse + walk: вложенные блоки C++ по правилу первый{/последний}', async () => {
-  const g = await loadGrammar(CPP);
+  const g = await cpp();
   const src = 'namespace a { class B { void f(){ x(); } }; }';
   const tree = parse(g, src);
   try {
@@ -31,7 +34,7 @@ test('parse + walk: вложенные блоки C++ по правилу пер
 });
 
 test('строки/char/комментарии не дают ложных блоков', async () => {
-  const g = await loadGrammar(CPP);
+  const g = await cpp();
   const src = 'void g() { auto s = "{"; char c = \'}\'; /* } */ }';
   const tree = parse(g, src);
   try {
@@ -42,5 +45,5 @@ test('строки/char/комментарии не дают ложных бло
 });
 
 test('loadGrammar кеширует грамматику', async () => {
-  assert.equal(await loadGrammar(CPP), await loadGrammar(CPP));
+  assert.equal(await cpp(), await cpp());
 });

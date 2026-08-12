@@ -118,3 +118,15 @@ green on every commit.
 3. Public behaviour changes are reflected in `README.md` **and** `README.ru.md`,
    and the CLI `--help` text matches the README.
 4. The commit message says *why*, not just *what* changed.
+
+## Grammars
+
+Grammars are not in the repository. Fetch them once after `npm install`:
+
+```bash
+npm run grammars
+```
+
+`npm test` runs this for you (`pretest`), so a fresh clone needs network access on
+its first test run; afterwards everything comes from the shared user cache. Nothing
+else ever downloads on its own — see the Grammars section of the README.

@@ -1,20 +1,18 @@
-// lang/make-adapter.ts — ОБЩИЙ конструктор адаптера. Всё, что НЕ зависит от языка
-// (загрузка грамматики, parse, канон, обход дерева, сборка карты, кеш grammar,
-// проверки init/типа) живёт здесь ОДИН раз. Язык приносит РОВНО четыре правила:
-// грамматику, расширения, normalize (канонизация), blockOf (вложенность).
 import { loadGrammar, parse } from './treesitter.ts';
 import type { Language } from './treesitter.ts';
 import { buildCanon } from './canon.ts';
 import { makeSourceMap } from './build-map.ts';
 import { collectBlockSpans } from './block-spans.ts';
 import type { BlockOf } from './block-spans.ts';
-import type { SourceMap, LanguageAdapter } from './source-map.ts';
+import type { SourceMap, LanguageAdapter, InitOptions } from './source-map.ts';
+import { resolveGrammar } from '../infra/grammar-store.ts';
+import type { GrammarSource } from '../infra/grammar-store.ts';
 
 export interface LanguageRules {
-  grammarPath: string; // абсолютный путь к tree-sitter-*.wasm
-  extensions: readonly string[]; // для автоопределения языка по имени файла
-  normalize: (raw: string) => string; // канон литерала/исходника по правилам языка
-  blockOf: BlockOf; // правило вложенности: узел → пролёт блока | null
+  grammar: GrammarSource; 
+  extensions: readonly string[]; 
+  normalize: (raw: string) => string; 
+  blockOf: BlockOf; 
 }
 
 export function makeAdapter(rules: LanguageRules): LanguageAdapter {
@@ -23,9 +21,13 @@ export function makeAdapter(rules: LanguageRules): LanguageAdapter {
   return {
     extensions: rules.extensions,
     normalize: rules.normalize,
+    grammar: rules.grammar,
 
-    async init(): Promise<void> {
-      grammar = await loadGrammar(rules.grammarPath);
+
+    async init(options: InitOptions = {}): Promise<void> {
+      const input = await resolveGrammar(rules.grammar, options);
+      const key = `${rules.grammar.file}@${rules.grammar.version ?? rules.grammar.sha256 ?? 'local'}`;
+      grammar = await loadGrammar(key, input);
     },
 
     buildMap(source: string): SourceMap {

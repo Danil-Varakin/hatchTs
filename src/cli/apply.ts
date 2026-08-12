@@ -1,16 +1,3 @@
-// cli/apply.ts — команда `apply`: наложить .md-инструкции на исходник.
-//
-// Ханки применяются ПОСЛЕДОВАТЕЛЬНО, каждый против ТЕКУЩЕГО (уже изменённого)
-// состояния: read → для каждого ханка buildMap(current) → matcher → patcher →
-// current = правка. В конце ОДНА атомарная запись (temp+rename). Так ханк может
-// зацепиться за то, что вставил предыдущий (00-general-rules §3, phase-3).
-//
-// Разбор аргументов — свой (без commander): поверхность мала. Коды выхода берутся
-// из HatchError.exitCode (0 успех, 2 parse, 3 match, 4 ambiguity, 1 иное).
-//
-// Запуск:
-//   node --experimental-strip-types src/cli/apply.ts \
-//     --match patch.md --in src.cc --out out.cc [--language cpp] [--dry-run|--verify]
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseHatchFile } from '../core/hatch-parser.ts';
@@ -19,33 +6,27 @@ import { patchHunk } from '../core/patcher.ts';
 import type { Edit } from '../core/patcher.ts';
 import type { HatchFile } from '../core/ast.ts';
 import { writeFileAtomic } from '../infra/fs.ts';
+import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import { HatchError } from '../core/errors.ts';
 
-/** Одна применённая правка: сама правка и вырезанный текст (для показа замены). */
 export interface AppliedEdit {
   edit: Edit;
-  oldText: string; // вырезаемый текст (для замены; '' для чистой вставки)
+  oldText: string; 
 }
 
-/** Итог наложения всех ханков ПОСЛЕДОВАТЕЛЬНО (каждый против текущего состояния). */
 export interface ApplyResult {
   source: string;
   edits: AppliedEdit[];
 }
 
-/**
- * Чистое ядро apply: наложить все ханки по очереди на source. Требует уже
- * инициализированного adapter (await adapter.init()). Без файлового ввода-вывода —
- * тестируется напрямую. Бросает MatchError/AmbiguityError матчера как есть.
- */
 export function applyAll(source: string, file: HatchFile, adapter: LanguageAdapter): ApplyResult {
   let current = source;
   const edits: AppliedEdit[] = [];
   for (const hunk of file.hunks) {
-    const map = adapter.buildMap(current); // карта ТЕКУЩЕГО текста (O(n) на ханк)
-    const marks = matchPattern(hunk.match, map, adapter.normalize); // MatchError/AmbiguityError
+    const map = adapter.buildMap(current); 
+    const marks = matchPattern(hunk.match, map, adapter.normalize); 
     const result = patchHunk(current, map, marks, hunk.patch);
     edits.push({ edit: result.edit, oldText: current.slice(result.edit.start, result.edit.end) });
     current = result.source;
@@ -60,6 +41,7 @@ interface Options {
   language?: string;
   dryRun: boolean;
   verify: boolean;
+  downloadGrammars: boolean;
   help: boolean;
 }
 
@@ -72,10 +54,12 @@ const USAGE = `hatch apply — apply .md instructions to a source file
                           the file extension)
   --dry-run               show planned edits, write nothing
   --verify                exit code only (0 = applies cleanly), write nothing
+  --download-grammars     allow fetching the language's grammar if it is missing
+                          (off by default; npm run grammars fetches them once)
   --help,  -h             this help`;
 
 function parseArgs(argv: readonly string[]): Options {
-  const opts: Options = { dryRun: false, verify: false, help: false };
+  const opts: Options = { dryRun: false, verify: false, downloadGrammars: false, help: false };
   const takesValue: Record<string, 'match' | 'in' | 'out' | 'language'> = {
     '--match': 'match', '-m': 'match',
     '--in': 'in', '-i': 'in',
@@ -86,6 +70,7 @@ function parseArgs(argv: readonly string[]): Options {
     const a = argv[i]!;
     if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--verify') opts.verify = true;
+    else if (a === '--download-grammars') opts.downloadGrammars = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else {
       const key = takesValue[a];
@@ -98,7 +83,7 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Язык: --language > заголовок `# match <lang>` в .md > расширение исходника.
+// Language: --language > `# match <lang>` in the .md > the source file extension.
 function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
   if (opts.language !== undefined) return adapterForLanguage(opts.language);
   if (mdLanguage !== undefined) return adapterForLanguage(mdLanguage);
@@ -123,7 +108,8 @@ async function run(opts: Options): Promise<void> {
 
   const file = parseHatchFile(readFileSync(opts.match, 'utf8')); // ParseError (exit 2)
   const adapter = resolveAdapter(opts, file.language);
-  await adapter.init(); // разовая загрузка грамматики tree-sitter
+  // May fetch the grammar, but only because the caller said so (grammar-store.ts).
+  await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
   const source = readFileSync(opts.in, 'utf8');
   const { source: result, edits } = applyAll(source, file, adapter); // MatchError/AmbiguityError
@@ -167,8 +153,6 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
 }
 
-// Запускать main() ТОЛЬКО когда файл вызван напрямую (node …/apply.ts), а не при
-// импорте из тестов — иначе import выполнил бы CLI.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv.slice(2));
 }

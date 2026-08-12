@@ -1,39 +1,53 @@
-// ============================================================================
-// lang/source-map.ts — ЦЕНТРАЛЬНЫЙ КОНТРАКТ между «семантикой Hatch» и «языком».
+// lang/source-map.ts — the contract between Hatch semantics and a language. The
+// matcher and synth import only this file, never a concrete adapter.
 //
-// Матчер и синтезатор импортируют ТОЛЬКО этот файл, не конкретные адаптеры.
-// Здесь же — единственное место, где ядро узнаёт о понятии «нормализация»:
-// как АБСТРАКТНЫЙ метод адаптера, без знания правил конкретного языка.
-//
-// КООРДИНАТЫ: матчер работает ЦЕЛИКОМ в КАНОНИЧЕСКОМ пространстве (исходник после
-// normalize). Поэтому pos/from/to/openPos и ВСЕ позиции, что методы возвращают, —
-// канонические. В оригинальные смещения переводятся ТОЛЬКО метки и только в конце,
-// через toOriginalPos. Так нет постоянной бухгалтерии индексов: перевод точечный.
-// ============================================================================
+// COORDINATES: every position here is CANONICAL (an index into the normalized source).
+// Only marks are translated back, and only at the end, through toOriginalPos.
 
 /**
- * Пролёт блока в КАНОНИЧЕСКИХ координатах. open — позиция открывающего токена
- * (у Python — начало тела), close — парного закрывающего (у Python — конец тела).
- * Пара посчитана ОДИН раз при buildMap (tree-sitter); матчер кладёт close в свой
- * стек В МОМЕНТ съедания open — искать пару позже не нужно.
+ * Where a language's grammar comes from — part of what a LANGUAGE DECLARES, which is
+ * why it lives in the contract and not next to the code that fetches it. Exactly one
+ * shape is valid:
+ *   • `path`                           — a .wasm shipped with the language, nothing is fetched;
+ *   • `package` + `version` + `sha256` — an npm grammar package (the usual case);
+ *   • `url` + `sha256`                 — anywhere else (a fork, an internal mirror).
+ * `sha256` is mandatory for anything fetched: without a pin, "fetch it for me" would
+ * mean "run whatever the network returns". How it is resolved: infra/grammar-store.ts.
+ */
+export interface GrammarSource {
+  /** File name inside the package, and the name used in every cache directory. */
+  readonly file: string;
+  /** npm package of the grammar, e.g. `tree-sitter-go`. */
+  readonly package?: string;
+  /** EXACT version, never a range: the pin is what makes fetching reproducible. */
+  readonly version?: string;
+  /** Hex sha256 of the .wasm. Required unless `path` is used. */
+  readonly sha256?: string;
+  /** Explicit https URL, when the grammar is not on npm. */
+  readonly url?: string;
+  /** Absolute path to a local .wasm; skips lookup and fetching entirely. */
+  readonly path?: string;
+}
+
+/** What an adapter's init() is allowed to do on its own. */
+export interface InitOptions {
+  /** Allow fetching a missing grammar over the network. Off unless asked. */
+  readonly allowDownload?: boolean | undefined;
+  /** Where progress goes; stderr by default — stdout carries the .md. */
+  readonly log?: ((message: string) => void) | undefined;
+}
+
+/**
+ * A block span in canonical coordinates. `open` is the opening token (in Python, the
+ * start of the body), `close` its pair. The pair is computed once in buildMap.
  *
- * headerStart — начало ЗАГОЛОВКА конструкции, которой принадлежит блок (канон):
- * у тела функции — начало сигнатуры (`void foo(...)`), у класса — `class Foo`,
- * у if/for — `if (...)`. Заголовок = текст [headerStart, open]. Знание языка
- * (какой узел — заголовок блока), поэтому приходит из адаптера (blockOf). Нужен
- * synth (phase-4): якорь-родитель = ЗАГОЛОВОК узла, а не «строка со скобкой»
- * (иначе Allman-стиль и многострочные сигнатуры дают бесполезный якорь `{`).
- * В МАТЧИНГЕ НЕ участвует. Отсутствует, когда осмысленного заголовка НЕТ (голый
- * вложенный блок `{ … }`, чей владелец — сам блок): такой пролёт нечем описать
- * текстом, и synth его пропускает — берёт следующего родителя наружу.
+ * `headerStart` is where the owning construct's header begins, so the header is the
+ * text [headerStart, open]: a function signature, `class Foo`, `if (...)`. Comes from
+ * the adapter, is used by synth only, and is absent for a bare nested block.
  *
- * closeEnd — канон-конец ЗАКРЫВАЮЩЕГО ТОКЕНА, т.е. текст [close, closeEnd) и есть
- * этот токен (`}` в C++). В МАТЧИНГЕ НЕ участвует; нужен synth, чтобы ЗАКРЫТЬ в
- * шаблоне открытые родителем блоки: незакрытая `{` только упорядочивает, не
- * запирает (docs/matcher-window-stack.md §0.1), поэтому без закрывашки якорь-
- * родитель не удерживает правку ВНУТРИ себя. Отсутствует у языков, где
- * закрывающего токена нет (Python: конец блока — падение отступа, а не текст) —
- * потребитель тогда не может выразить закрытие литералом.
+ * `closeEnd` is the end of the closing TOKEN, so [close, closeEnd) is that token.
+ * Used by synth to close in a pattern what a parent anchor opened; absent in
+ * languages that have no closing token.
  */
 export interface BlockSpan {
   open: number;
@@ -43,112 +57,81 @@ export interface BlockSpan {
 }
 
 /**
- * Неизменяемая карта исходника, построенная адаптером один раз на buildMap.
- * Матчер опрашивает её как справочник: он НЕ ведёт стек глубины ФАЙЛА и не
- * считает скобки — но ведёт СТЕК записей о блоках, которые ШАБЛОН открыл текстом
- * своих литералов (пролёты, чей open накрыт совпавшим литералом). Полный алгоритм
- * (обязательство/поиск, живая/просроченная запись) — docs/matcher-window-stack.md §0.
- *
- * Вся балансировка (скобки в C++, отступы в Python) уже произведена. ВСЕ позиции
- * здесь — КАНОНИЧЕСКИЕ (индексы в канонизированной строке исходника). Перевод в
- * оригинал — только для меток, методом toOriginalPos.
+ * An immutable map of one source file, built once per adapter.buildMap. All nesting
+ * (braces in C++, indentation in Python) is already resolved here; the matcher only
+ * queries it and compares numbers.
  */
 export interface SourceMap {
-  /**
-   * Совпадает ли УЖЕ нормализованный литерал с канонической позиции pos.
-   * Уважает границы токенов: `Foo` НЕ совпадает внутри `FooBar` (если краевой
-   * символ литерала словесный, соседний символ канона не должен быть словесным).
-   */
+  /** Whether an already normalized literal matches at pos, respecting token borders. */
   matchesAt(norm: string, pos: number): boolean;
   /**
-   * ЧИСТО ТЕКСТОВЫЕ вхождения якоря: канонические позиции начал p, где канон
-   * посимвольно равен norm, с p ∈ [from, to] — to ВКЛЮЧИТЕЛЬНО: на to сидит
-   * закрывающий токен окна, и литерал вида `}` или `} else {` легально начинается
-   * прямо на нём. Хвост вхождения МОЖЕТ выходить за to: пересечь границу окна
-   * можно только посимвольно съев её закрывающий токен — граница защищена самим
-   * текстом, а не поиском. Фильтра глубины НЕТ: структурный отбор — работа
-   * матчера (обязательство/поиск, docs/matcher-window-stack.md §0). Матчер зовёт
-   * с to=eof (поиск до конца файла); окно-стены нет. Границы токенов уважаются.
+   * Purely textual occurrences of norm starting in [from, to] — `to` INCLUSIVE, since a
+   * literal like `}` or `} else {` legally starts on a closing token, and its tail may
+   * run past `to`. No depth filter: structural selection belongs to the matcher.
    */
   occurrences(norm: string, from: number, to: number): number[];
   /**
-   * Конец блока, ОБЪЕМЛЮЩЕГО каноническую позицию pos. В МАТЧИНГЕ НЕ участвует
-   * (матчер пушит close из enclosing() и сравнивает числа) — используется synth
-   * (phase-4) и диагностикой. Как посчитано — парная `}` (C++) или конец тела по
-   * дереву (Python) — внутренняя деталь адаптера. По конвенции inside = (open,
-   * close] закрывашка принадлежит СВОЕМУ блоку: enclosingEnd(close) === close.
-   * Нет объемлющего блока (верхний уровень) → eof.
+   * End of the block enclosing pos; eof at top level. Not used in matching (synth and
+   * diagnostics only). By convention inside = (open, close], so enclosingEnd(close) is
+   * close itself.
    */
   enclosingEnd(pos: number): number;
-  /** Глубина вложенности канонической позиции (диагностика/однозначность). */
+  /** Nesting depth of a canonical position (diagnostics). */
   depthAt(pos: number): number;
   /**
-   * Пролёты блоков, охватывающих позицию pos, ЦЕЛИКОМ ({open, close}), в порядке
-   * ВНУТРЬ→НАРУЖУ: ближайший (самый глубокий) блок первым, внешний последним.
-   * Два потребителя:
-   *   матчер — advance() после совпадения литерала [A, B) пушит в стек close тех
-   *   пролётов, чей open накрыт литералом (open >= A; Python — open <= B);
-   *   synth (phase-4) — поднимается по пролётам, добавляя контекст до уникальности.
+   * Spans enclosing pos, whole, ordered innermost first. The matcher pushes their
+   * closers onto its stack when a literal eats an opener; synth climbs them for context.
    */
   enclosing(pos: number): BlockSpan[];
   /**
-   * Пролёты блоков, ЦЕЛИКОМ лежащие в каноническом диапазоне [from, to): open >=
-   * from и close < to (закрывающий токен внутри диапазона). Порядок — по open
-   * ВОЗРАСТАЮЩЕ (внешние и левые первыми). В МАТЧИНГЕ НЕ участвует — используется
-   * synth (phase-4) для обобщения якорей: нутро сбалансированных скобок внутри
-   * контекстного якоря (`foo(a,b,c)`) заменяется на `...` (`foo( ... )`), чтобы
-   * якорь пережил мелкие правки аргументов. Отбор скобок — на КАРТЕ (баланс уже
-   * посчитан деревом), а не текстом (иначе `a < b` спутается с `<>`).
+   * Spans lying entirely within [from, to), ordered by rising open. Used by synth to
+   * generalize anchors: bracket innards collapse into `...`. Bracket selection comes
+   * from the map, not from the text, so `a < b` is never mistaken for `<>`.
    */
   blocksWithin(from: number, to: number): BlockSpan[];
-  /** Каноническая длина исходника — для якоря EOF. */
+  /** Canonical length of the source — the EOF anchor. */
   readonly eof: number;
   /**
-   * Перевод КАНОНИЧЕСКОЙ позиции метки в ОРИГИНАЛЬНОЕ смещение (для патчера).
-   * Опирается на то, что normalize трогает только пробелы → подпоследовательность
-   * непробельных символов в каноне и оригинале тождественна.
-   *   side='left'  → сразу ПОСЛЕ предыдущего непробельного символа (BOF = 0);
-   *   side='right' → прямо ПЕРЕД следующим непробельным символом (EOF = длина).
-   * Пустой файл → 0.
+   * A canonical mark position to an ORIGINAL offset. Relies on normalize touching only
+   * whitespace, so the non-space characters line up.
+   *   side='left'  → right after the previous non-space character;
+   *   side='right' → right before the next one.
    */
   toOriginalPos(pos: number, side: 'left' | 'right'): number;
-  /**
-   * Обратный перевод: ОРИГИНАЛЬНОЕ смещение → КАНОНИЧЕСКАЯ позиция. Нужен synth
-   * (phase-4): позиция правки известна в оригинале (номер строки), а enclosing/поиск
-   * работают в каноне. Точный, без поиска по тексту. origPos ∈ [0, длина оригинала].
-   */
+  /** The reverse: an original offset to a canonical position. Exact, no text search. */
   toCanonPos(origPos: number): number;
 }
 
 /**
- * Адаптер языка. Отвечает за ОБА языкозависимых преобразования исходника:
- *   buildMap  — как балансировать вложенность (скобки / отступы);
- *   normalize — как канонизировать текст литерала для сопоставления.
- * Новый язык = новая реализация этого интерфейса; ядро не трогается.
+ * A language adapter owns both language-dependent transforms: buildMap (how nesting is
+ * resolved) and normalize (how text is canonicalized). A new language is a new
+ * implementation of this interface; the core is untouched.
  */
 export interface LanguageAdapter {
   /**
-   * Разовая АСИНХРОННАЯ инициализация: загрузка движка и грамматики tree-sitter
-   * (WASM). Вызывается ОДИН раз при старте CLI, ДО первого buildMap. После неё
-   * buildMap синхронный — async не просачивается в ядро.
+   * One-off async load of the tree-sitter engine and grammar, before any buildMap.
+   * Grammars are not committed, so this may have to fetch one — which it does only
+   * when the caller allows it (infra/grammar-store.ts).
    */
-  init(): Promise<void>;
+  init(options?: InitOptions): Promise<void>;
 
-  /** Разовый проход: строит неизменяемую карту по тексту файла (после init). */
+  /** Builds the immutable map for a file; synchronous, so async stays out of the core. */
   buildMap(source: string): SourceMap;
 
   /**
-   * Канон литерала по правилам языка. C++: пробел значим лишь между словесными
-   * символами, отступ выкидывается. Python: ведущий отступ СОХРАНЯЕТСЯ как
-   * маркер уровня. Применяется адаптером И к литералам шаблона (матчер),
-   * И к исходнику (внутри buildMap) — сравнение в одном пространстве.
-   *
-   * Производительность: матчер кеширует результат — нормализует каждый литерал
-   * шаблона ОДИН раз перед сопоставлением (а не на каждой попытке отката),
-   * во временной Map<Literal,string>, которая живёт только на один прогон.
+   * Canonical form of a literal or source text. C++ drops indentation and keeps a space
+   * only between word characters; Python keeps leading indentation as a level marker.
+   * The matcher caches the result per literal for one run.
    */
   normalize(raw: string): string;
 
-  /** Расширения для автоопределения языка по имени файла. */
+  /** File extensions used to detect the language by file name. */
   extensions: readonly string[];
+
+  /**
+   * Where this language's grammar comes from, as the language declared it. The
+   * `grammars` command reads it off the registry, so the list of grammars has one
+   * source of truth: the language folders themselves.
+   */
+  readonly grammar: GrammarSource;
 }

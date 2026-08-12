@@ -7,8 +7,6 @@ let initOnce: Promise<void> | null = null;
 let parser: Parser | null = null;
 const grammars = new Map<string, Promise<Language>>();
 
-// Отказ инициализации/загрузки НЕ кешируем: иначе первый сбой (нет файла, битый
-// .wasm) залипает в кеше навсегда и каждый следующий вызов получает ту же ошибку.
 function ensureInit(): Promise<void> {
   if (initOnce === null) {
     const p = Parser.init();
@@ -20,17 +18,23 @@ function ensureInit(): Promise<void> {
   return initOnce;
 }
 
-export function loadGrammar(wasmPath: string): Promise<Language> {
-  if (typeof wasmPath !== 'string' || wasmPath.length === 0) {
-    throw new Error('loadGrammar: empty path to .wasm');
-  }
-  let g = grammars.get(wasmPath);
+export function loadGrammar(key: string, input: string | Uint8Array): Promise<Language> {
+  if (typeof key !== 'string' || key.length === 0) throw new Error('loadGrammar: empty grammar key');
+  let g = grammars.get(key);
   if (g === undefined) {
-    const p = ensureInit().then(() => Language.load(wasmPath));
+    const p = ensureInit()
+      .then(() => Language.load(input))
+      .catch((e: unknown) => {
+        const detail = (e as Error).message;
+        throw new Error(
+          `failed to load grammar ${key}${detail ? `: ${detail}` : ''}` +
+            ` (a grammar built with tree-sitter cli older than ABI 14 cannot be loaded)`,
+        );
+      });
     p.catch(() => {
-      if (grammars.get(wasmPath) === p) grammars.delete(wasmPath);
+      if (grammars.get(key) === p) grammars.delete(key);
     });
-    grammars.set(wasmPath, p);
+    grammars.set(key, p);
     g = p;
   }
   return g;

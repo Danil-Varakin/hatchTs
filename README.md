@@ -82,6 +82,13 @@ is not: the leading indentation of a payload line is part of the anchor, and a
 multi-line anchor therefore pins the level of every line it spans. Copy Python
 anchors out of the source with their indentation intact.
 
+**Inside a string literal, whitespace is data and it counts.** `Log("a  b")` and
+`Log("a b")` are different anchors, and the second will not match the first. The
+exception is a MULTI-LINE literal (`R"(…)"`, a docstring, a template literal, a Go
+backtick): whitespace inside one still collapses. An anchor is a fragment cut on line
+boundaries, so it can begin inside such a literal with no way to know — and levelling
+both sides is the only way they can agree.
+
 Operators are recognized only as standalone *words* (whitespace or line edge on
 both sides), so `template <typename... Args>` stays literal. A genuine standalone
 `...` in code is escaped as `\...`.
@@ -163,6 +170,10 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
 --verify                exit code only (0 = applies cleanly), write nothing
 --download-grammars     allow fetching this language's grammar if it is missing
                         (off by default, see Grammars below)
+--log [place]           also write a full log; every run gets its own file, mode
+                        0600. A place that is a directory (or ends in /) gets a
+                        generated name, otherwise it IS the name; omitted means
+                        ./hatch-logs/
 --help,  -h             this help
 ```
 
@@ -184,6 +195,10 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
                         attempt (incl. non-unique) and the chosen hunk
 --download-grammars     allow fetching this language's grammar if it is missing
                         (off by default, see Grammars below)
+--log [place]           also write a full log: the resolved config with the origin
+                        of every value, and the whole synthesis trace whether or
+                        not -v is on. Every run gets its own file, mode 0600;
+                        omitted means ./hatch-logs/
 --help,   -h            this help
 ```
 
@@ -195,15 +210,11 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
 --parent-detail <n>     bracket levels spelled out in parent headers, counting
                         from the outermost: 0 gives `foo( ... )`, 1 gives
                         `foo(bar( ... ))` (0)
---parent-detail-limit <n>   how far the ladder may unfold parent headers when
-                        an anchor turns out ambiguous; unfolding goes OUTSIDE
-                        IN, one bracket layer per rung (2)
 --min-siblings <n>      neighbouring significant lines EVERY pattern carries,
                         per side (1)
---siblings <n>          cap of neighbouring significant lines per side (3);
+--siblings <n>          cap of neighbouring significant lines per side (8);
                         0 forbids leaning on neighbours at all
 --sibling-detail <n>        same bracket baseline for neighbour anchors (0)
---sibling-detail-limit <n>  same unfolding ceiling for neighbour anchors (2)
 --require-parents       never fall back to a parentless pattern: fail instead
 --bridge-gap <n>        stitch edits split by up to n unchanged non-blank
                         lines back into a single hunk (0)
@@ -214,7 +225,9 @@ siblings make an anchor **structural**: it survives neighbouring lines being
 edited by someone else's commit, because an unclosed `{` orders the walk and its
 closer keeps the edit inside that block. Fewer parents and more siblings make a
 shorter, more literal anchor that reads better but drifts. Ambiguity is answered
-by *detail* first (unfolding the anchor's own brackets), and only then by
+by *detail* first — and there is no unfolding ceiling: the ladder spells out ONE
+bracket at a time, the one that actually cuts down the places the anchor can start,
+and stops as soon as no bracket helps. Only then does it reach for
 neighbours.
 
 `detail.base` is the readability knob: raising it keeps outer brackets spelled
@@ -243,10 +256,10 @@ built-in defaults  <  hatch.config.json  <  CLI flags
     "parents": {
       "min": 1,
       "max": "all",
-      "detail": { "base": 0, "limit": 2 },
+      "detail": { "base": 0 },
       "required": false
     },
-    "siblings": { "min": 1, "max": 3, "detail": { "base": 0, "limit": 2 } }
+    "siblings": { "min": 1, "max": 8, "detail": { "base": 0 } }
   }
 }
 ```

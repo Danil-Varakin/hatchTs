@@ -16,6 +16,8 @@ import type { LanguageAdapter } from '../lang/source-map.ts';
 import { CONFIG_FILE_NAME, formatConfig, loadConfig } from '../infra/config/index.ts';
 import type { FlagOverride, ResolvedConfig } from '../infra/config/index.ts';
 import { HatchError } from '../core/errors.ts';
+import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import type { Logger } from '../infra/log.ts';
 
 interface Options {
   in?: string;
@@ -24,14 +26,13 @@ interface Options {
   out?: string;
   language?: string;
   config?: string;
+  log?: string;
   parents?: unknown;
   minParents?: unknown;
   parentDetailBase?: unknown;
-  parentDetailLimit?: unknown;
   siblings?: unknown;
   minSiblings?: unknown;
   siblingDetailBase?: unknown;
-  siblingDetailLimit?: unknown;
   bridgeGap?: unknown;
   requireParents: boolean;
   downloadGrammars: boolean;
@@ -61,6 +62,11 @@ const USAGE = `hatch generate — synthesize .md instructions from two versions 
                           attempt (incl. non-unique) and the chosen hunk
   --download-grammars     allow fetching the language's grammar if it is missing
                           (off by default; npm run grammars fetches them once)
+  --log [place]           also write a full log — the resolved config and the whole
+                          synthesis trace, whether or not -v is on. Every run gets its
+                          own file. A place that is a directory (or ends in /) receives
+                          a generated name, otherwise it IS the name; omitted →
+                          ./hatch-logs/
   --help,   -h            this help
 
 Anchoring (how much context a generated hunk carries). Every one of these can also
@@ -73,19 +79,16 @@ be set in ${CONFIG_FILE_NAME}; the flag wins for this run.
                           neighbours can land it in another function
   --parent-detail <n>     bracket levels spelled out in parent headers, counting
                           from the outermost: 0 gives \`foo( ... )\`, 1 gives
-                          \`foo(bar( ... ))\` (default: 0)
-  --parent-detail-limit <n>
-                          how far the ladder may unfold parent headers when an
-                          anchor turns out ambiguous; unfolding goes OUTSIDE IN,
-                          one bracket layer per rung (default: 2)
+                          \`foo(bar( ... ))\` (default: 0). This is the READABLE
+                          baseline; when an anchor turns out ambiguous the ladder
+                          unfolds further on its own, one NAMED bracket at a time,
+                          and stops as soon as no bracket tells the places apart
   --min-siblings <n>      neighbouring significant lines EVERY pattern carries,
                           per side (default: 1)
   --siblings <n>          cap of neighbouring significant lines per side
-                          (default: 3). 0 forbids leaning on neighbours at all —
+                          (default: 8). 0 forbids leaning on neighbours at all —
                           anchoring stays purely structural
   --sibling-detail <n>    same bracket baseline for neighbour anchors (default: 0)
-  --sibling-detail-limit <n>
-                          same unfolding ceiling for neighbour anchors (default: 2)
   --require-parents       never fall back to a parentless pattern: fail instead of
                           emitting an anchor that drift can move
   --bridge-gap <n>        stitch edits split by up to n unchanged non-blank lines
@@ -104,11 +107,9 @@ type CountOption =
   | 'parents'
   | 'minParents'
   | 'parentDetailBase'
-  | 'parentDetailLimit'
   | 'minSiblings'
   | 'siblings'
   | 'siblingDetailBase'
-  | 'siblingDetailLimit'
   | 'bridgeGap';
 
 function parseArgs(argv: readonly string[]): Options {
@@ -134,15 +135,20 @@ function parseArgs(argv: readonly string[]): Options {
     '--parents': 'parents',
     '--min-parents': 'minParents',
     '--parent-detail': 'parentDetailBase',
-    '--parent-detail-limit': 'parentDetailLimit',
     '--min-siblings': 'minSiblings',
     '--siblings': 'siblings',
     '--sibling-detail': 'siblingDetailBase',
-    '--sibling-detail-limit': 'siblingDetailLimit',
     '--bridge-gap': 'bridgeGap',
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    // --log takes an OPTIONAL place: bare `--log` means the default directory, and the
+    // next token counts as a value only when it is not another flag.
+    if (a === '--log') {
+      const next = argv[i + 1];
+      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
+      continue;
+    }
     if (a === '--agreement' || a === '-a') opts.agreement = true;
     else if (a === '--exact' || a === '-e') opts.exact = true;
     else if (a === '--debug' || a === '-v') opts.debug = true;
@@ -186,12 +192,10 @@ function flagOverrides(opts: Options): FlagOverride[] {
   push('minParents', opts.minParents, '--min-parents');
   push('maxParents', opts.parents, '--parents');
   push('parentDetailBase', opts.parentDetailBase, '--parent-detail');
-  push('parentDetailLimit', opts.parentDetailLimit, '--parent-detail-limit');
   push('parentsRequired', opts.requireParents ? true : undefined, '--require-parents');
   push('minSiblings', opts.minSiblings, '--min-siblings');
   push('maxSiblings', opts.siblings, '--siblings');
   push('siblingDetailBase', opts.siblingDetailBase, '--sibling-detail');
-  push('siblingDetailLimit', opts.siblingDetailLimit, '--sibling-detail-limit');
   return out;
 }
 
@@ -231,15 +235,18 @@ function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
   return { confirm, close: () => rl.close() };
 }
 
-function makeTracer(): Tracer {
+// The trace goes through the logger, so `-v` shows it on the terminal and `--log` keeps
+// it in the file — the same text, one source.
+function makeTracer(log: Logger): Tracer {
+  const write = (line: string): void => log.trace(line);
   const indent = (s: string): string => s.replace(/^/gm, '        ');
   const kindOf = (e: Extract<SynthEvent, { kind: 'segment' }>): string =>
     e.seg.removed.length > 0 && e.seg.added.length > 0 ? 'replace' : e.seg.added.length > 0 ? 'insert' : 'delete';
   return (e) => {
     if (e.kind === 'segment') {
-      process.stderr.write(`\n── segment #${e.index + 1} (${kindOf(e)}) @ old line ${e.seg.oldStart}\n`);
-      for (const l of e.seg.removed) process.stderr.write(`   - ${l}\n`);
-      for (const l of e.seg.added) process.stderr.write(`   + ${l}\n`);
+      write(`\n── segment #${e.index + 1} (${kindOf(e)}) @ old line ${e.seg.oldStart}`);
+      for (const l of e.seg.removed) write(`   - ${l}`);
+      for (const l of e.seg.added) write(`   + ${l}`);
     } else if (e.kind === 'attempt') {
       const tag =
         e.result === 'unique'
@@ -247,14 +254,14 @@ function makeTracer(): Tracer {
           : e.result === 'ambiguous'
             ? `✗ ambiguous (${e.matches}+ matches — need more context)`
             : '∅ no match';
-      process.stderr.write(`   try → ${tag}\n${indent(printPattern(e.pattern))}\n`);
+      write(`   try → ${tag}\n${indent(printPattern(e.pattern))}`);
     } else {
-      process.stderr.write(`   ➜ CHOSEN, patch: ${JSON.stringify(e.patch)}\n`);
+      write(`   ➜ CHOSEN, patch: ${JSON.stringify(e.patch)}`);
     }
   };
 }
 
-async function run(opts: Options, config: ResolvedConfig): Promise<void> {
+async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<void> {
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
   if ((opts.inOld === undefined) === (opts.branch === undefined)) {
     throw new Error('provide exactly one source of the OLD version: --in-old <file> OR --branch <branch>');
@@ -271,7 +278,7 @@ async function run(opts: Options, config: ResolvedConfig): Promise<void> {
   let hunks = synthesize(oldStr, newStr, adapter, {
     exact: settings.exact,
     bridgeGap: settings.bridgeGap,
-    trace: opts.debug ? makeTracer() : undefined,
+    trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
     limits: settings,
   });
 
@@ -284,7 +291,7 @@ async function run(opts: Options, config: ResolvedConfig): Promise<void> {
     }
   }
 
-  for (const w of trailingSpaceWarnings(hunks)) console.error(`warning: ${w}`);
+  for (const w of trailingSpaceWarnings(hunks)) log.note(`warning: ${w}`);
 
   const md = printHatchFile(hunks, langLabel(settings.language, opts.in));
   const outPath = resolveOutPath(settings.out ?? undefined, opts.in);
@@ -295,7 +302,7 @@ async function run(opts: Options, config: ResolvedConfig): Promise<void> {
   const outDir = dirname(outPath);
   if (!isDirectory(outDir)) throw new Error(`no such directory: ${outDir} (--out ${outPath})`);
   writeFileAtomic(outPath, md);
-  console.error(`generated ${hunks.length} hunk(s) → ${outPath}`);
+  log.note(`generated ${hunks.length} hunk(s) → ${outPath}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -303,14 +310,28 @@ export async function main(argv: readonly string[]): Promise<void> {
   try {
     opts = parseArgs(argv);
   } catch (e) {
-    console.error(`error: ${(e as Error).message}\n\n${USAGE}`);
+    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
     return;
   }
   if (opts.help) {
-    console.log(USAGE);
+    process.stdout.write(`${USAGE}\n`);
     return;
   }
+
+  let log: Logger;
+  try {
+    log = createLogger({
+      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'generate') } : {}),
+      verbose: opts.debug,
+      header: logHeader('generate', argv),
+    });
+  } catch (e) {
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    return;
+  }
+
   try {
     const config = loadConfig({
       explicitPath: opts.config,
@@ -322,15 +343,27 @@ export async function main(argv: readonly string[]): Promise<void> {
       process.stdout.write(formatConfig(config));
       return;
     }
-    await run(opts, config);
+    // The resolved config goes into the log too: a .md that surprises somebody a month
+    // later is explained by the settings it was generated under, not by the flags they
+    // remember typing.
+    if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
+    await run(opts, config, log);
+    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
   } catch (e) {
-    if (e instanceof HatchError) {
-      console.error(`${e.name}: ${e.message}`);
-      process.exitCode = e.exitCode;
-    } else {
-      console.error(`error: ${(e as Error).message}`);
-      process.exitCode = 1;
-    }
+    // generate reads the OLD version to anchor against, and that is the text a failure
+    // report has to quote.
+    process.exitCode = log.fail(e, errorContext(opts));
+  } finally {
+    log.close();
+  }
+}
+
+function errorContext(opts: Options): { source?: string; sourcePath?: string } {
+  if (opts.inOld === undefined) return {};
+  try {
+    return { source: readFileSync(opts.inOld, 'utf8'), sourcePath: opts.inOld };
+  } catch {
+    return { sourcePath: opts.inOld };
   }
 }
 

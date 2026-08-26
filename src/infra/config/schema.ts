@@ -30,12 +30,10 @@ export const FIELDS: readonly FieldSpec[] = [
   { path: 'generate.parents.min', key: 'minParents', kind: 'count', flag: '--min-parents' },
   { path: 'generate.parents.max', key: 'maxParents', kind: 'countOrAll', flag: '--parents' },
   { path: 'generate.parents.detail.base', key: 'parentDetailBase', kind: 'count', flag: '--parent-detail' },
-  { path: 'generate.parents.detail.limit', key: 'parentDetailLimit', kind: 'count', flag: '--parent-detail-limit' },
   { path: 'generate.parents.required', key: 'parentsRequired', kind: 'boolean', flag: '--require-parents' },
   { path: 'generate.siblings.min', key: 'minSiblings', kind: 'count', flag: '--min-siblings' },
   { path: 'generate.siblings.max', key: 'maxSiblings', kind: 'count', flag: '--siblings' },
   { path: 'generate.siblings.detail.base', key: 'siblingDetailBase', kind: 'count', flag: '--sibling-detail' },
-  { path: 'generate.siblings.detail.limit', key: 'siblingDetailLimit', kind: 'count', flag: '--sibling-detail-limit' },
 ];
 
 export const DEFAULT_SETTINGS: GenerateSettings = Object.freeze({
@@ -81,16 +79,13 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000;
 }
 
-export function checkPairs(settings: GenerateSettings, origins: Record<string, string>): void {
-  const pairs: readonly [string, number, string, number][] = [
-    ['generate.parents.detail.base', settings.parentDetailBase, 'generate.parents.detail.limit', settings.parentDetailLimit],
-    ['generate.siblings.detail.base', settings.siblingDetailBase, 'generate.siblings.detail.limit', settings.siblingDetailLimit],
-  ];
-  for (const [lowPath, low, highPath, high] of pairs) {
-    if (low > high) {
-      throw new ConfigError(
-        `"${lowPath}" (${low}, ${origins[lowPath]}) must not exceed "${highPath}" (${high}, ${origins[highPath]})`,
-      );
-    }
-  }
+/**
+ * Cross-field checks. There are none left: the pair that lived here compared
+ * `detail.base` against a `detail.limit`, and the ceiling is gone — unfolding is
+ * adaptive and stops when no bracket can tell the candidates apart, so there is nothing
+ * left to contradict. Kept as the seam, because the next contradictory pair will want
+ * exactly this shape and the same "name the origin of BOTH values" wording.
+ */
+export function checkPairs(_settings: GenerateSettings, _origins: Record<string, string>): void {
+  // no contradictory pairs today
 }

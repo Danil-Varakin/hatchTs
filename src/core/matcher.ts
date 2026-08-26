@@ -36,13 +36,20 @@ export function matchPattern(
   };
 
   const edits = new Map<string, MatchMarks>();
+  const spans = new Map<string, LocatedMark | undefined>();
   let stop = false; 
   let deepestPos = -1; 
   let deepestStep = 0;
-  const recordDeepest = (pos: number, i: number): void => {
+  // What the deepest failure stood ON, and what it had already matched. A step NUMBER
+  // tells a human nothing; the anchor they wrote, and how far the walk got, does.
+  let deepestAnchor: string | undefined;
+  let deepestMatched: Matched | null = null;
+  const recordDeepest = (pos: number, i: number, anchor: string | undefined, last: Matched | null): void => {
     if (pos > deepestPos) {
       deepestPos = pos;
       deepestStep = i;
+      deepestAnchor = anchor;
+      deepestMatched = last;
     }
   };
 
@@ -72,16 +79,19 @@ export function matchPattern(
     const sig = signature(m);
     if (!edits.has(sig)) {
       edits.set(sig, m as MatchMarks); 
+      spans.set(sig, m.replaceEnd);
       if (edits.size >= 2) stop = true;
     }
   };
 
-  const walk = (i: number, pos: number, stack: number[], marks: Marks): boolean => {
+  const walk = (i: number, pos: number, stack: number[], marks: Marks, last: Matched | null): boolean => {
     if (stop) return edits.size > 0;
 
     if (i === steps.length) {
       if (pos !== eof) {
-        recordDeepest(pos, i);
+        // Ran out of steps with file left over. By our semantics that means the pattern
+        // claims the file ENDS here — the case that needs saying out loud, see below.
+        recordDeepest(pos, i, undefined, last);
         return false;
       }
       recordFull(marks);
@@ -94,20 +104,20 @@ export function matchPattern(
     if (anchor.target === 'eof') {
       if (gap.mode.op === 'skipAny') {
         const mR = applySide(mL, gap, 'right', eof);
-        return walk(i + 1, eof, stack, mR);
+        return walk(i + 1, eof, stack, mR, last);
       }
-      return walk(i + 1, pos, stack, mL); 
+      return walk(i + 1, pos, stack, mL, last); 
     }
 
     const norm = normOf(anchor.literal);
 
     if (gap.mode.op === 'tight') {
       if (!map.matchesAt(norm, pos)) {
-        recordDeepest(pos, i);
+        recordDeepest(pos, i, anchor.literal.raw, last);
         return false;
       }
       const adv = advance(norm, pos, stack);
-      return walk(i + 1, adv.pos, adv.stack, mL); 
+      return walk(i + 1, adv.pos, adv.stack, mL, { text: anchor.literal.raw, pos }); 
     }
 
     const W = stack.length > 0 ? stack[stack.length - 1]! : -1;
@@ -115,7 +125,7 @@ export function matchPattern(
     if (obligation) {
       const mR = applySide(mL, gap, 'right', W);
       const adv = advance(norm, W, stack);
-      if (walk(i + 1, adv.pos, adv.stack, mR)) return true;
+      if (walk(i + 1, adv.pos, adv.stack, mR, { text: anchor.literal.raw, pos: W })) return true;
       if (stop) return edits.size > 0;
     }
 
@@ -127,28 +137,68 @@ export function matchPattern(
       sawCandidate = true;
       const mR = applySide(mL, gap, 'right', p);
       const adv = advance(norm, p, stack);
-      if (walk(i + 1, adv.pos, adv.stack, mR)) found = true;
+      if (walk(i + 1, adv.pos, adv.stack, mR, { text: anchor.literal.raw, pos: p })) found = true;
       if (stop) return edits.size > 0;
     }
-    if (!found && !sawCandidate && !obligation) recordDeepest(pos, i);
+    if (!found && !sawCandidate && !obligation) recordDeepest(pos, i, anchor.literal.raw, last);
     return found;
   };
 
-  walk(0, 0, [], {});
+  walk(0, 0, [], {}, null);
 
-  if (edits.size === 0) {
-    throw new MatchError(
-      `no match: the pattern did not fit the file (deepest progress at step ${deepestStep})`,
-      deepestPos < 0 ? 0 : deepestPos,
-      deepestStep,
-    );
-  }
+  if (edits.size === 0) throw noMatch();
   if (edits.size >= 2) {
     const positions = [...edits.values()].map((m) => map.toOriginalPos(m.insert.pos, m.insert.side));
+    const ends = [...spans.values()].map((e) => (e === undefined ? undefined : map.toOriginalPos(e.pos, e.side)));
     throw new AmbiguityError(
       'ambiguous match: the pattern fits in more than one place — add context',
       positions,
+      ends,
     );
   }
   return [...edits.values()][0]!;
+
+  /**
+   * The one failure mode worth naming separately: a pattern that runs out of steps with
+   * file left over is CLAIMING the file ends there (README §8, the semantics of a
+   * missing trailing `...`). It reads as "my anchor is fine, why no match", and used to
+   * cost an hour every time. Everything else carries its facts and is rendered by
+   * infra/log.ts.
+   */
+  function noMatch(): MatchError {
+    const ranPastEnd = deepestStep >= steps.length;
+    const detail: {
+      totalSteps: number;
+      origPos?: number;
+      anchorText?: string;
+      matchedText?: string;
+      matchedPos?: number;
+      hint?: string;
+    } = { totalSteps: steps.length, origPos: map.toOriginalPos(deepestPos < 0 ? 0 : deepestPos, 'right') };
+    if (deepestAnchor !== undefined) detail.anchorText = deepestAnchor;
+    const matched: Matched | null = deepestMatched;
+    if (matched !== null) {
+      detail.matchedText = matched.text;
+      detail.matchedPos = map.toOriginalPos(matched.pos, 'right');
+    }
+    if (ranPastEnd) {
+      detail.hint =
+        'the pattern requires the file to END here: a match block that stops without a ' +
+        'trailing `...` describes the file to its last character. Add `...` at the end.';
+    }
+    return new MatchError(
+      ranPastEnd
+        ? 'no match: the pattern ran out of steps while the file went on'
+        : 'no match: the pattern did not fit the file',
+      deepestPos < 0 ? 0 : deepestPos,
+      deepestStep,
+      detail,
+    );
+  }
+}
+
+/** The last anchor that DID match, carried down the walk so a failure can quote it. */
+interface Matched {
+  readonly text: string;
+  readonly pos: number;
 }

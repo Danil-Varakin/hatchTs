@@ -54,13 +54,7 @@
               "additionalProperties": false,
               "properties": {
                 "base": {
-                  "description": "Bracket levels spelled out in parent headers, counting from the outermost: 0 gives foo( ... ), 1 gives foo(bar( ... )).",
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 1000
-                },
-                "limit": {
-                  "description": "How far the ladder may unfold parent headers when an anchor turns out ambiguous. Must not be below \"base\".",
+                  "description": "Bracket levels spelled out in parent headers, counting from the outermost: 0 gives foo( ... ), 1 gives foo(bar( ... )). The readable baseline; on an ambiguous anchor the ladder unfolds further by itself, one named bracket at a time.",
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 1000
@@ -94,13 +88,7 @@
               "additionalProperties": false,
               "properties": {
                 "base": {
-                  "description": "Bracket levels spelled out in neighbour anchors.",
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 1000
-                },
-                "limit": {
-                  "description": "How far the ladder may unfold neighbour anchors. Must not be below \"base\".",
+                  "description": "Bracket levels spelled out in neighbour anchors. On an ambiguous anchor the ladder unfolds further by itself, one named bracket at a time.",
                   "type": "integer",
                   "minimum": 0,
                   "maximum": 1000

@@ -58,8 +58,8 @@ test('file overrides defaults, flag overrides file', () => {
   assert.equal(config.origins['generate.siblings.max'], 'flag --siblings');
   assert.equal(config.generate.minParents, 2);
   assert.equal(config.origins['generate.parents.min'], 'config /repo/hatch.config.json');
-  assert.equal(config.generate.parentDetailLimit, DEFAULT_SETTINGS.parentDetailLimit);
-  assert.equal(config.origins['generate.parents.detail.limit'], 'default');
+  assert.equal(config.generate.parentDetailBase, DEFAULT_SETTINGS.parentDetailBase);
+  assert.equal(config.origins['generate.parents.detail.base'], 'default');
 });
 
 test('undefined values do not wipe the layer below', () => {
@@ -91,20 +91,19 @@ test('resolveLimits takes only defined keys', () => {
   assert.equal(limits.minParents, DEFAULT_SYNTH_LIMITS.minParents);
 });
 
-test('contradictory pairs are refused with the origin of both values', () => {
+test('a detail ceiling is no longer a key at all', withTempDir((dir) => {
+  // The ceiling went away with the adaptive round (BACKLOG §4.0): unfolding stops when
+  // no bracket can tell the candidates apart, so there is nothing left to contradict.
+  // A config still carrying the old key must SAY so, not be quietly ignored — which the
+  // strict "unknown key" rule already guarantees, and this test pins it to THIS key.
+  const file = writeConfig(dir, { version: 1, generate: { parents: { detail: { limit: 2 } } } });
   assert.throws(
-    () =>
-      resolveConfig({
-        flags: [
-          { key: 'parentDetailBase', value: 3, flag: '--parent-detail' },
-          { key: 'parentDetailLimit', value: 1, flag: '--parent-detail-limit' },
-        ],
-      }),
-    (e: unknown) =>
-      e instanceof ConfigError &&
-      /"generate\.parents\.detail\.base" \(3, flag --parent-detail\) must not exceed/.test(e.message),
+    () => readConfigFile(file),
+    (e: unknown) => e instanceof ConfigError && /unknown key "generate\.parents\.detail\.limit"/.test(e.message),
   );
-  // a minimum above its maximum is a wish, not a contradiction: it gets clamped
+}));
+
+test('a minimum above its maximum is a wish, not a contradiction: it gets clamped', () => {
   assert.equal(
     resolveConfig({
       flags: [
@@ -114,8 +113,6 @@ test('contradictory pairs are refused with the origin of both values', () => {
     }).generate.minSiblings,
     5,
   );
-  // synth itself stays total: it degenerates such a pair into a single rung
-  assert.doesNotThrow(() => resolveLimits({ parentDetailBase: 3, parentDetailLimit: 1 }));
 });
 
 // ── file validation ──────────────────────────────────────────────────────────────
@@ -270,27 +267,39 @@ test('detail.base: the baseline decides how much of a bracket stays spelled out'
   assert.ok(verbose.includes('void f(map<int, A> m) {'), verbose);
 });
 
-test('sibling detail.limit = 0: the ladder never unfolds a neighbour bracket', async () => {
+test('the round unfolds a neighbour bracket by itself when that is what tells them apart', async () => {
   await cppAdapter.init();
   const oldStr = 'void f() {\n  log(fmt(a, b));\n  x = 1;\n  log(fmt(c, d));\n  x = 1;\n}\n';
   const newStr = 'void f() {\n  log(fmt(a, b));\n  x = 1;\n  log(fmt(c, d));\n  x = 2;\n}\n';
-  const spelledOut = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
-  assert.ok(spelledOut.includes('log(fmt(c, d));'), spelledOut);
+  const md = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
+  // No ceiling was needed and no ceiling was set: the neighbour is the discriminator,
+  // so the round spelled that ONE bracket out and stopped.
+  assert.ok(md.includes('log(fmt(c, d));'), md);
+});
 
-  const generalized = printHatchFile(
-    synthesize(oldStr, newStr, cppAdapter, { limits: { siblingDetailLimit: 0 } }),
-    'cpp',
-  );
-  assert.ok(!generalized.includes('fmt(c, d)'), generalized);
+test('a bracket that discriminates nothing is NOT dragged along', async () => {
+  await cppAdapter.init();
+  // Two classes of the same name; only the base differs, and it differs INSIDE <>.
+  // The old global detail number lifted every bracket at that level, so `void Run(...)`
+  // came out as `void Run(map< ... > m)` — text that pins nothing and breaks on the next
+  // signature change. The round names one bracket instead.
+  const oldStr =
+    'class W : public Base<Alpha> {\n  void Run(map<int, T> m) {\n    x = 1;\n  }\n};\n' +
+    'class W : public Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 1;\n  }\n};\n';
+  const newStr = oldStr.replace('Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 1;', 'Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 2;');
+  const md = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
+  assert.ok(md.includes('Base<Beta>'), md); // the bracket that DID discriminate
+  assert.ok(!md.includes('map<'), md); // the one that did not
 });
 
 // ── CLI ──────────────────────────────────────────────────────────────────────────
 
-const GEN_CLI = fileURLToPath(new URL('../../src/cli/generate.ts', import.meta.url));
+// Через ЕДИНЫЙ вход, а не напрямую в generate.ts: так тесты заодно держат диспетчер.
+const HATCH_CLI = fileURLToPath(new URL('../../src/cli/index.ts', import.meta.url));
 
 function runCli(args: string[], cwd: string): { status: number; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync('node', ['--experimental-strip-types', GEN_CLI, ...args], {
+    const stdout = execFileSync('node', ['--experimental-strip-types', HATCH_CLI, ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       cwd,
@@ -312,11 +321,11 @@ test('CLI: out and language come from the config, --print-config shows the origi
   mkdirSync(join(dir, 'patches'));
   writeConfig(dir, { version: 1, generate: { out: 'patches/', language: 'cpp', parents: { min: 2 } } });
 
-  const printed = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--print-config'], dir);
+  const printed = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--print-config'], dir);
   assert.equal(printed.status, 0, printed.stderr);
   assert.match(printed.stdout, /generate\.out\s+= "patches\/"\s+\[config .*hatch\.config\.json\]/);
 
-  const gen = runCli(['--in', 'in.cc', '--in-old', 'old.cc'], dir);
+  const gen = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc'], dir);
   assert.equal(gen.status, 0, gen.stderr);
   const md = readFileSync(join(dir, 'patches', 'in.cc.md'), 'utf8');
   assert.match(md, /^# match cpp$/m);
@@ -327,11 +336,11 @@ test('CLI: a flag beats the config, --no-config drops the file', withTempDir((di
   seedSources(dir);
   writeConfig(dir, { version: 1, generate: { language: 'cpp', parents: { min: 2 } } });
 
-  const flagWins = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--min-parents', '1', '--out', '-'], dir);
+  const flagWins = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--min-parents', '1', '--out', '-'], dir);
   assert.equal(flagWins.status, 0, flagWins.stderr);
   assert.ok(!flagWins.stdout.includes('namespace net {'), flagWins.stdout);
 
-  const printed = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--no-config', '--print-config'], dir);
+  const printed = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--no-config', '--print-config'], dir);
   assert.match(printed.stdout, /generate\.parents\.min\s+= 1\s+\[default\]/);
   assert.match(printed.stdout, /generate\.language\s+= null\s+\[default\]/);
 }));
@@ -339,18 +348,22 @@ test('CLI: a flag beats the config, --no-config drops the file', withTempDir((di
 test('CLI: a broken config and a broken flag value both exit with 5', withTempDir((dir) => {
   seedSources(dir);
   writeConfig(dir, { version: 1, generate: { siblings: { max: -1 } } });
-  const broken = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--out', '-'], dir);
+  const broken = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--out', '-'], dir);
   assert.equal(broken.status, 5, broken.stderr);
   assert.match(broken.stderr, /ConfigError/);
 
-  const badFlag = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--no-config', '--siblings', 'x'], dir);
+  const badFlag = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--no-config', '--siblings', 'x'], dir);
   assert.equal(badFlag.status, 5, badFlag.stderr);
 }));
 
-test('CLI: --parent-detail-limit is honoured', withTempDir((dir) => {
+test('CLI: --parent-detail is honoured, and the removed ceiling flag is refused', withTempDir((dir) => {
   seedSources(dir);
-  writeConfig(dir, { generate: { language: 'cpp', parents: { detail: { base: 0, limit: 2 } } } });
-  const gen = runCli(['--in', 'in.cc', '--in-old', 'old.cc', '--parent-detail-limit', '1', '--out', '-'], dir);
+  writeConfig(dir, { generate: { language: 'cpp', parents: { detail: { base: 0 } } } });
+  const gen = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--parent-detail', '1', '--out', '-'], dir);
   assert.equal(gen.status, 0, gen.stderr);
   assert.match(gen.stdout, /^# match cpp$/m);
+
+  const stale = runCli(['generate', '--in', 'in.cc', '--in-old', 'old.cc', '--parent-detail-limit', '1', '--out', '-'], dir);
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /--parent-detail-limit/);
 }));

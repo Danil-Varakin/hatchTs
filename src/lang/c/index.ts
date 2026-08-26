@@ -1,10 +1,19 @@
 import { makeAdapter } from '../make-adapter.ts';
 import { isWordChar } from '../word.ts';
+import { replaceWhitespaceOutsideStrings } from '../zones.ts';
+import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
+// String literals of this language. Whitespace inside them is DATA, so canon keeps it
+// verbatim (lang/zones.ts). Order matters: longer openers first.
+const STRINGS: readonly StringRule[] = [
+  { open: '"', close: '"', escape: '\\' },
+  { open: "'", close: "'", escape: '\\' },
+];
+
 export function normalize(raw: string): string {
-  return raw.replace(/\s+/g, (ws, off: number) =>
+  return replaceWhitespaceOutsideStrings(raw, STRINGS, (ws, off) =>
     off > 0 && isWordChar(raw[off - 1]!) && isWordChar(raw[off + ws.length] ?? '')
       ? ' '
       : '',

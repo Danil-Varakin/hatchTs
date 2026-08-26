@@ -10,6 +10,8 @@ import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import { HatchError } from '../core/errors.ts';
+import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import type { Logger } from '../infra/log.ts';
 
 export interface AppliedEdit {
   edit: Edit;
@@ -38,6 +40,7 @@ interface Options {
   match?: string;
   in?: string;
   out?: string;
+  log?: string;
   language?: string;
   dryRun: boolean;
   verify: boolean;
@@ -56,6 +59,9 @@ const USAGE = `hatch apply — apply .md instructions to a source file
   --verify                exit code only (0 = applies cleanly), write nothing
   --download-grammars     allow fetching the language's grammar if it is missing
                           (off by default; npm run grammars fetches them once)
+  --log [place]           also write a full log; every run gets its own file. A place
+                          that is a directory (or ends in /) receives a generated name,
+                          otherwise it IS the name; omitted → ./hatch-logs/
   --help,  -h             this help`;
 
 function parseArgs(argv: readonly string[]): Options {
@@ -68,6 +74,13 @@ function parseArgs(argv: readonly string[]): Options {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    // --log takes an OPTIONAL place: `--log` alone means the default directory, and the
+    // next token is a value only when it is not another flag.
+    if (a === '--log') {
+      const next = argv[i + 1];
+      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
+      continue;
+    }
     if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--verify') opts.verify = true;
     else if (a === '--download-grammars') opts.downloadGrammars = true;
@@ -98,7 +111,7 @@ function describeEdit(applied: AppliedEdit, index: number, total: number): strin
   return `hunk ${index + 1}/${total}:\n  ${kind} ${where}\n    new: ${JSON.stringify(edit.text)}${old}`;
 }
 
-async function run(opts: Options): Promise<void> {
+async function run(opts: Options, log: Logger): Promise<void> {
   if (opts.match === undefined) throw new Error('missing --match <file.md>');
   if (opts.in === undefined) throw new Error('missing --in <file>');
   const willWrite = !opts.dryRun && !opts.verify;
@@ -112,19 +125,20 @@ async function run(opts: Options): Promise<void> {
   await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
   const source = readFileSync(opts.in, 'utf8');
+  log.trace(`source: ${opts.in} (${source.length} bytes), ${file.hunks.length} hunk(s)`);
   const { source: result, edits } = applyAll(source, file, adapter); // MatchError/AmbiguityError
 
   if (opts.dryRun) {
-    for (const [i, e] of edits.entries()) console.log(describeEdit(e, i, edits.length));
-    console.log(`dry-run: ${edits.length} hunk(s) would apply (nothing written)`);
+    for (const [i, e] of edits.entries()) log.info(describeEdit(e, i, edits.length));
+    log.info(`dry-run: ${edits.length} hunk(s) would apply (nothing written)`);
     return;
   }
   if (opts.verify) {
-    console.log(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
+    log.info(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
     return;
   }
   writeFileAtomic(opts.out!, result);
-  console.log(`applied ${edits.length} hunk(s) → ${opts.out}`);
+  log.info(`applied ${edits.length} hunk(s) → ${opts.out}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -132,25 +146,53 @@ export async function main(argv: readonly string[]): Promise<void> {
   try {
     opts = parseArgs(argv);
   } catch (e) {
-    console.error(`error: ${(e as Error).message}\n\n${USAGE}`);
+    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
     return;
   }
   if (opts.help) {
-    console.log(USAGE);
+    process.stdout.write(`${USAGE}\n`);
     return;
   }
+
+  // The log file is opened BEFORE any work, so "I cannot write your log" is not a
+  // surprise delivered after the file has already been patched.
+  let log: Logger;
   try {
-    await run(opts);
+    log = createLogger({
+      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'apply') } : {}),
+      header: logHeader('apply', argv),
+    });
   } catch (e) {
-    if (e instanceof HatchError) {
-      console.error(`${e.name}: ${e.message}`);
-      process.exitCode = e.exitCode;
-    } else {
-      console.error(`error: ${(e as Error).message}`);
-      process.exitCode = 1;
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    return;
+  }
+
+  try {
+    await run(opts, log);
+    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
+  } catch (e) {
+    // The source is read again only to render: a report needs the text the pattern ran
+    // against, and by here the run has already thrown it away.
+    process.exitCode = log.fail(e, errorContext(opts));
+  } finally {
+    log.close();
+  }
+}
+
+function errorContext(opts: Options): { source?: string; sourcePath?: string; mdPath?: string } {
+  const ctx: { source?: string; sourcePath?: string; mdPath?: string } = {};
+  if (opts.in !== undefined) {
+    ctx.sourcePath = opts.in;
+    try {
+      ctx.source = readFileSync(opts.in, 'utf8');
+    } catch {
+      // No source to quote — the report simply says less.
     }
   }
+  if (opts.match !== undefined) ctx.mdPath = opts.match;
+  return ctx;
 }
 
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -17,11 +17,9 @@ export interface SynthLimits {
   readonly minParents: number;
   readonly maxParents: number | 'all';
   readonly parentDetailBase: number;
-  readonly parentDetailLimit: number;
   readonly minSiblings: number;
   readonly maxSiblings: number;
   readonly siblingDetailBase: number;
-  readonly siblingDetailLimit: number;
   readonly parentsRequired: boolean;
 }
 
@@ -29,11 +27,9 @@ export const DEFAULT_SYNTH_LIMITS: SynthLimits = {
   minParents: 1,
   maxParents: 'all',
   parentDetailBase: 0,
-  parentDetailLimit: 2,
-  minSiblings: 1,
-  maxSiblings: 3,
+  minSiblings: 0,
+  maxSiblings: 8,
   siblingDetailBase: 0,
-  siblingDetailLimit: 2,
   parentsRequired: false,
 } as const;
 
@@ -178,17 +174,24 @@ function makeHunkContext(
 // ── candidates ───────────────────────────────────────────────────────────────────
 function resolveHunk(context: HunkContext): ResolvedHunk {
   let fallback: ResolvedHunk | undefined;
-  let lastFailure: unknown;
-  const tried = new Set<string>();
+  let bestFailure: unknown;
+  // Verdicts, not just seen-signatures: see the loop below.
+  const tried = new Map<string, Attempt>();
 
-  for (const pattern of candidatePatterns(context)) {
-    const signature = printPattern(pattern);
-    if (tried.has(signature)) continue; 
-    tried.add(signature);
+  const ladder = candidatePatterns(context);
+  let verdict: Attempt | undefined;
 
-    const attempt = verifyPattern(context, pattern);
+  for (;;) {
+    const step = ladder.next(verdict);
+    if (step.done === true) break;
+    const pattern = step.value;
+    const signature = patternSignature(pattern);
+    const attempt = tried.get(signature) ?? verifyPattern(context, pattern);
+    tried.set(signature, attempt);
+    verdict = attempt;
+
     if ('failure' in attempt) {
-      lastFailure = attempt.failure;
+      bestFailure = moreInformative(bestFailure, attempt.failure);
       continue;
     }
     if (attempt.exact || !context.requireExact) {
@@ -202,10 +205,34 @@ function resolveHunk(context: HunkContext): ResolvedHunk {
     context.trace?.({ kind: 'hunk', pattern: fallback.pattern, patch: fallback.patch });
     return fallback;
   }
-  throw lastFailure ?? new AmbiguityError('synth: could not anchor the change with available context', []);
+  throw bestFailure ?? new AmbiguityError('synth: could not anchor the change with available context', []);
+}
+
+function moreInformative(current: unknown, next: unknown): unknown {
+  if (current === undefined) return next;
+  const a = rankFailure(current);
+  const b = rankFailure(next);
+  if (b > a) return next;
+  if (b < a) return current;
+  if (current instanceof MatchError && next instanceof MatchError) {
+    return next.failedStepIndex > current.failedStepIndex ? next : current;
+  }
+  return current;
+}
+
+function rankFailure(e: unknown): number {
+  if (e instanceof AmbiguityError) return 2;
+  if (e instanceof MatchError) return 1;
+  return 0;
+}
+
+function patternSignature(pattern: MatchPattern): string {
+  return printPattern(pattern);
 }
 
 type Attempt = { hunk: ResolvedHunk; exact: boolean } | { failure: unknown };
+
+type Ladder = Generator<MatchPattern, void, Attempt | undefined>;
 
 function verifyPattern(context: HunkContext, pattern: MatchPattern): Attempt {
   const { map, adapter, source, trace } = context;
@@ -256,24 +283,100 @@ function extractReplacementText(intendedSource: string, source: string, startOff
   return intendedSource.slice(startOffset, intendedSource.length - suffixLength);
 }
 
+interface DetailPolicy {
+  readonly base: number;
+  readonly spelled: ReadonlySet<number>;
+}
+
+interface Policies {
+  readonly parent: DetailPolicy;
+  readonly sibling: DetailPolicy;
+  readonly widened: ReadonlySet<number>;
+}
+
+type PolicyOwner = 'parent' | 'sibling';
+
+interface Generalized {
+  readonly owner: PolicyOwner;
+  readonly from: number;
+  readonly to: number;
+  readonly collapsed: readonly BlockSpan[];
+  readonly candidates: readonly BlockSpan[];
+  readonly widen?: { readonly parentOpen: number; readonly to: number };
+}
+
+function withSpelled(policies: Policies, owner: PolicyOwner, open: number): Policies {
+  const next = new Set(policies[owner].spelled);
+  next.add(open);
+  return { ...policies, [owner]: { base: policies[owner].base, spelled: next } };
+}
+
+function withWidened(policies: Policies, parentOpen: number): Policies {
+  const next = new Set(policies.widened);
+  next.add(parentOpen);
+  return { ...policies, widened: next };
+}
+
+type Move =
+  | { kind: 'spell'; owner: PolicyOwner; open: number }
+  | { kind: 'widen'; parentOpen: number };
+
+function mostSelective(
+  context: HunkContext,
+  generalized: readonly Generalized[],
+  policies: Policies,
+): Move | null {
+  let best: { move: Move; drop: number; width: number } | null = null;
+  const offer = (move: Move, drop: number, width: number): void => {
+    if (drop <= 0) return;
+    if (best === null || drop > best.drop || (drop === best.drop && width < best.width)) {
+      best = { move, drop, width };
+    }
+  };
+
+  for (const g of generalized) {
+    const policy = policies[g.owner];
+    const before = selectivity(context, g, policy);
+
+    if (g.collapsed.length > 0) {
+      for (const span of g.candidates) {
+        const after = selectivity(context, g, {
+          base: policy.base,
+          spelled: new Set([...policy.spelled, span.open]),
+        });
+        offer({ kind: 'spell', owner: g.owner, open: span.open }, before - after, span.close - span.open);
+      }
+    }
+
+    if (g.widen !== undefined) {
+      const wider = { ...g, to: g.widen.to };
+      const after = selectivity(context, wider, policy);
+      offer({ kind: 'widen', parentOpen: g.widen.parentOpen }, before - after, g.widen.to - g.to);
+    }
+  }
+  return best === null ? null : (best as { move: Move }).move;
+}
+
+function selectivity(context: HunkContext, g: Generalized, policy: DetailPolicy): number {
+  const steps = stepsForRange(context, g.from, g.to, policy, null, g.owner);
+  let fewest = Number.POSITIVE_INFINITY;
+  for (const step of steps) {
+    if (step.anchor.target !== 'literal') continue;
+    const norm = context.adapter.normalize(step.anchor.literal.raw);
+    if (norm === '') continue;
+    fewest = Math.min(fewest, context.map.occurrences(norm, 0, context.map.eof).length);
+  }
+  return fewest === Number.POSITIVE_INFINITY ? 0 : fewest;
+}
+
 // ── candidate ladder ─────────────────────────────────────────────────────────────
 
-function* candidatePatterns(context: HunkContext): Generator<MatchPattern> {
+function* candidatePatterns(context: HunkContext): Ladder {
   for (const cut of cutForms(context)) yield* contextLadder(context, cut);
 }
 
-function* contextLadder(context: HunkContext, cut: Cut): Generator<MatchPattern> {
-  const {
-    minParents,
-    maxParents,
-    parentDetailBase,
-    parentDetailLimit,
-    minSiblings,
-    maxSiblings,
-    siblingDetailBase,
-    siblingDetailLimit,
-    parentsRequired,
-  } = context.limits;
+function* contextLadder(context: HunkContext, cut: Cut): Ladder {
+  const { minParents, maxParents, minSiblings, maxSiblings, parentsRequired } = context.limits;
 
   const available = context.parents.length;
   const topParents = maxParents === 'all' ? available : Math.min(maxParents, available);
@@ -281,50 +384,117 @@ function* contextLadder(context: HunkContext, cut: Cut): Generator<MatchPattern>
   const baseAbove = Math.min(minSiblings, maxSiblings);
 
   for (let parents = baseParents; parents <= topParents; parents++) {
-    yield* patternFor(context, cut, parents, parentDetailBase, siblingDetailBase, baseAbove, 0);
-  }
-  for (let level = parentDetailBase + 1; level <= parentDetailLimit; level++) {
-    yield* patternFor(context, cut, topParents, level, siblingDetailBase, baseAbove, 0);
-  }
-  for (let level = siblingDetailBase + 1; level <= siblingDetailLimit; level++) {
-    yield* patternFor(context, cut, topParents, parentDetailLimit, level, baseAbove, 0);
+    yield* rung(context, cut, parents, baseAbove, 0);
   }
   for (let distance = 1; distance <= 2 * maxSiblings - baseAbove; distance++) {
     for (let extraAbove = 0; extraAbove <= Math.min(distance, maxSiblings - baseAbove); extraAbove++) {
       const below = distance - extraAbove;
       if (below > maxSiblings) continue;
-      yield* patternFor(context, cut, topParents, parentDetailBase, siblingDetailBase, baseAbove + extraAbove, below);
+      yield* rung(context, cut, topParents, baseAbove + extraAbove, below);
     }
   }
   if (baseParents > 0 && !parentsRequired) {
-    yield* patternFor(context, cut, 0, parentDetailBase, siblingDetailBase, baseAbove, 0);
+    yield* rung(context, cut, 0, baseAbove, 0);
   }
 }
 
-function* patternFor(
+function* rung(
   context: HunkContext,
   cut: Cut,
   parentCount: number,
-  parentDetail: number,
-  siblingDetail: number,
   aboveRows: number,
   belowRows: number,
-): Generator<MatchPattern> {
+): Ladder {
+  let policies: Policies = {
+    parent: { base: context.limits.parentDetailBase, spelled: new Set() },
+    sibling: { base: context.limits.siblingDetailBase, spelled: new Set() },
+    widened: new Set(),
+  };
+
+  for (;;) {
+    const built = patternFor(context, cut, parentCount, policies, aboveRows, belowRows);
+    if (built === null) return;
+
+    const verdict = yield built.pattern;
+    if (verdict === undefined || !('failure' in verdict)) return;
+    if (!(verdict.failure instanceof AmbiguityError)) return;
+
+    const pick = mostSelective(context, built.generalized, policies);
+    if (pick === null) return;
+    policies =
+      pick.kind === 'spell'
+        ? withSpelled(policies, pick.owner, pick.open)
+        : withWidened(policies, pick.parentOpen);
+  }
+}
+
+function patternFor(
+  context: HunkContext,
+  cut: Cut,
+  parentCount: number,
+  policies: Policies,
+  aboveRows: number,
+  belowRows: number,
+): { pattern: MatchPattern; generalized: Generalized[] } | null {
   const minBelow = cut.pinsRight ? Math.min(context.limits.minSiblings, context.limits.maxSiblings) : 0;
-  const lead = buildLead(context, parentCount, parentDetail, siblingDetail, cut.needsAbove ? aboveRows : 0);
-  const tail = buildTail(context, parentCount, siblingDetail, Math.max(belowRows, minBelow));
+  const generalized: Generalized[] = [];
+  const lead = buildLead(context, parentCount, policies, cut.needsAbove ? aboveRows : 0, generalized);
+  // Ask before building: a flush form that cannot close is not worth a full probe.
+  if (needsFlushLead(cut) && !flushGapCanClose(context, generalized)) return null;
+  const tail = buildTail(context, parentCount, policies, Math.max(belowRows, minBelow), generalized);
   const pattern = assemblePattern(context, lead, cut, tail);
-  if (pattern !== null) yield pattern;
+  return pattern === null ? null : { pattern, generalized };
+}
+
+/** The forms that put the removed text flush against the lead, with no `...` between. */
+function needsFlushLead(cut: Cut): boolean {
+  return (cut.kind === 'context' || cut.kind === 'contextAbove') && cut.looseLeft !== true;
+}
+
+/**
+ * Whether a flush gap between the lead and the cut can close AT THE CUT WE MEAN — one
+ * normalize of a short string instead of a full walk of the file.
+ *
+ * A flush gap demands that the cut begin exactly where the lead ended, so it closes only
+ * when the canon holds nothing in between. Not a word about which language: the question
+ * is put to the canon, and the canon is the adapter's answer. Two things come of it.
+ *
+ * SPEED, which is why it was written. In a brace language the answer is usually yes and
+ * this costs one string compare. In a language with significant indentation the canon
+ * really does hold `\n` + indent between a header and its body, no literal carries it,
+ * and every flush form is dead on arrival — Python was spending 29 of its 99 corpus
+ * probes walking through forms that could not close.
+ *
+ * SHAPE, which turned out to matter more. A flush anchor is TEXT, so when the text is a
+ * duplicate it can close somewhere else entirely: `void f() { >>> step();` matched the
+ * FIRST of six identical `step();` instead of the fifth we meant, and the hunk still
+ * passed verification — by replacing the whole body with the whole new body. Correct,
+ * and a terrible hunk to read or to rebase. Asking about the intended cut refuses that
+ * candidate, and the ladder goes on to anchor the edit where it actually is (corpus
+ * cpp/17 and cpp/41: both hunks got shorter, one down to an empty patch body).
+ *
+ * One honest edge: a lead ending in a word next to a cut starting with a word normalizes
+ * to '' in isolation where context would give a space. Then we build a flush form that
+ * fails its probe — exactly the old behaviour, so a missed saving, never a wrong hunk.
+ */
+function flushGapCanClose(context: HunkContext, leadRanges: readonly Generalized[]): boolean {
+  const last = leadRanges[leadRanges.length - 1];
+  if (last === undefined) return true; // nothing to sit flush against
+  const { map, source, adapter } = context;
+  const leadEnd = map.toOriginalPos(map.toCanonPos(last.to), 'left');
+  const cutStart = map.toOriginalPos(context.canonStart, 'right');
+  if (cutStart <= leadEnd) return true;
+  return adapter.normalize(source.slice(leadEnd, cutStart)) === '';
 }
 
 // ── cut forms ────────────────────────────────────────────────────────────────────
 type Cut =
-  | { kind: 'insert'; side: 'left' | 'right'; needsAbove: boolean; pinsRight: boolean; allowEdge: boolean }
-  | { kind: 'exact'; needsAbove: false; pinsRight: false; allowEdge: boolean }
-  | { kind: 'context'; needsAbove: true; pinsRight: true; allowEdge: boolean }
-  | { kind: 'contextBelow'; needsAbove: false; pinsRight: true; allowEdge: boolean }
-  | { kind: 'contextAbove'; needsAbove: true; pinsRight: false; allowEdge: boolean }
-  | { kind: 'span'; needsAbove: true; pinsRight: true; allowEdge: boolean };
+  | { kind: 'insert'; side: 'left' | 'right'; needsAbove: boolean; pinsRight: boolean; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'exact'; needsAbove: false; pinsRight: false; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'context'; needsAbove: true; pinsRight: true; allowEdge: boolean; looseLeft?: boolean }
+  | { kind: 'contextBelow'; needsAbove: false; pinsRight: true; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'contextAbove'; needsAbove: true; pinsRight: false; allowEdge: boolean; looseLeft?: boolean }
+  | { kind: 'span'; needsAbove: true; pinsRight: true; allowEdge: boolean; looseLeft?: false };
 
 function* cutForms(context: HunkContext): Generator<Cut> {
   const { segment, map, parents, canonStart, canonEnd } = context;
@@ -350,6 +520,8 @@ function* cutForms(context: HunkContext): Generator<Cut> {
   yield { kind: 'contextBelow', needsAbove: false, pinsRight: true, allowEdge: false };
   yield { kind: 'contextAbove', needsAbove: true, pinsRight: false, allowEdge: false };
   yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: false };
+  yield { kind: 'context', needsAbove: true, pinsRight: true, allowEdge: false, looseLeft: true };
+  yield { kind: 'contextAbove', needsAbove: true, pinsRight: false, allowEdge: false, looseLeft: true };
   yield { kind: 'context', needsAbove: true, pinsRight: true, allowEdge: true };
   yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: true };
 }
@@ -367,7 +539,10 @@ function assemblePattern(context: HunkContext, lead: Step[], cut: Cut, tail: Tai
   const removedAnchor = (): Anchor | null =>
     literalAnchor(context, context.segment.removed.join('\n'));
   const fromRemoved = (anchor: Anchor): Step => ({ gap: markedGap(skipGap(), ['insert', 'right']), anchor });
-  const afterLead = (anchor: Anchor): Step => ({ gap: markedGap(tightGap(), ['insert', 'left']), anchor });
+  const afterLead = (anchor: Anchor): Step => ({
+    gap: markedGap(cut.looseLeft === true ? skipGap() : tightGap(), ['insert', 'left']),
+    anchor,
+  });
 
   switch (cut.kind) {
     case 'insert':
@@ -415,15 +590,15 @@ function pattern(context: HunkContext, lead: Step[], rest: Step[]): MatchPattern
 function buildLead(
   context: HunkContext,
   parentCount: number,
-  parentDetail: number,
-  siblingDetail: number,
+  policies: Policies,
   aboveRows: number,
+  generalized: Generalized[],
 ): Step[] {
   const steps: Step[] = [];
   for (let i = parentCount - 1; i >= 0; i--) {
-    steps.push(...headerSteps(context, context.parents[i]!, parentDetail));
+    steps.push(...headerSteps(context, context.parents[i]!, i, policies, generalized));
   }
-  steps.push(...neighbourStepsAbove(context, aboveRows, siblingDetail));
+  steps.push(...neighbourStepsAbove(context, aboveRows, policies.sibling, generalized));
   return steps;
 }
 
@@ -432,12 +607,18 @@ interface Tail {
   readonly startCanon: number;
 }
 
-function buildTail(context: HunkContext, parentCount: number, siblingDetail: number, belowRows: number): Tail {
+function buildTail(
+  context: HunkContext,
+  parentCount: number,
+  policies: Policies,
+  belowRows: number,
+  generalized: Generalized[],
+): Tail {
   const steps: Step[] = [];
   let startCanon: number | null = null;
 
   if (belowRows > 0) {
-    const below = neighbourStepsBelow(context, belowRows, siblingDetail);
+    const below = neighbourStepsBelow(context, belowRows, policies.sibling, generalized);
     if (below.length > 0) {
       steps.push(...below);
       startCanon = context.canonEnd;
@@ -453,23 +634,61 @@ function buildTail(context: HunkContext, parentCount: number, siblingDetail: num
   return { steps, startCanon: startCanon ?? context.map.eof };
 }
 
-function headerSteps(context: HunkContext, span: BlockSpan, detail: number): Step[] {
+function headerSteps(
+  context: HunkContext,
+  span: BlockSpan,
+  index: number,
+  policies: Policies,
+  generalized: Generalized[],
+): Step[] {
   const { map } = context;
   const from = map.toOriginalPos(span.headerStart ?? span.open, 'right');
-  const to = map.toOriginalPos(span.open + 1, 'left');
-  return stepsForRange(context, from, to, detail);
+  const plain = map.toOriginalPos(span.open + 1, 'left');
+  const inwards = headerWidenBoundary(context, span, index);
+  const widened = policies.widened.has(span.open) && inwards !== null;
+  const to = widened ? inwards! : plain;
+
+  const before = generalized.length;
+  const steps = stepsForRange(context, from, to, policies.parent, generalized, 'parent');
+  if (!widened && inwards !== null && generalized.length > before) {
+    const g = generalized[generalized.length - 1]!;
+    generalized[generalized.length - 1] = { ...g, widen: { parentOpen: span.open, to: inwards } };
+  }
+  return steps;
 }
 
+function headerWidenBoundary(context: HunkContext, span: BlockSpan, index: number): number | null {
+  const { map, parents } = context;
+  const inner = index > 0 ? parents[index - 1]! : null;
+  const canonEdge = inner === null ? context.canonStart : inner.headerStart ?? inner.open;
+  if (canonEdge <= span.open + 1 || canonEdge > span.close) return null;
+  const to = map.toOriginalPos(canonEdge, 'left');
+  return to > map.toOriginalPos(span.open + 1, 'left') ? to : null;
+}
+
+
 function closerStep(context: HunkContext, span: BlockSpan): Step | null {
-  if (span.closeEnd === undefined) return null;
   const { map, source } = context;
-  const raw = source.slice(map.toOriginalPos(span.close, 'right'), map.toOriginalPos(span.closeEnd, 'left'));
+  if (span.closeEnd !== undefined) {
+    const raw = source.slice(map.toOriginalPos(span.close, 'right'), map.toOriginalPos(span.closeEnd, 'left'));
+    const anchor = literalAnchor(context, raw);
+    return anchor === null ? null : skipStep(anchor);
+  }
+  const start = map.toOriginalPos(span.close, 'right');
+  if (start >= source.length) return null; // the block runs to the end of the file
+  const lineEnd = source.indexOf('\n', start);
+  const raw = source.slice(start, lineEnd === -1 ? source.length : lineEnd);
   const anchor = literalAnchor(context, raw);
   return anchor === null ? null : skipStep(anchor);
 }
 
 // ── neighbours ───────────────────────────────────────────────────────────────────
-function neighbourStepsAbove(context: HunkContext, rows: number, detail: number): Step[] {
+function neighbourStepsAbove(
+  context: HunkContext,
+  rows: number,
+  policy: DetailPolicy,
+  generalized: Generalized[],
+): Step[] {
   const { parents, map, lines, lineStartOffsets, firstChangedRowIndex } = context;
   const limit = parents.length > 0 ? map.toOriginalPos(parents[0]!.open + 1, 'right') : 0;
 
@@ -480,10 +699,15 @@ function neighbourStepsAbove(context: HunkContext, rows: number, detail: number)
     if (!isBlankLine(lines[row])) taken++;
   }
   const from = taken < rows ? limit : Math.max(lineStartOffsets[row]!, limit);
-  return stepsForRange(context, from, context.changeStartOffset, detail);
+  return stepsForRange(context, from, context.changeStartOffset, policy, generalized, 'sibling');
 }
 
-function neighbourStepsBelow(context: HunkContext, rows: number, detail: number): Step[] {
+function neighbourStepsBelow(
+  context: HunkContext,
+  rows: number,
+  policy: DetailPolicy,
+  generalized: Generalized[],
+): Step[] {
   const { parents, map, lines, lineStartOffsets, lineCount, rowIndexAfterChange } = context;
   const limit = parents.length > 0 ? map.toOriginalPos(parents[0]!.close, 'right') : context.source.length;
 
@@ -494,20 +718,35 @@ function neighbourStepsBelow(context: HunkContext, rows: number, detail: number)
     row++;
   }
   const to = Math.min(taken < rows ? limit : lineStartOffsets[row]!, limit);
-  return stepsForRange(context, context.changeEndOffset, to, detail);
+  return stepsForRange(context, context.changeEndOffset, to, policy, generalized, 'sibling');
 }
 
 // ── generalized anchors ──────────────────────────────────────────────────────────
-function stepsForRange(context: HunkContext, from: number, to: number, detail: number): Step[] {
+function stepsForRange(
+  context: HunkContext,
+  from: number,
+  to: number,
+  policy: DetailPolicy,
+  generalized: Generalized[] | null,
+  owner: PolicyOwner,
+): Step[] {
   if (to <= from) return [];
   const { map } = context;
   const canonFrom = map.toCanonPos(from);
   const canonTo = map.toCanonPos(to);
   if (canonTo <= canonFrom) return [];
 
+  const collapsed = bracketsToGeneralize(map, canonFrom, canonTo, policy);
+  if (generalized !== null) {
+     const candidates = map
+      .blocksWithin(canonFrom, canonTo)
+      .filter((span) => span.close > span.open + 1 && !policy.spelled.has(span.open));
+    generalized.push({ owner, from, to, collapsed, candidates });
+  }
+
   const steps: Step[] = [];
   let cursor = canonFrom;
-  for (const bracket of bracketsToGeneralize(map, canonFrom, canonTo, detail)) {
+  for (const bracket of collapsed) {
     appendLiteralSegment(context, steps, cursor, bracket.open + 1); 
     cursor = bracket.close; 
   }
@@ -515,7 +754,12 @@ function stepsForRange(context: HunkContext, from: number, to: number, detail: n
   return steps;
 }
 
-function bracketsToGeneralize(map: SourceMap, canonFrom: number, canonTo: number, detail: number): BlockSpan[] {
+function bracketsToGeneralize(
+  map: SourceMap,
+  canonFrom: number,
+  canonTo: number,
+  policy: DetailPolicy,
+): BlockSpan[] {
   const out: BlockSpan[] = [];
   const open: number[] = []; 
   for (const span of map.blocksWithin(canonFrom, canonTo)) {
@@ -523,11 +767,18 @@ function bracketsToGeneralize(map: SourceMap, canonFrom: number, canonTo: number
     const depth = open.length;
     open.push(span.close);
     if (span.close <= span.open + 1) continue; 
-    if (depth < detail) continue; 
+    if (depth < policy.base) continue; 
+    if (policy.spelled.has(span.open)) continue;
+    if (containsSpelled(span, policy.spelled)) continue;
     if (out.length > 0 && span.open < out[out.length - 1]!.close) continue; 
     out.push(span);
   }
   return out;
+}
+
+function containsSpelled(span: BlockSpan, spelled: ReadonlySet<number>): boolean {
+  for (const open of spelled) if (open > span.open && open < span.close) return true;
+  return false;
 }
 
 function appendLiteralSegment(context: HunkContext, steps: Step[], canonFrom: number, canonTo: number): void {

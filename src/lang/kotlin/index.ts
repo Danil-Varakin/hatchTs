@@ -5,10 +5,8 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  { open: '"""', close: '"""', multiline: true }, // raw string: no escapes
+  { open: '"""', close: '"""', multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
 ];
@@ -59,6 +57,7 @@ const kotlinBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const kotlinAdapter = makeAdapter({
+  name: 'kotlin',
   grammar: {
     file: 'tree-sitter-kotlin.wasm',
     package: '@tree-sitter-grammars/tree-sitter-kotlin',

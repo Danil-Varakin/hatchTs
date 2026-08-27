@@ -1,0 +1,16 @@
+# match java
+    ...
+    static int mix(
+    ...
+    ) {
+    ...
+    >>>
+        h ^= h \>>> 16;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    h ^= h >>> 13;
+# end

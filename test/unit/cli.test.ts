@@ -43,8 +43,6 @@ test('an unknown command names the known ones and exits 1', () => {
 });
 
 test('a flag in the command slot gets its own sentence, not the list', () => {
-  // `hatch --in x` is the slip people actually make; "known commands: …" answers a
-  // question they did not ask.
   const r = run(['--in', 'x.cc']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /options come AFTER the command/);
@@ -58,15 +56,12 @@ test('a command forwards its own --help, not the dispatcher\'s', () => {
 });
 
 test('a command keeps its own exit code through the dispatcher', () => {
-  // 1 = usage error from generate itself (no --in), not the dispatcher's.
   const r = run(['generate']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /missing --in/);
 });
 
 test('the dispatcher lists exactly the commands it can load', async () => {
-  // The USAGE text is generated from the same table that dispatch uses, so this cannot
-  // drift; the test pins that they are one table and not two.
   const usage = run([]).stdout;
   const listed = [...usage.matchAll(/^ {2}(\w+) {2,}/gm)].map((m) => m[1] ?? '');
   for (const name of listed) {

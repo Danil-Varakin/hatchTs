@@ -1,0 +1,16 @@
+# match py
+    ...
+        def load(
+    ...
+    ):
+    ...
+    >>>
+            pass
+    <<<
+    ...
+    def save(self):
+    ...
+# end
+# patch
+    return self.data
+# end

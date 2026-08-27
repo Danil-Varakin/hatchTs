@@ -5,16 +5,11 @@ import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { ParseError } from '../../src/core/errors.ts';
 import { strip, firstMatch, wrapMatch, type FlatStep } from '../helpers.ts';
 
-
 function lit(raw: string): FlatStep['anchor'] {
   return { kind: 'literal', raw };
 }
 const EOF: FlatStep['anchor'] = { kind: 'eof' };
 
-/**
- * Файл .md из строк как есть. Тесты САМОГО формата пишутся так, а не через
- * helpers-сборщик: жёлоб и `# end` должны быть видны в тексте теста глазами.
- */
 function md(...lines: string[]): string {
   return lines.join('\n') + '\n';
 }
@@ -39,7 +34,6 @@ function expectParseError(text: string, msgPart?: string): ParseError {
   }
   return err;
 }
-
 
 test('insertion point at the end of the block → eof-step with insert=left', () => {
   const m = firstMatch(wrapMatch('#include "a.h"\n>>>'));
@@ -96,7 +90,6 @@ test('insert at the beginning of the file ">>> foo"', () => {
   ]);
 });
 
-
 test('gluing: adjacent literals → ONE multiline literal', () => {
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
   
@@ -112,7 +105,6 @@ test('gluing: adjacent literals → ONE multiline literal', () => {
 });
 
 test('gluing: mdSpan covers [First line, Last line]', () => {
-  // '# match cpp' — строка 1, тело начинается со строки 2
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
   const a = m.steps[0]!.anchor;
   assert.equal(a.target, 'literal');
@@ -121,7 +113,7 @@ test('gluing: mdSpan covers [First line, Last line]', () => {
 
 test('gluing does NOT occur via the operator (... breaks the adjacency)', () => {
   const m = firstMatch(wrapMatch('a\n...\nb\n>>>'));
-  assert.equal(strip(m).length, 3); // a | b(skipAny) | eof(insert)
+  assert.equal(strip(m).length, 3);
   assert.equal(strip(m)[1]!.mode.op, 'skipAny');
 });
 
@@ -152,7 +144,6 @@ test('standalone "\\\\..." loses exactly ONE backslash (escape of the escape)', 
   assert.equal(strip(m)[0]!.anchor.raw, 'x \\... y');
 });
 
-
 test('the language is determined by the "# match <lang>" heading', () => {
   const file = parseHatchFile(wrapMatch('foo >>>', 'cpp'));
   assert.equal(file.language, 'cpp');
@@ -173,7 +164,6 @@ test('FAIL: mixed languages in one file', () => {
   const text = [wrapMatch('foo >>>', 'cpp'), wrapMatch('bar >>>', 'python')].join('\n');
   expectParseError(text, 'language');
 });
-
 
 test('FAIL: <<< without preceding >>>', () => {
   expectParseError(wrapMatch('foo\n<<<\n>>>'), 'end of range before start');
@@ -233,7 +223,6 @@ test('FAIL: the old fenced format is reported by name, with the fix in the hint'
   assert.match(err.hint ?? '', /four spaces/);
   assert.match(err.hint ?? '', /# end/);
 });
-
 
 // ── жёлоб: колонка 0 за структурой, нагрузка до неё не дотягивается ───────────
 

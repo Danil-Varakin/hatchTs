@@ -10,7 +10,6 @@ export interface DiffHunk {
   lines: string[];
 }
 
-
 export interface ChangeSegment {
   oldStart: number;
   newStart: number;
@@ -32,7 +31,6 @@ export function diffHunks(oldStr: string, newStr: string, context = 3): DiffHunk
 export function changeSegments(oldStr: string, newStr: string, bridgeGap = 0): ChangeSegment[] {
   const base = baseSegments(oldStr, newStr);
   if (base.length === 0) return [];
-
 
   const oldLines = oldStr.split('\n');
   const out: ChangeSegment[] = [];

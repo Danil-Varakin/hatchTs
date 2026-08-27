@@ -79,13 +79,5 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000;
 }
 
-/**
- * Cross-field checks. There are none left: the pair that lived here compared
- * `detail.base` against a `detail.limit`, and the ceiling is gone — unfolding is
- * adaptive and stops when no bracket can tell the candidates apart, so there is nothing
- * left to contradict. Kept as the seam, because the next contradictory pair will want
- * exactly this shape and the same "name the origin of BOTH values" wording.
- */
 export function checkPairs(_settings: GenerateSettings, _origins: Record<string, string>): void {
-  // no contradictory pairs today
 }

@@ -1,10 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseHatchFile } from '../core/hatch-parser.ts';
-import { matchPattern } from '../core/matcher.ts';
-import { patchHunk } from '../core/patcher.ts';
-import type { Edit } from '../core/patcher.ts';
-import type { HatchFile } from '../core/ast.ts';
+import { applyAll } from '../core/apply.ts';
+import type { AppliedEdit } from '../core/apply.ts';
 import { writeFileAtomic } from '../infra/fs.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
@@ -12,29 +10,6 @@ import type { LanguageAdapter } from '../lang/source-map.ts';
 import { HatchError } from '../core/errors.ts';
 import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
 import type { Logger } from '../infra/log.ts';
-
-export interface AppliedEdit {
-  edit: Edit;
-  oldText: string; 
-}
-
-export interface ApplyResult {
-  source: string;
-  edits: AppliedEdit[];
-}
-
-export function applyAll(source: string, file: HatchFile, adapter: LanguageAdapter): ApplyResult {
-  let current = source;
-  const edits: AppliedEdit[] = [];
-  for (const hunk of file.hunks) {
-    const map = adapter.buildMap(current); 
-    const marks = matchPattern(hunk.match, map, adapter.normalize); 
-    const result = patchHunk(current, map, marks, hunk.patch);
-    edits.push({ edit: result.edit, oldText: current.slice(result.edit.start, result.edit.end) });
-    current = result.source;
-  }
-  return { source: current, edits };
-}
 
 interface Options {
   match?: string;
@@ -74,8 +49,6 @@ function parseArgs(argv: readonly string[]): Options {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    // --log takes an OPTIONAL place: `--log` alone means the default directory, and the
-    // next token is a value only when it is not another flag.
     if (a === '--log') {
       const next = argv[i + 1];
       opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
@@ -96,7 +69,6 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Language: --language > `# match <lang>` in the .md > the source file extension.
 function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
   if (opts.language !== undefined) return adapterForLanguage(opts.language);
   if (mdLanguage !== undefined) return adapterForLanguage(mdLanguage);
@@ -119,14 +91,13 @@ async function run(opts: Options, log: Logger): Promise<void> {
     throw new Error('missing --out <file> (or use --dry-run / --verify)');
   }
 
-  const file = parseHatchFile(readFileSync(opts.match, 'utf8')); // ParseError (exit 2)
+  const file = parseHatchFile(readFileSync(opts.match, 'utf8'));
   const adapter = resolveAdapter(opts, file.language);
-  // May fetch the grammar, but only because the caller said so (grammar-store.ts).
   await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
   const source = readFileSync(opts.in, 'utf8');
   log.trace(`source: ${opts.in} (${source.length} bytes), ${file.hunks.length} hunk(s)`);
-  const { source: result, edits } = applyAll(source, file, adapter); // MatchError/AmbiguityError
+  const { source: result, edits } = applyAll(source, file, adapter);
 
   if (opts.dryRun) {
     for (const [i, e] of edits.entries()) log.info(describeEdit(e, i, edits.length));
@@ -155,8 +126,6 @@ export async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  // The log file is opened BEFORE any work, so "I cannot write your log" is not a
-  // surprise delivered after the file has already been patched.
   let log: Logger;
   try {
     log = createLogger({
@@ -173,8 +142,6 @@ export async function main(argv: readonly string[]): Promise<void> {
     await run(opts, log);
     if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
   } catch (e) {
-    // The source is read again only to render: a report needs the text the pattern ran
-    // against, and by here the run has already thrown it away.
     process.exitCode = log.fail(e, errorContext(opts));
   } finally {
     log.close();
@@ -188,7 +155,6 @@ function errorContext(opts: Options): { source?: string; sourcePath?: string; md
     try {
       ctx.source = readFileSync(opts.in, 'utf8');
     } catch {
-      // No source to quote — the report simply says less.
     }
   }
   if (opts.match !== undefined) ctx.mdPath = opts.match;

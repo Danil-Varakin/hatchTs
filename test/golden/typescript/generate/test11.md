@@ -1,0 +1,16 @@
+# match ts
+    ...
+    function depth(
+    ...
+    ): number {
+    ...
+    >>>
+      return node?.left!.right?.depth ?? 0;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return node?.left!.right?.height ?? 0;
+# end

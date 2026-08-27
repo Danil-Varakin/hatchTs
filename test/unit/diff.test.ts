@@ -18,15 +18,15 @@ test('одна изменённая строка: ханк несёт конте
   assert.equal(h.oldStart, 1);
   assert.ok(h.lines.includes('-c'));
   assert.ok(h.lines.includes('+C'));
-  assert.ok(h.lines.includes(' b')); // контекст до
-  assert.ok(h.lines.includes(' d')); // контекст после
+  assert.ok(h.lines.includes(' b'));
+  assert.ok(h.lines.includes(' d'));
 });
 
 test('context управляет шириной ханка и слиянием соседних правок', () => {
   const oldStr = 'a\nb\nc\nd\ne\nf\ng\n';
   const newStr = 'A\nb\nc\nd\ne\nf\nG\n';
-  assert.equal(diffHunks(oldStr, newStr, 1).length, 2); // порог 2 < разрыв 5
-  assert.equal(diffHunks(oldStr, newStr, 5).length, 1); // порог 10 > разрыв 5
+  assert.equal(diffHunks(oldStr, newStr, 1).length, 2);
+  assert.equal(diffHunks(oldStr, newStr, 5).length, 1);
 });
 
 test('lineKind/lineText: разбор префикс-маркеров, включая eofnl', () => {
@@ -77,17 +77,14 @@ test('правки через ПУСТУЮ неизменённую строку
   const oldStr = 'a\n\nb\n';
   const newStr = 'A\n\nB\n';
   const segs = changeSegments(oldStr, newStr);
-  assert.equal(segs.length, 1); // один блок, а не два
-  // пустая строка-разделитель переизлучается как есть в обе стороны
+  assert.equal(segs.length, 1);
   assert.deepEqual(segs[0], { oldStart: 1, newStart: 1, removed: ['a', '', 'b'], added: ['A', '', 'B'] });
 });
 
 test('непустая неизменённая строка (bar();) по умолчанию РЕЖЕТ; bridgeGap=1 — сшивает', () => {
   const oldStr = 'foo();\nbar();\nbaz();\n';
   const newStr = 'foo2();\nbar();\nbaz2();\n';
-  // по умолчанию bridgeGap=0 → два ханка, bar(); не в замене
   assert.equal(changeSegments(oldStr, newStr).length, 2);
-  // bridgeGap=1 → один ханк, bar(); входит в replace как есть
   const merged = changeSegments(oldStr, newStr, 1);
   assert.equal(merged.length, 1);
   assert.deepEqual(merged[0], {
@@ -108,9 +105,9 @@ test('многострочная замена подряд → ОДИН сегм
 
 test('вставка цельного блока = ОДНА вставка, НЕ построчно (пустая строка внутри — часть блока)', () => {
   const oldStr = 'a\nb\n';
-  const newStr = 'a\nX1\nX2\n\nX4\nb\n'; // блок из 4 строк, одна из них пустая
+  const newStr = 'a\nX1\nX2\n\nX4\nb\n';
   const segs = changeSegments(oldStr, newStr);
-  assert.equal(segs.length, 1); // блок целиком, а не 4 ханка
+  assert.equal(segs.length, 1);
   assert.deepEqual(segs[0], { oldStart: 2, newStart: 2, removed: [], added: ['X1', 'X2', '', 'X4'] });
 });
 

@@ -1,0 +1,29 @@
+Два ханка в одном файле: правится текст справки и ветка вывода.
+
+# match python
+    ...
+    def usage():
+    ...
+    >>>
+        print("использование: tool [--verbose] [--out FILE] [--level N]")
+    <<<
+    ...
+# end
+# patch
+    print("использование: tool [--verbose] [--out FILE] [--level N] [--quiet]")
+# end
+
+# match python
+    ...
+    def main(argv):
+    ...
+        if opts["out"] is None:
+    ...
+    >>>
+            print("вывод в stdout")
+    <<<
+    ...
+# end
+# patch
+    print("вывод в стандартный поток")
+# end

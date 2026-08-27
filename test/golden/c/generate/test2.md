@@ -1,0 +1,16 @@
+# match c
+    ...
+    void reset(
+    ...
+    ) {
+    ...
+    >>>
+      *p = (struct Point){ .x = 0, .y = 0 };
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    *p = (struct Point){ .x = 0, .y = 0, .z = 0 };
+# end

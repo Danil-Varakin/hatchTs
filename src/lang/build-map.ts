@@ -16,7 +16,6 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
   };
   const assertFromTo = (from: number, to: number): void => {
     if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);}
-  // "inside a block" is (open, close]: depth changes after the brace is passed.
   const inside = (s: BlockSpan, pos: number): boolean => s.open < pos && pos <= s.close;
 
   const depthOf = (pos: number): number => {

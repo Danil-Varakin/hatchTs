@@ -1,0 +1,12 @@
+# match go
+    ...
+    		case err := <-done:
+    ...
+    >>>
+    				return completed, fmt.Errorf("job failed: %w", err)
+    <<<
+    ...
+# end
+# patch
+    return completed, fmt.Errorf("job %d failed: %w", completed, err)
+# end

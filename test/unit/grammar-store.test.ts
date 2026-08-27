@@ -1,5 +1,3 @@
-// Проверки store БЕЗ СЕТИ: разрешение путей, отказ без разрешения, реакция на битый
-// кеш. Скачивание здесь не трогаем намеренно — тест, которому нужен интернет, не тест.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
@@ -22,7 +20,6 @@ const SOURCE = {
   sha256: SHA_A,
 } as const;
 
-// Подменить переменные окружения на время одного теста и вернуть как было.
 async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
   const saved = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
   for (const [k, v] of Object.entries(vars)) {
@@ -41,7 +38,7 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
 
 test('URL выводится из пакета и версии; явный url перекрывает', () => {
   const urls = grammarUrls(SOURCE);
-  assert.equal(urls.length, 2); // jsdelivr + запасной unpkg
+  assert.equal(urls.length, 2);
   assert.ok(urls.every((u) => u.startsWith('https://')));
   assert.ok(urls[0]!.includes('tree-sitter-nonesuch@1.2.3/tree-sitter-nonesuch.wasm'));
 
@@ -56,12 +53,11 @@ test('кеш: HATCH_GRAMMAR_CACHE перекрывает, XDG уважается
   await withEnv({ HATCH_GRAMMAR_CACHE: undefined, XDG_CACHE_HOME: '/tmp/xdg' }, async () => {
     assert.equal(grammarCacheDir(), join('/tmp/xdg', 'hatch', 'grammars'));
   });
-  // '@scope/pkg' → '@scope+pkg': запись остаётся ОДНИМ уровнем, слеш не делает подпапку.
   await withEnv({ HATCH_GRAMMAR_CACHE: '/tmp/xx' }, async () => {
     const scoped = { ...SOURCE, package: '@tree-sitter-grammars/tree-sitter-kotlin' };
     assert.equal(
       cacheEntry(scoped),
-      '/tmp/xx/@tree-sitter-grammars+tree-sitter-kotlin@1.2.3/tree-sitter-nonesuch.wasm',
+      join('/tmp/xx', '@tree-sitter-grammars+tree-sitter-kotlin@1.2.3', 'tree-sitter-nonesuch.wasm'),
     );
   });
 });
@@ -81,6 +77,33 @@ test('без разрешения — отказ, а не тихая загру�
   });
 });
 
+test('сообщение называет ЯЗЫК и даёт команду ровно на него', async () => {
+  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
+  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
+    const e = await resolveGrammar(SOURCE, {}, 'cpp').then(
+      () => null,
+      (err: unknown) => err as GrammarError,
+    );
+    assert.ok(e instanceof GrammarError);
+    assert.match(e.message, /the cpp grammar is not installed/);
+    assert.match(e.message, /--language cpp/);
+    assert.match(e.message, /npm run grammars -- --language cpp/);
+  });
+});
+
+test('язык не назвали — сообщение всё равно рабочее, просто без него', async () => {
+  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
+  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
+    const e = await resolveGrammar(SOURCE).then(
+      () => null,
+      (err: unknown) => err as GrammarError,
+    );
+    assert.ok(e instanceof GrammarError);
+    assert.match(e.message, new RegExp(`grammar ${SOURCE.file.replace('.', '\\.')} is not installed`));
+    assert.doesNotMatch(e.message, /--language undefined/);
+  });
+});
+
 test('HATCH_GRAMMAR_DIR отдаёт файл как есть (своя сборка — своя контрольная сумма)', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hatch-grammars-'));
   const bytes = new Uint8Array([1, 2, 3]);
@@ -97,8 +120,7 @@ test('битая запись кеша ИГНОРИРУЕТСЯ (её хеш м�
   await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
     const path = cacheEntry(SOURCE);
     await mkdir(join(path, '..'), { recursive: true });
-    await writeFile(path, new Uint8Array([9, 9, 9])); // не тот sha256
-    // Загрузка запрещена → отказ. Главное: подменённые байты НЕ вернулись.
+    await writeFile(path, new Uint8Array([9, 9, 9]));
     await assert.rejects(resolveGrammar(SOURCE), GrammarError);
   });
   assert.ok(entry.length > 0);

@@ -1,0 +1,16 @@
+# match java
+    ...
+        default boolean has(
+    ...
+    ) {
+    ...
+    >>>
+            return get(key) != null;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return get(key) != null && get(key).length > 0;
+# end

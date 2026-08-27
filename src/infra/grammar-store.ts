@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, sep } from 'node:path';
 
 import { GrammarError } from '../core/errors.ts';
 import type { GrammarSource, InitOptions } from '../lang/source-map.ts';
@@ -16,6 +16,7 @@ const DOWNLOAD_TIMEOUT_MS = 60_000;
 export async function resolveGrammar(
   source: GrammarSource,
   policy: InitOptions = {},
+  language?: string,
 ): Promise<GrammarInput> {
   validate(source);
 
@@ -37,7 +38,7 @@ export async function resolveGrammar(
     policy.log?.(`cached ${source.file} failed its checksum, refetching`);
   }
 
-  if (policy.allowDownload !== true) throw refusal(source);
+  if (policy.allowDownload !== true) throw refusal(source, language);
 
   const bytes = await download(source, policy);
   await cache(source, bytes, policy);
@@ -47,7 +48,6 @@ export async function resolveGrammar(
 export function cacheEntry(source: GrammarSource): string {
   return join(grammarCacheDir(), entryDir(source), source.file);
 }
-
 
 export function grammarCacheDir(): string {
   const override = process.env['HATCH_GRAMMAR_CACHE'];
@@ -71,7 +71,6 @@ export interface GrammarStatus {
   readonly path: string | undefined; 
   readonly bytes: number;
 }
-
 
 export async function ensureGrammars(
   sources: readonly GrammarSource[],
@@ -99,7 +98,6 @@ export async function locate(source: GrammarSource): Promise<string | null> {
   }
   return (await readIfExists(cacheEntry(source))) !== null ? cacheEntry(source) : null;
 }
-
 
 export async function pinFor(spec: string, policy: InitOptions = {}): Promise<GrammarSource> {
   const slash = spec.indexOf('/tree-sitter-', spec.indexOf('/') + 1);
@@ -145,7 +143,6 @@ function localDirs(): string[] {
   dirs.push(join(import.meta.dirname, '../../grammars'));
   return dirs;
 }
-
 
 function entryDir(source: GrammarSource): string {
   if (source.package !== undefined) {
@@ -205,7 +202,6 @@ async function download(source: GrammarSource, policy: InitOptions): Promise<Uin
   );
 }
 
-
 async function cache(source: GrammarSource, bytes: Uint8Array, policy: InitOptions): Promise<void> {
   const target = cacheEntry(source);
   const temp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
@@ -245,13 +241,22 @@ function describe(source: GrammarSource): string {
   return source.url ?? source.path ?? source.file;
 }
 
-function refusal(source: GrammarSource): GrammarError {
+function refusal(source: GrammarSource, language?: string): GrammarError {
   const dirs = [...localDirs(), join(grammarCacheDir(), entryDir(source))];
+  const what = language !== undefined ? `the ${language} grammar` : `grammar ${source.file}`;
+  const only = language !== undefined ? ` --language ${language}` : '';
+  const fix = installedAsPackage()
+    ? `hatch grammars${only}`
+    : `npm run grammars${only === '' ? '' : ` --${only}`}`;
   return new GrammarError(
-    `grammar ${source.file} is not installed\n` +
-      `  looked in:\n${dirs.map((d) => `    ${d}`).join('\n')}\n` +
-      `  fetch it once:      npm run grammars\n` +
-      `  or allow this run:  --download-grammars (or HATCH_GRAMMARS_DOWNLOAD=1)`,
+    `${what} is not installed\n` +
+      `  fetch it once:      ${fix}\n` +
+      `  or allow this run:  --download-grammars (or HATCH_GRAMMARS_DOWNLOAD=1)\n` +
+      `  looked in:\n${dirs.map((d) => `    ${d}`).join('\n')}`,
     describe(source),
   );
+}
+
+function installedAsPackage(): boolean {
+  return import.meta.dirname.includes(`${sep}node_modules${sep}`);
 }

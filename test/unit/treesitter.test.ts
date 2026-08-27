@@ -5,8 +5,6 @@ import { loadGrammar, parse, walk } from '../../src/lang/treesitter.ts';
 import { resolveGrammar } from '../../src/infra/grammar-store.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 
-// Грамматика берётся через store (вендор или кеш), а не по жёсткому пути: .wasm в git
-// не хранятся, положить их заранее — работа `npm run grammars` (он же pretest).
 const cpp = async () => loadGrammar('cpp-test', await resolveGrammar(cppAdapter.grammar));
 
 function blockSpans(src: string, tree: ReturnType<typeof parse>): [number, number][] {
@@ -25,9 +23,9 @@ test('parse + walk: вложенные блоки C++ по правилу пер
   const tree = parse(g, src);
   try {
     const spans = blockSpans(src, tree);
-    assert.equal(spans.length, 3); // namespace, class, функция
+    assert.equal(spans.length, 3);
     const inner = spans[spans.length - 1]!;
-    assert.equal(src.slice(inner[0], inner[1]), '{ x(); }'); // индексы = срез JS-строки
+    assert.equal(src.slice(inner[0], inner[1]), '{ x(); }');
   } finally {
     tree.delete();
   }
@@ -38,7 +36,7 @@ test('строки/char/комментарии не дают ложных бло
   const src = 'void g() { auto s = "{"; char c = \'}\'; /* } */ }';
   const tree = parse(g, src);
   try {
-    assert.equal(blockSpans(src, tree).length, 1); // только тело g()
+    assert.equal(blockSpans(src, tree).length, 1);
   } finally {
     tree.delete();
   }

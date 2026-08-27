@@ -5,11 +5,7 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  // Raw strings first: R"tag( … )tag" brings its own terminator and has no escapes,
-  // so a backslash inside it is data like everything else.
   { open: /R"([^\s()\\]{0,16})\(/, close: (m) => `)${m[1] ?? ''}"`, multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
@@ -53,8 +49,8 @@ const cppBlockOf: BlockOf = (node: Node): OrigSpan | null => {
   return span;
 };
 
-
 export const cppAdapter = makeAdapter({
+  name: 'cpp',
   grammar: {
     file: 'tree-sitter-cpp.wasm',
     package: 'tree-sitter-cpp',

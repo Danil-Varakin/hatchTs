@@ -1,15 +1,10 @@
-// Python СКВОЗЬ настоящий конвейер: parser → matcher → patcher. Здесь проверяется
-// what phase 5 exists for: the matcher and
-// патчер НЕ знают про отступы, всю питонью специфику несёт адаптер. `core/` ради
-// Python не менялся — если бы менялся, граница core↔lang была бы проведена неверно
-// (00-general-rules §1).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { parseHatchFile } from '../../../src/core/hatch-parser.ts';
 import { pythonAdapter } from '../../../src/lang/python/index.ts';
 import { adapterForLanguage } from '../../../src/lang/adapter.ts';
-import { applyAll } from '../../../src/cli/apply.ts';
+import { applyAll } from '../../../src/core/apply.ts';
 import { hatchMd } from '../../helpers.ts';
 
 const SRC = `def first(x):
@@ -25,7 +20,6 @@ def second(x):
 
 test('a heading with a level anchor pins the edit INSIDE the wanted function', async () => {
   await pythonAdapter.init();
-  // `def second(x):` вводит В ТЕЛО: двоеточие — открывашка Python, ровно как `{` в C++
   const file = parseHatchFile(
     hatchMd(
       [{ match: '...\ndef second(x):\n...\n        log("b")\n>>>\n...', patch: '\n    log("c")' }],
@@ -34,14 +28,12 @@ test('a heading with a level anchor pins the edit INSIDE the wanted function', a
   );
   const { source, edits } = applyAll(SRC, file, pythonAdapter);
   assert.equal(edits.length, 1);
-  // вставка попала во ВТОРУЮ функцию и на СВОЙ уровень; первая не тронута
   assert.match(source, /def second\(x\):\n {4}if x:\n {8}log\("b"\)\n {4}log\("c"\)\n {4}return x/);
   assert.match(source, /def first\(x\):\n {4}if x:\n {8}log\("a"\)\n {4}return x/);
 });
 
 test('the level is held by the multiline literal: `\\n` + indentation is text of the canon', async () => {
   await pythonAdapter.init();
-  // тот же якорь, но `return x` записан на уровне ТЕЛА if (отступ 8) — такого в файле нет
   const wrong = parseHatchFile(
     hatchMd(
       [{ match: '...\n        log("b")\n        return x\n>>>\n...', patch: '\nX' }],
@@ -50,7 +42,6 @@ test('the level is held by the multiline literal: `\\n` + indentation is text of
   );
   assert.throws(() => applyAll(SRC, wrong, pythonAdapter), /no match/);
 
-  // а на своём уровне (отступ 4) — совпадает
   const right = parseHatchFile(
     hatchMd([{ match: '...\n        log("b")\n    return x\n>>>\n...', patch: '\nX' }], 'python'),
   );
@@ -76,7 +67,7 @@ test('replacing a range: `>>> … <<<` throws away the old body of the branch', 
   const { source } = applyAll(SRC, file, pythonAdapter);
   assert.ok(source.includes('log("z")'), source);
   assert.ok(!source.includes('log("a")'), source);
-  assert.ok(source.includes('log("b")'), source); // вторая функция не тронута
+  assert.ok(source.includes('log("b")'), source);
 });
 
 test('the language of the heading is enough: the adapter is chosen without a file name', () => {

@@ -1,16 +1,10 @@
-// Обратный конвейер на Python: synth → printHatchFile → parseHatchFile → apply.
-// System-level round trip:
-// из двух версий файла родился .md, и его применение к старой версии даёт новую
-// ДОСЛОВНО. Для Python это заодно проверка того, что synth живёт без закрывающего
-// токена: BlockSpan.closeEnd у питоньего блока НЕТ, закрыть родителя в шаблоне
-// нечем — уникальность держат заголовок и соседи.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { synthesize } from '../../../src/generate/synth.ts';
 import { printHatchFile } from '../../../src/generate/printer.ts';
 import { parseHatchFile } from '../../../src/core/hatch-parser.ts';
-import { applyAll } from '../../../src/cli/apply.ts';
+import { applyAll } from '../../../src/core/apply.ts';
 import { pythonAdapter } from '../../../src/lang/python/index.ts';
 
 async function roundtrip(oldStr: string, newStr: string): Promise<string> {
@@ -37,7 +31,6 @@ test('round-trip: inserting a line into a body with an indentation', async () =>
 });
 
 test('round-trip: an identical edit in one of TWO twin functions', async () => {
-  // якорь обязан унести правку в нужную функцию — тут это делает заголовок
   await roundtrip(
     'def first(x):\n    log("a")\n    return x\n\ndef second(x):\n    log("a")\n    return x\n',
     'def first(x):\n    log("a")\n    return x\n\ndef second(x):\n    log("z")\n    return x\n',

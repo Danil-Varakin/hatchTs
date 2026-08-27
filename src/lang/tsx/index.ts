@@ -5,11 +5,7 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  // A template literal is opaque WHOLE, ${…} included: the interpolated code is
-  // usually short, and splitting a literal in two would cost more than it buys.
   { open: '\`', close: '\`', escape: '\\', multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
@@ -54,6 +50,7 @@ const tsxBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const tsxAdapter = makeAdapter({
+  name: 'tsx',
   grammar: {
     file: 'tree-sitter-tsx.wasm',
     package: 'tree-sitter-typescript',

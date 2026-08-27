@@ -138,24 +138,40 @@
 можно пропустить, и якорь переживёт правку списка аргументов. `generate` по
 умолчанию так якоря и пишет.
 
+## Установка
+
+```bash
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+```
+
+Появляется команда `hatch`. Грамматик внутри нет (~22 МБ на одиннадцать языков),
+поэтому один раз после установки:
+
+```bash
+hatch grammars
+```
+
+Из клона репозитория работает и без установки — `npm run hatch -- <команда>`.
+
 ## Использование
 
 ```bash
 # apply
-npm run apply -- --match changes.md --in src/main.cpp --out src/main.cpp
+hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
 
 # generate
-npm run generate -- --in new.cpp --in-old old.cpp --out changes.md
+hatch generate --in new.cpp --in-old old.cpp --out changes.md
 
 # ...или взять старую версию из git-ветки
-npm run generate -- --in src/main.cpp --branch master --out changes.md
+hatch generate --in src/main.cpp --branch master --out changes.md
 ```
 
-Обе команды — обычные `.ts`-точки входа, их можно звать и напрямую:
+`hatch` без аргументов печатает список команд, `hatch <команда> --help` — её опции,
+`hatch --version` — версию инструмента и версию схемы конфига.
 
-```bash
-node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/main.cpp --out src/main.cpp
-```
+Коды выхода (на них можно опираться в скриптах):
+`0` ок · `1` ошибка вызова · `2` разбор `.md` · `3` не легло · `4` неоднозначно ·
+`5` конфиг · `6` грамматика.
 
 ### Опции `apply`
 ```
@@ -209,7 +225,7 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
                         родителей, считая от внешней: 0 даёт `foo( ... )`,
                         1 — `foo(bar( ... ))` (0)
 --min-siblings <n>      сколько соседних значащих строк несёт КАЖДЫЙ шаблон,
-                        с каждой стороны (1)
+                        с каждой стороны (0)
 --siblings <n>          потолок соседних значащих строк с каждой стороны (8);
                         0 запрещает опираться на соседей вовсе
 --sibling-detail <n>        та же база для якорей-соседей (0)
@@ -291,6 +307,54 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
 местах с разным результатом, будет код `4` и список позиций, а лечится это
 добором контекста.
 
+## API
+
+```ts
+import { applyAll, synthesize, parseHatchFile, printHatchFile, adapterForLanguage } from 'hatch';
+
+const adapter = adapterForLanguage('cpp');
+await adapter.init();
+
+const { source, edits } = applyAll(oldCode, parseHatchFile(md), adapter);
+const md2 = printHatchFile(synthesize(oldCode, newCode, adapter), 'cpp');
+```
+
+### Функции
+
+| | |
+|---|---|
+| `applyAll(source, file, adapter)` | применяет ханки по очереди; возвращает `{ source, edits }`. Бросает `MatchError` или `AmbiguityError` на первом ханке, который не лёг |
+| `synthesize(old, new, adapter, options?)` | порождает `Hunk[]` из двух версий файла |
+| `parseHatchFile(text)` | `.md` → `HatchFile` |
+| `printHatchFile(hunks, language?)` | `Hunk[]` → `.md` |
+| `trailingSpaceWarnings(hunks)` | строки тела патча со значащими хвостовыми пробелами |
+| `adapterForLanguage(name)` | адаптер по имени языка |
+| `adapterForFile(path)` | адаптер по расширению файла |
+| `supportedLanguages` | имена и синонимы языков реестра |
+
+`adapter.init()` вызывается один раз и грузит грамматику; `buildMap` после этого
+синхронный.
+
+### Ошибки
+
+`HatchError` — общий предок, у каждого наследника поле `exitCode`, совпадающее с
+кодом выхода CLI: `ParseError` (2), `MatchError` (3), `AmbiguityError` (4),
+`ConfigError` (5), `GrammarError` (6).
+
+### Типы
+
+`HatchFile`, `Hunk`, `MatchPattern`, `LanguageAdapter`, `ApplyResult`,
+`AppliedEdit`, `SynthOptions`, `SynthEvent`, `Tracer`.
+
+### Границы
+
+Экспортируется только перечисленное выше. Матчер, патчер, канонизатор, карта
+исходника, `infra/` и содержимое папок языков — внутренние и меняются без
+предупреждения; подпути (`hatch/dist/...`) закрыты полем `exports`.
+
+`LanguageAdapter` доступен как тип: адаптер получают из реестра и передают
+обратно. Написание своих адаптеров не поддерживается.
+
 ## Грамматики
 
 Разбор делает tree-sitter, поэтому каждому языку нужен свой `.wasm`. В репозитории
@@ -309,7 +373,7 @@ grammar: {
 Скачать один раз — это единственная команда, которая ходит в сеть намеренно:
 
 ```bash
-npm run grammars
+hatch grammars
 ```
 
 Файлы ложатся в общий пользовательский кеш (`~/.cache/hatch/grammars` или
@@ -328,11 +392,10 @@ npm run grammars
 | `HATCH_GRAMMAR_CACHE` | куда складывать скачанное |
 | `HATCH_GRAMMARS_DOWNLOAD=1` | разрешение качать, для CI |
 
-`grammars` — такая же команда, как `apply` и `generate` (`src/cli/grammars.ts`), а не
-сборочный скрипт: `npm run grammars -- --list` покажет, что зарегистрировано и где
-сейчас лежит, `-- --language go` скачает одну грамматику, а
-`npm run grammars -- --pin <package@version>` напечатает блок для вставки в
-`index.ts` нового языка.
+`grammars` — такая же команда, как `apply` и `generate`, а не сборочный скрипт:
+`hatch grammars --list` покажет, что зарегистрировано и где сейчас лежит,
+`--language go` скачает одну грамматику, а `--pin <package@version>` напечатает блок
+для вставки в `index.ts` нового языка.
 
 ## Три правила, зафиксированные волевым актом (из синтаксиса не выводятся)
 
@@ -402,17 +465,19 @@ whitelist обязан быть статическим списком: имя я
 где открывающий токен — двоеточие.
 
 Грамматики лежат в `grammars/*.wasm` и копируются из официальных npm-пакетов
-tree-sitter командой `npm run grammars`.
+tree-sitter командой `hatch grammars`.
 
 ## Сборка и запуск
 
-Исходники — `.ts`, исполняются напрямую на **Node 22+** через strip-types, без
-шага сборки. TypeScript используется только для проверки типов.
+Исходники — `.ts`, исполняются напрямую на **Node 22+** через strip-types, поэтому
+разработке шаг сборки не нужен. Пакет для публикации собирается (`npm run build` →
+`dist/`), и именно эта сборка попадает в архив `npm pack`.
 
 ```bash
-npm test          # юнит- и round-trip-наборы
+npm test          # юнит-, round-trip- и golden-наборы
 npm run typecheck # tsc --noEmit по src/ и test/
 npm run check     # то и другое
+npm run build     # dist/, только для пакета
 ```
 
 Разбор структуры — через **tree-sitter** (`web-tree-sitter`, WASM-грамматики:

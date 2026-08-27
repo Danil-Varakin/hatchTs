@@ -1,0 +1,16 @@
+# match go
+    ...
+    func label(
+    ...
+    ) string {
+    ...
+    >>>
+    		return "huge"
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return "enormous"
+# end

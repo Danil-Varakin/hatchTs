@@ -5,12 +5,7 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  // Raw strings: r"…", r#"…"#, r##"…"##. NO rule for "'" on purpose — in Rust a lone
-  // quote is a lifetime (&'a str), not a literal, and treating it as one would swallow
-  // the rest of the line.
   { open: /r(#*)"/, close: (m) => `"${m[1] ?? ''}`, multiline: true },
   { open: '"', close: '"', escape: '\\' },
 ];
@@ -54,6 +49,7 @@ const rustBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const rustAdapter = makeAdapter({
+  name: 'rust',
   grammar: {
     file: 'tree-sitter-rust.wasm',
     package: 'tree-sitter-rust',

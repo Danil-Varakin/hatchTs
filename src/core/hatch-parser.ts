@@ -9,11 +9,9 @@ import type {
 } from './ast.ts';
 import { ParseError } from './errors.ts';
 
-
 function freshGap(): Gap {
   return { mode: { op: 'tight' } };
 }
-
 
 class PatternBuilder {
   private steps: Step[] = [];
@@ -120,11 +118,8 @@ class PatternBuilder {
   }
 }
 
-
 const OP_RE = /(?<=^|\s)(\.\.\.|>>>|<<<)(?=\s|$)/g;
 
-// Unescaped only where the operator would otherwise be read as a standalone word, and
-// only one backslash is taken off; the printer adds exactly one back.
 const ESCAPE_RE = /(?<=^|\s)\\(?=\\*(?:\.\.\.|>>>|<<<)(?:\s|$))/g;
 
 function scanLineInto(line: string, mdLine: number, builder: PatternBuilder): void {
@@ -166,7 +161,6 @@ function feedOperator(op: string, mdLine: number, builder: PatternBuilder): void
       break;
   }
 }
-
 
 const MATCH_HEADING = /^#{1,6}[ \t]*match:?(?:[ \t]+(\S+))?[ \t]*$/i;
 const PATCH_HEADING = /^#{1,6}[ \t]*patch:?[ \t]*$/i;

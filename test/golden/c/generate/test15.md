@@ -1,0 +1,16 @@
+# match c
+    ...
+    static void setup(
+    ...
+    ) {
+    ...
+    >>>
+      REGISTER(handler_a, "alpha", 1);
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    REGISTER(handler_a, "alpha", 2);
+# end

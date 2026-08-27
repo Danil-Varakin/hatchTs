@@ -5,10 +5,7 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  // @"…" opens at the quote; the @ stays code, which is what we want.
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
 ];
@@ -51,6 +48,7 @@ const objcBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const objcAdapter = makeAdapter({
+  name: 'objc',
   grammar: {
     file: 'tree-sitter-objc.wasm',
     package: 'tree-sitter-objc',

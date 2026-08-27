@@ -1,0 +1,16 @@
+# match java
+    ...
+    static int fold(
+    ...
+    ) {
+    ...
+    >>>
+        acc ^= bits;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    acc ^= bits * 31;
+# end

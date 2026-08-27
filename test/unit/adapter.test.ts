@@ -25,14 +25,14 @@ test('language name resolves to its adapter (case-insensitive, aliases)', () => 
 });
 
 test('every language of the Chromium set resolves to its own adapter', () => {
-  assert.equal(adapterForLanguage('c'), cAdapter); // C is NOT C++: its own grammar
+  assert.equal(adapterForLanguage('c'), cAdapter);
   assert.equal(adapterForLanguage('objective-c'), objcAdapter);
   assert.equal(adapterForLanguage('python'), pythonAdapter);
   assert.equal(adapterForLanguage('py'), pythonAdapter);
   assert.equal(adapterForLanguage('JS'), javascriptAdapter);
-  assert.equal(adapterForLanguage('jsx'), javascriptAdapter); // JSX is part of the js grammar
+  assert.equal(adapterForLanguage('jsx'), javascriptAdapter);
   assert.equal(adapterForLanguage('ts'), typescriptAdapter);
-  assert.equal(adapterForLanguage('tsx'), tsxAdapter); // a SEPARATE grammar, not an alias of ts
+  assert.equal(adapterForLanguage('tsx'), tsxAdapter);
   assert.equal(adapterForLanguage('rust'), rustAdapter);
   assert.equal(adapterForLanguage('java'), javaAdapter);
   assert.equal(adapterForLanguage('kt'), kotlinAdapter);
@@ -46,7 +46,6 @@ test('missing language → clear error, not a silent default', () => {
 
 test('unknown language → unsupported error (closed whitelist, no dynamic import)', () => {
   assert.throws(() => adapterForLanguage('cobol'), /unsupported language 'cobol'/);
-  // a path in place of the name must not turn into a module load
   assert.throws(() => adapterForLanguage('../../etc/passwd'), /unsupported language/);
   assert.ok(supportedLanguages.includes('cpp'));
 });
@@ -58,7 +57,7 @@ test('file extension resolves to its adapter', () => {
 
 test('extensions of the Chromium set do not overlap and hit the right adapter', () => {
   assert.equal(adapterForFile('base/foo.c'), cAdapter);
-  assert.equal(adapterForFile('base/foo.h'), cppAdapter); // Chromium convention: .h is C++
+  assert.equal(adapterForFile('base/foo.h'), cppAdapter);
   assert.equal(adapterForFile('ui/cocoa/foo.mm'), objcAdapter);
   assert.equal(adapterForFile('build/gen.py'), pythonAdapter);
   assert.equal(adapterForFile('devtools/x.js'), javascriptAdapter);

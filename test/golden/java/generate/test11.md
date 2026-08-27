@@ -1,0 +1,16 @@
+# match java
+    ...
+    static String join(
+    ...
+    ) {
+    ...
+    >>>
+        return String.join(sep, parts);
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return String.join(sep, List.of(parts));
+# end

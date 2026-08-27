@@ -5,10 +5,8 @@ import type { StringRule } from '../zones.ts';
 import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
-// String literals of this language. Whitespace inside them is DATA, so canon keeps it
-// verbatim (lang/zones.ts). Order matters: longer openers first.
 const STRINGS: readonly StringRule[] = [
-  { open: '"""', close: '"""', escape: '\\', multiline: true }, // text block
+  { open: '"""', close: '"""', escape: '\\', multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
 ];
@@ -52,6 +50,7 @@ const javaBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const javaAdapter = makeAdapter({
+  name: 'java',
   grammar: {
     file: 'tree-sitter-java.wasm',
     package: 'tree-sitter-java',

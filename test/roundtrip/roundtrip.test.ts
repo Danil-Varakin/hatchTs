@@ -36,15 +36,12 @@ test('round-trip стабилен при двойном прогоне', () => {
   assert.deepStrictEqual(strip(twice), strip(once));
 });
 
-
 for (const [name, body] of [
   ['a separate "..." as a literal', '\\... >>> foo'],
   ['the operator in the middle of the literal', 'a \\... b >>>'],
   ['the escaped operator inside the gluing', 'a\n\\... \nb\n>>>'],
   ['several screened ones in a row', '\\>>> \\<<< >>> x'],
-  // md-текст `x \\... y`: parse снимает одну '\' → raw `x \... y`; print обязан вернуть её
   ['a real backslash before the operator survives', 'x \\\\... y >>>'],
-  // md-текст `foo\...bar`: '\' не в позиции экрана (не обособленно) — обычный текст
   ['"\\..." in the middle of a word is plain text', 'foo\\...bar >>>'],
 ] as const) {
   test(`round-trip (screening): ${name}`, () => {
@@ -53,15 +50,6 @@ for (const [name, body] of [
     assert.deepStrictEqual(strip(reparsed), strip(original));
   });
 }
-
-
-// ── round-trip НАГРУЗКИ через весь .md: printHatchFile → parseHatchFile ───────
-//
-// Выше round-trip идёт по ШАБЛОНУ (printPattern). Тело патча так не проверялось
-// нигде в npm test: единственным покрытием был корпус, а он вне репозитория
-// (`corpus/` в .gitignore). Между тем именно тело патча — место, где жил Г2:
-// голая ``` закрывала блок раньше времени и строка пропадала МОЛЧА. Здесь
-// проверяется, что нагрузка переживает печать и разбор дословно.
 
 function payloadRoundtrip(patch: string, matchBody = 'foo >>>'): void {
   const original: Hunk = { match: firstMatch(wrapMatch(matchBody)), patch };
@@ -82,8 +70,6 @@ for (const [name, patch] of [
   ['nothing but blank lines', '\n\n'],
   ['an empty body (deletion)', ''],
   ['indentation deeper than the gutter', '        deep();'],
-  // Значащие хвостовые пробелы печать/разбор переживают; их съедает только
-  // ПОСТОРОННИЙ whitespace-fix — единственный предел формата, он в README.
   ['a line of significant trailing whitespace', 'a();\n   '],
 ] as const) {
   test(`round-trip (payload): ${name}`, () => {

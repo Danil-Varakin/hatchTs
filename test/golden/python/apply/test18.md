@@ -1,0 +1,16 @@
+Правка внутри ветки finally конструкции try/except/finally.
+
+# match python
+    ...
+        def handle(self, ticket):
+    ...
+            finally:
+    ...
+    >>>
+                log.debug("заявка %s обработана", ticket.ident)
+    <<<
+    ...
+# end
+# patch
+    log.info("заявка %s обработана", ticket.ident)
+# end

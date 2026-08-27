@@ -1,0 +1,16 @@
+# match go
+    ...
+    func pump(
+    ...
+    ) {
+    ...
+    >>>
+    		handle(v)
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    handle(v * 2)
+# end

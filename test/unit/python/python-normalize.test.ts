@@ -57,9 +57,6 @@ test('a one-line triple-quoted string is opaque like any other', () => {
 });
 
 test('a MULTI-LINE docstring stays transparent, and that is deliberate', () => {
-  // A .md literal is a fragment cut on line boundaries, so it can start in the middle of
-  // a docstring with no way to tell — and then the two canons would disagree. Keeping
-  // multi-line literals transparent is what makes the fragment side safe.
   const doc = 'def f():\n    """Summary.\n\n    Detail   with   gaps.\n    """\n    return 1';
   assert.ok(!normalize(doc).includes('Detail   with   gaps.'));
   assert.ok(normalize(doc).includes('Detail with gaps.'));

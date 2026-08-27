@@ -1,0 +1,16 @@
+# match go
+    ...
+    func describe(
+    ...
+    ) string {
+    ...
+    >>>
+    		return strconv.Itoa(v)
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return strconv.FormatInt(int64(v), 10)
+# end

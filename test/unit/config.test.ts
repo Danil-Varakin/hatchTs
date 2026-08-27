@@ -92,10 +92,6 @@ test('resolveLimits takes only defined keys', () => {
 });
 
 test('a detail ceiling is no longer a key at all', withTempDir((dir) => {
-  // The ceiling went away with the adaptive round (BACKLOG §4.0): unfolding stops when
-  // no bracket can tell the candidates apart, so there is nothing left to contradict.
-  // A config still carrying the old key must SAY so, not be quietly ignored — which the
-  // strict "unknown key" rule already guarantees, and this test pins it to THIS key.
   const file = writeConfig(dir, { version: 1, generate: { parents: { detail: { limit: 2 } } } });
   assert.throws(
     () => readConfigFile(file),
@@ -272,29 +268,22 @@ test('the round unfolds a neighbour bracket by itself when that is what tells th
   const oldStr = 'void f() {\n  log(fmt(a, b));\n  x = 1;\n  log(fmt(c, d));\n  x = 1;\n}\n';
   const newStr = 'void f() {\n  log(fmt(a, b));\n  x = 1;\n  log(fmt(c, d));\n  x = 2;\n}\n';
   const md = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
-  // No ceiling was needed and no ceiling was set: the neighbour is the discriminator,
-  // so the round spelled that ONE bracket out and stopped.
   assert.ok(md.includes('log(fmt(c, d));'), md);
 });
 
 test('a bracket that discriminates nothing is NOT dragged along', async () => {
   await cppAdapter.init();
-  // Two classes of the same name; only the base differs, and it differs INSIDE <>.
-  // The old global detail number lifted every bracket at that level, so `void Run(...)`
-  // came out as `void Run(map< ... > m)` — text that pins nothing and breaks on the next
-  // signature change. The round names one bracket instead.
   const oldStr =
     'class W : public Base<Alpha> {\n  void Run(map<int, T> m) {\n    x = 1;\n  }\n};\n' +
     'class W : public Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 1;\n  }\n};\n';
   const newStr = oldStr.replace('Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 1;', 'Base<Beta> {\n  void Run(map<int, T> m) {\n    x = 2;');
   const md = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
-  assert.ok(md.includes('Base<Beta>'), md); // the bracket that DID discriminate
-  assert.ok(!md.includes('map<'), md); // the one that did not
+  assert.ok(md.includes('Base<Beta>'), md);
+  assert.ok(!md.includes('map<'), md);
 });
 
 // ── CLI ──────────────────────────────────────────────────────────────────────────
 
-// Через ЕДИНЫЙ вход, а не напрямую в generate.ts: так тесты заодно держат диспетчер.
 const HATCH_CLI = fileURLToPath(new URL('../../src/cli/index.ts', import.meta.url));
 
 function runCli(args: string[], cwd: string): { status: number; stdout: string; stderr: string } {

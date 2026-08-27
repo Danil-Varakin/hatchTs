@@ -9,6 +9,7 @@ import { resolveGrammar } from '../infra/grammar-store.ts';
 import type { GrammarSource } from '../infra/grammar-store.ts';
 
 export interface LanguageRules {
+  name: string; 
   grammar: GrammarSource; 
   extensions: readonly string[]; 
   normalize: (raw: string) => string; 
@@ -19,13 +20,13 @@ export function makeAdapter(rules: LanguageRules): LanguageAdapter {
   let grammar: Language | null = null;
 
   return {
+    name: rules.name,
     extensions: rules.extensions,
     normalize: rules.normalize,
     grammar: rules.grammar,
 
-
     async init(options: InitOptions = {}): Promise<void> {
-      const input = await resolveGrammar(rules.grammar, options);
+      const input = await resolveGrammar(rules.grammar, options, rules.name);
       const key = `${rules.grammar.file}@${rules.grammar.version ?? rules.grammar.sha256 ?? 'local'}`;
       grammar = await loadGrammar(key, input);
     },

@@ -1,0 +1,16 @@
+# match mm
+    ...
+    - (
+    ...
+    )play {
+    ...
+    >>>
+      decoder_ = media::MakeDecoder();
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    decoder_ = media::MakeDecoder(nullptr);
+# end

@@ -10,12 +10,10 @@ import { firstMatch, wrapMatch } from '../helpers.ts';
 
 // ── помощники ─────────────────────────────────────────────────────────────────
 
-// Собрать MatchPattern из тела match-блока (обернув в минимальный ханк).
 function pattern(...matchLines: string[]): MatchPattern {
   return firstMatch(wrapMatch(matchLines.join('\n')));
 }
 
-// Применить найденные метки к исходнику (мини-патчер: вставка или замена диапазона).
 function apply(src: string, marks: MatchMarks, text: string): string {
   const map = cppAdapter.buildMap(src);
   const ins = map.toOriginalPos(marks.insert.pos, marks.insert.side);
@@ -31,7 +29,6 @@ function run(src: string, pat: MatchPattern): MatchMarks {
   return matchPattern(pat, map, normalize);
 }
 
-// Оригинальное смещение точки вставки (для проверок «перед каким символом легло»).
 function insAt(src: string, marks: MatchMarks): number {
   const map = cppAdapter.buildMap(src);
   return map.toOriginalPos(marks.insert.pos, marks.insert.side);
@@ -87,7 +84,6 @@ test('главный контрпример §3.1: ... func(...){ ... if(...){ .
     '}',
   ].join('\n');
   const marks = run(src, pattern('... func( ... ) { ... if( ... ) { ... >>> } ... } ...'));
-  // вставка прямо перед '}' тела if — сразу после doWork();
   const ins = insAt(src, marks);
   assert.equal(src[ins], '}');
   assert.ok(src.slice(0, ins).trimEnd().endsWith('doWork();'), src.slice(0, ins).slice(-20));
@@ -105,10 +101,9 @@ test('побег: ... func(...){ ... if(...){ ... >>> } ... — if в друго
     '  }',
     '}',
   ].join('\n');
-  // if НЕ внутри func — но легально «где-то после открытия func» (побег)
   const marks = run(src, pattern('... func( ... ) { ... if( ... ) { ... >>> } ...'));
   const ins = insAt(src, marks);
-  assert.equal(src[ins], '}'); // перед '}' тела if в handler
+  assert.equal(src[ins], '}');
   assert.ok(src.slice(0, ins).trimEnd().endsWith('fallback();'), src.slice(0, ins).slice(-20));
 });
 
@@ -125,9 +120,6 @@ test('шаблон ЗАКРЫВАЕТ func: if в другой функции �
     '  }',
     '}',
   ].join('\n');
-  // здесь ПОСЛЕ >>> ДВЕ закрывашки (}...}) — вторая закрывает func, значит if
-  // обязан быть ВНУТРИ func. Его там нет → «побег» невозможен (просрочка),
-  // закрыть func нечем без стрэндинга → матча нет (регрессия unique14).
   assert.throws(
     () => run(src, pattern('... func( ... ) { ... if( ... ) { ... >>> } ... } ...')),
     MatchError,
@@ -158,11 +150,9 @@ test('if И внутри, И после func → AmbiguityError', async () => {
 
 test('нет хвостового ...: якорь обязан быть в конце файла', async () => {
   await cppAdapter.init();
-  const pat = pattern('... a(); >>> b();'); // после b() нет ... → b() у EOF
-  // b() в конце — матч; вставка сразу после a();
+  const pat = pattern('... a(); >>> b();');
   const ok = 'a(); b();';
   assert.equal(apply(ok, run(ok, pat), 'X'), 'a();X b();');
-  // после b() ещё есть код — матча нет
   assert.throws(() => run('a(); b(); c();', pat), MatchError);
 });
 
@@ -192,7 +182,7 @@ test('два одинаковых якоря → AmbiguityError с позици�
     assert.fail('ожидался AmbiguityError');
   } catch (e) {
     assert.ok(e instanceof AmbiguityError);
-    assert.equal(e.positions.length, 2); // две разные точки вставки
+    assert.equal(e.positions.length, 2);
   }
 });
 
@@ -201,10 +191,9 @@ test('два одинаковых якоря → AmbiguityError с позици�
 test('... >>> } берёт закрывашку своего блока (обязательство), не чужую', async () => {
   await cppAdapter.init();
   const src = 'void f(){ a(); } void g(){ b(); }';
-  // закрываем именно тело f: вставка перед ЕГО '}', не перед '}' функции g
   const marks = run(src, pattern('... f() { ... >>> }  ...'));
   const ins = insAt(src, marks);
   assert.equal(src[ins], '}');
-  assert.ok(src.slice(0, ins).trimEnd().endsWith('a();')); // тело f, а не g
-  assert.ok(src.slice(0, ins).indexOf('b()') === -1); // точно до g
+  assert.ok(src.slice(0, ins).trimEnd().endsWith('a();'));
+  assert.ok(src.slice(0, ins).indexOf('b()') === -1);
 });

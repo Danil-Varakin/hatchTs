@@ -1,0 +1,17 @@
+Замена двухстрочной шапки цикла: while со счётчиком превращается в for.
+
+# match python
+    ...
+    def parse(argv):
+    ...
+    >>>
+        i = 0
+        while i < len(argv):
+    <<<
+    ...
+            arg = argv[i]
+    ...
+# end
+# patch
+    for i in range(len(argv)):
+# end

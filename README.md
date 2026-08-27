@@ -140,24 +140,40 @@ Note the `...` **inside** the anchor: the balanced innards of a bracket pair can
 be skipped, so the anchor survives edits to the argument list. `generate` writes
 its anchors this way by default.
 
+## Install
+
+```bash
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+```
+
+You get a `hatch` command. Grammars are not inside (~22 MB across eleven languages),
+so once after installing:
+
+```bash
+hatch grammars
+```
+
+From a clone it also works without installing: `npm run hatch -- <command>`.
+
 ## Usage
 
 ```bash
 # apply
-npm run apply -- --match changes.md --in src/main.cpp --out src/main.cpp
+hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
 
 # generate
-npm run generate -- --in new.cpp --in-old old.cpp --out changes.md
+hatch generate --in new.cpp --in-old old.cpp --out changes.md
 
 # ...or take the old version from a git branch
-npm run generate -- --in src/main.cpp --branch master --out changes.md
+hatch generate --in src/main.cpp --branch master --out changes.md
 ```
 
-Both commands are plain `.ts` entry points, so they can also be run directly:
+`hatch` with no arguments lists the commands, `hatch <command> --help` shows its
+options, `hatch --version` reports the tool version and the config schema version.
 
-```bash
-node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/main.cpp --out src/main.cpp
-```
+Exit codes, for scripts to rely on:
+`0` ok · `1` usage · `2` `.md` parse · `3` no match · `4` ambiguous · `5` config ·
+`6` grammar.
 
 ### `apply` options
 ```
@@ -211,7 +227,7 @@ node --experimental-strip-types src/cli/apply.ts --match changes.md --in src/mai
                         from the outermost: 0 gives `foo( ... )`, 1 gives
                         `foo(bar( ... ))` (0)
 --min-siblings <n>      neighbouring significant lines EVERY pattern carries,
-                        per side (1)
+                        per side (0)
 --siblings <n>          cap of neighbouring significant lines per side (8);
                         0 forbids leaning on neighbours at all
 --sibling-detail <n>        same bracket baseline for neighbour anchors (0)
@@ -289,11 +305,59 @@ pattern reached) · `4` ambiguous match (reports the competing positions) · `5`
 bad configuration · `6` grammar missing or failing its checksum · `1` unexpected.
 
 `6` is deliberately its own code: it says the *environment* lacks a grammar (fix:
-`npm run grammars`), not that anything is wrong with the patch.
+`hatch grammars`), not that anything is wrong with the patch.
 
 Ambiguity is an **error**, never a silent pick: if a pattern fits in two places
 with different results, you get exit `4` and the positions, and the fix is more
 context.
+
+## API
+
+```ts
+import { applyAll, synthesize, parseHatchFile, printHatchFile, adapterForLanguage } from 'hatch';
+
+const adapter = adapterForLanguage('cpp');
+await adapter.init();
+
+const { source, edits } = applyAll(oldCode, parseHatchFile(md), adapter);
+const md2 = printHatchFile(synthesize(oldCode, newCode, adapter), 'cpp');
+```
+
+### Functions
+
+| | |
+|---|---|
+| `applyAll(source, file, adapter)` | applies hunks in order; returns `{ source, edits }`. Throws `MatchError` or `AmbiguityError` on the first hunk that does not fit |
+| `synthesize(old, new, adapter, options?)` | produces `Hunk[]` from two versions of a file |
+| `parseHatchFile(text)` | `.md` → `HatchFile` |
+| `printHatchFile(hunks, language?)` | `Hunk[]` → `.md` |
+| `trailingSpaceWarnings(hunks)` | patch-body lines that end in significant whitespace |
+| `adapterForLanguage(name)` | adapter by language name |
+| `adapterForFile(path)` | adapter by file extension |
+| `supportedLanguages` | names and aliases in the registry |
+
+`adapter.init()` is called once and loads the grammar; `buildMap` is synchronous
+afterwards.
+
+### Errors
+
+`HatchError` is the base class. Each subclass carries an `exitCode` matching the CLI:
+`ParseError` (2), `MatchError` (3), `AmbiguityError` (4), `ConfigError` (5),
+`GrammarError` (6).
+
+### Types
+
+`HatchFile`, `Hunk`, `MatchPattern`, `LanguageAdapter`, `ApplyResult`, `AppliedEdit`,
+`SynthOptions`, `SynthEvent`, `Tracer`.
+
+### Boundaries
+
+Only the above is exported. The matcher, patcher, canonicalizer, source map, `infra/`
+and the contents of the language folders are internal and change without notice;
+sub-paths (`hatch/dist/...`) are closed off by the `exports` field.
+
+`LanguageAdapter` is available as a type: adapters are obtained from the registry and
+handed back. Writing your own adapter is not supported.
 
 ## Grammars
 
@@ -313,8 +377,12 @@ grammar: {
 Fetch them once — this is the only command that goes to the network on purpose:
 
 ```bash
-npm run grammars
+hatch grammars
 ```
+
+`hatch grammars --language <lang>` fetches just one, `--list` shows what is
+registered and where each grammar sits now, and `--pin <package@version>` downloads a
+grammar and prints the declaration block to paste into a new language folder.
 
 Grammars land in a shared user cache (`~/.cache/hatch/grammars`, or the platform
 equivalent), so other checkouts reuse them.
@@ -332,11 +400,10 @@ fails the run rather than falling back to another mirror.
 | `HATCH_GRAMMAR_CACHE` | where downloads are cached |
 | `HATCH_GRAMMARS_DOWNLOAD=1` | permission to download, for CI |
 
-`grammars` is a command like `apply` and `generate` (`src/cli/grammars.ts`), not a
-build script: `npm run grammars -- --list` shows what is registered and where each
-grammar sits now, `-- --language go` fetches just one, and
-`npm run grammars -- --pin <package@version>` prints the block to paste into a new
-language's `index.ts`.
+`grammars` is a command like `apply` and `generate`, not a build script:
+`hatch grammars --list` shows what is registered and where each grammar sits now,
+`--language go` fetches just one, and `--pin <package@version>` prints the block to
+paste into a new language's `index.ts`.
 
 ## Three rules fixed by decision (not derivable from syntax)
 
@@ -405,17 +472,19 @@ them — significant indentation, so its own canonicalizer and its own notion of
 block, where the opening token is the colon.
 
 Grammars live in `grammars/*.wasm` and are copied from the official tree-sitter
-npm packages by `npm run grammars`.
+npm packages by `hatch grammars`.
 
 ## Build & run
 
-Sources are `.ts` and run directly on **Node 22+** via type-stripping — no build
-step. TypeScript is used only to type-check.
+Sources are `.ts` and run directly on **Node 22+** via type-stripping, so development
+needs no build step. The published package is built (`npm run build` → `dist/`), and
+that build is what `npm pack` puts in the tarball.
 
 ```bash
-npm test          # unit + round-trip suites
+npm test          # unit, round-trip and golden suites
 npm run typecheck # tsc --noEmit over src/ and test/
 npm run check     # both
+npm run build     # dist/, for the package only
 ```
 
 Structure analysis uses **tree-sitter** via `web-tree-sitter` (WASM grammars —

@@ -77,8 +77,6 @@ async function run(opts: Options): Promise<void> {
     return;
   }
 
-  // Fetching is this command's purpose, so it allows itself what apply and generate
-  // must be told to allow.
   const statuses = await ensureGrammars(
     wanted.map((w) => w.grammar),
     { allowDownload: true, log: (m) => console.error(m) },
@@ -117,7 +115,6 @@ export async function main(argv: readonly string[]): Promise<void> {
   }
 }
 
-// Run main() only when invoked directly, not when imported by tests.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv.slice(2));
 }

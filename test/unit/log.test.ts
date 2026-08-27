@@ -48,7 +48,7 @@ test('the log holds every channel, and the header says what was run', () => {
   assert.ok(text.includes('dbg a probe'), text);
 });
 
-test('a log is the user\'s source, so the file is theirs alone (0600)', () => {
+test('a log is the user\'s source, so the file is theirs alone (0600)', { skip: process.platform === 'win32' }, () => {
   const path = join(tmp(), 'run.log');
   const log = createLogger({ logPath: path });
   log.close();
@@ -66,7 +66,6 @@ test('trace reaches the file even when the terminal is quiet', () => {
 test('a log target that cannot be opened is loud, not silently skipped', () => {
   const taken = join(tmp(), 'run.log');
   createLogger({ logPath: taken }).close();
-  // Same name twice: every run gets its OWN file, so this must not append or truncate.
   assert.throws(() => createLogger({ logPath: taken }), ConfigError);
 });
 
@@ -103,7 +102,7 @@ test('MatchError names the anchor, not a step number', () => {
   assert.ok(out.includes('looking for:  `  c();`'), out);
   assert.ok(out.includes('last anchor that DID match (line 2, col 3)'), out);
   assert.ok(out.includes('stopped at step 3 of 5'), out);
-  assert.ok(out.includes('3 |   b();'), out); // the line the file actually has there
+  assert.ok(out.includes('3 |   b();'), out);
 });
 
 test('running past the last step is reported as such, with the trailing-dots hint', () => {

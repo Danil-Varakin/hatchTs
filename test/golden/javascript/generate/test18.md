@@ -1,0 +1,16 @@
+# match js
+    ...
+    function strip(
+    ...
+    ) {
+    ...
+    >>>
+      return text.replace(MARKS, '');
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return text.replace(MARKS, ' ');
+# end

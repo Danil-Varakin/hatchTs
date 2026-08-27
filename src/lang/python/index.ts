@@ -42,7 +42,6 @@ const pythonBlockOf: BlockOf = (node: Node): OrigSpan | null => {
     return span;
   }
 
-  // (b) an indented body
   if (node.type !== 'block') return null;
   const colon = colonBefore(node);
   if (colon === null) return null;
@@ -53,6 +52,7 @@ const pythonBlockOf: BlockOf = (node: Node): OrigSpan | null => {
 };
 
 export const pythonAdapter = makeAdapter({
+  name: 'python',
   grammar: {
     file: 'tree-sitter-python.wasm',
     package: 'tree-sitter-python',

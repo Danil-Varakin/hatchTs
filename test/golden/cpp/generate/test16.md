@@ -1,0 +1,16 @@
+# match cc
+    ...
+    namespace b {
+    ...
+    void Run() {
+    ...
+    >>>
+    }
+    ...
+    }
+    ...
+# end
+# patch
+      Extra();
+
+# end

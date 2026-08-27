@@ -1,0 +1,16 @@
+# match cc
+    ...
+    int sum_all(
+    ...
+    ) {
+    ...
+    >>>
+      return ( \... + values );
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return ( ... + values ) * 2;
+# end

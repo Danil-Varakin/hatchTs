@@ -1,36 +1,11 @@
-// infra/log.ts — the ONE place that turns facts into text a human reads, and the only
-// place that knows a terminal from a file.
-//
-// WHY IT IS NOT IN core/: rendering a failure needs the source file, the .md, and a
-// notion of "line 214" — none of which the core has any business knowing. Errors carry
-// FACTS (offsets, the anchor text, step indices); this file renders them. That split is
-// what lets the same MatchError print one line into a terminal and twelve into a log.
-//
-// WHY IT IS NOT CONFIGURABLE: `apply` deliberately takes no configuration, because a
-// .md must be self-sufficient (HANDOFF-hatch-config.md §2.1) — so a `log` section in
-// hatch.config.json would work for `generate` and silently do nothing for `apply`. A
-// flag works the same in both, so logging is flag-driven: `--log [place]`.
 import { mkdirSync, openSync, writeSync, closeSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { HatchError, MatchError, AmbiguityError, ParseError, ConfigError } from '../core/errors.ts';
 
 // ── where a log file goes ────────────────────────────────────────────────────────
 
-/** Default directory for log files, relative to where the user ran the command. */
 export const DEFAULT_LOG_DIR = 'hatch-logs';
 
-/**
- * Resolve `--log [place]` into a file path. Every run gets its OWN file — no rotation,
- * no truncation, nothing to lose — named so that `ls` sorts it chronologically.
- *
- * `place` follows the same "a place, not necessarily a name" rule as generate's `--out`:
- * a path ending in a separator, or naming an existing directory, receives a generated
- * file name; anything else is taken as the file name itself. Omitted → DEFAULT_LOG_DIR
- * under the current directory, because a log the user cannot find is not a log.
- *
- * The pid is in the name on purpose: two runs in the same second (a script, a CI
- * matrix) must not land on the same file.
- */
 export function resolveLogPath(
   place: string | undefined,
   command: string,
@@ -52,40 +27,27 @@ function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {
-    return false; // A path that is not there yet is simply not a directory.
+    return false;
   }
 }
 
 // ── the logger ───────────────────────────────────────────────────────────────────
 
 export interface LoggerOptions {
-  /** Where a log file goes, if the user asked for one. */
   readonly logPath?: string | undefined;
-  /** Whether trace() output is shown on the terminal (-v). It always reaches the file. */
   readonly verbose?: boolean | undefined;
-  /** Header lines for the log file: the command line, the resolved config, and so on. */
   readonly header?: readonly string[] | undefined;
 }
 
 export interface Logger {
-  /** A result the user asked for: stdout. */
   info(message: string): void;
-  /** Progress, warnings, anything that must not pollute stdout: stderr. */
   note(message: string): void;
-  /** Diagnostics: terminal only under -v, always in the log file. */
   trace(message: string): void;
-  /** Renders an error and returns the exit code to use. Never throws. */
   fail(e: unknown, ctx?: ErrorContext): number;
-  /** Path of the log file, if one is open — worth telling the user about. */
   readonly logPath: string | undefined;
   close(): void;
 }
 
-/**
- * Open a logger. Creating the log file is done EAGERLY and its failure is loud: the user
- * asked for a log, so quietly not producing one is the wrong kind of mercy. It happens
- * before any real work for the same reason `--out` is checked before patching.
- */
 export function createLogger(options: LoggerOptions = {}): Logger {
   const verbose = options.verbose === true;
   let fd: number | null = null;
@@ -94,8 +56,6 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   if (path !== undefined) {
     try {
       mkdirSync(dirOf(path), { recursive: true });
-      // 0600: a log holds fragments of the user's source. It is their data, and nobody
-      // else's business.
       fd = openSync(path, 'ax', 0o600);
     } catch (e) {
       throw new ConfigError(`cannot open log file '${path}': ${(e as Error).message}`);
@@ -151,19 +111,11 @@ function writeLine(fd: number, line: string): void {
 // ── rendering ────────────────────────────────────────────────────────────────────
 
 export interface ErrorContext {
-  /** Content of the file the pattern ran against — needed to turn offsets into lines. */
   readonly source?: string | undefined;
-  /** Its path, for the first line of the report. */
   readonly sourcePath?: string | undefined;
-  /** Path of the .md, for errors that point into it. */
   readonly mdPath?: string | undefined;
 }
 
-/**
- * A failure as a report, not a sentence. Every branch below exists because the one-line
- * version cost somebody an hour: a step number that names nothing, an offset printed as
- * a number, an ambiguity that does not say who it is ambiguous WITH.
- */
 export function renderError(e: unknown, ctx: ErrorContext = {}): string {
   if (e instanceof MatchError) return renderMatchError(e, ctx);
   if (e instanceof AmbiguityError) return renderAmbiguityError(e, ctx);
@@ -177,9 +129,6 @@ function renderMatchError(e: MatchError, ctx: ErrorContext): string {
   if (ctx.sourcePath !== undefined) out.push(`  file: ${ctx.sourcePath}`);
 
   const total = e.totalSteps;
-  // Running PAST the last step is not "step N+1 of N": there is no such step, the
-  // pattern simply ended. Saying it the other way round is what makes the hint below
-  // land instead of reading like an off-by-one.
   out.push(
     total !== undefined && e.failedStepIndex >= total
       ? `  the pattern ended after its last step (${total} of ${total}), the file did not`
@@ -221,7 +170,6 @@ function renderParseError(e: ParseError, ctx: ErrorContext): string {
   return head;
 }
 
-/** An offset as a place a human can go to. Absent source or offset → no claim made. */
 function where(source: string | undefined, offset: number | undefined): { line?: number; suffix: string } {
   if (source === undefined || offset === undefined) return { suffix: '' };
   const line = lineOf(source, offset);
@@ -246,7 +194,6 @@ function lineStart(source: string, line: number): number {
   return at;
 }
 
-/** The line itself, numbered, so the reader sees what the pattern was up against. */
 function excerpt(source: string, line: number): string[] {
   const lines = source.split('\n');
   const text = lines[line] ?? '';
@@ -254,7 +201,6 @@ function excerpt(source: string, line: number): string[] {
   return [`${number} | ${text}`];
 }
 
-/** Soft-wrap a long explanation so a report stays readable in a narrow terminal. */
 function wrap(text: string, indent: string, width = 76): string[] {
   const out: string[] = [];
   let line = '';
@@ -277,10 +223,6 @@ function quote(text: string): string {
 
 // ── log file header ──────────────────────────────────────────────────────────────
 
-/**
- * The first lines of a log file. A log that does not say what was run is an artefact
- * nobody can act on a week later.
- */
 export function logHeader(command: string, argv: readonly string[], extra: readonly string[] = []): string[] {
   return [
     `# hatch ${command}`,

@@ -1,6 +1,3 @@
-// Команда `grammars`: чистое ядро отдельно, оболочка отдельно — та же схема, что у
-// apply (applyAll + CLI). БЕЗ СЕТИ: проверяем разбор аргументов, реестр, --list и
-// коды выхода; сама загрузка проверена вживую, в тест её не тащим.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -33,15 +30,12 @@ function runCli(args: readonly string[], env: Record<string, string> = {}) {
 
 test('реестр грамматик выводится из папок языков и дедуплицируется по файлу', () => {
   const all = registeredGrammars();
-  // 11 языков, но typescript и tsx делят ОДИН пакет при разных файлах .wasm.
   assert.equal(all.length, 11);
   assert.equal(new Set(all.map((g) => g.grammar.file)).size, 11);
-  // каждый пин полон: без sha256 грамматику вообще нельзя было бы скачать
   for (const { grammar } of all) {
     assert.match(grammar.sha256!, /^[0-9a-f]{64}$/, grammar.file);
     assert.match(grammar.version!, /^\d+\.\d+\.\d+$/, grammar.file);
   }
-  // фильтр по языку отдаёт ровно одну грамматику
   assert.equal(registeredGrammars('go').length, 1);
   assert.equal(registeredGrammars('нетакого').length, 0);
 });
@@ -91,7 +85,7 @@ test('CLI grammars: --list не качает и показывает MISSING п�
   const empty = mkdtempSync(join(tmpdir(), 'hatch-empty-'));
   const r = runCli(['--list', '--language', 'go'], {
     HATCH_GRAMMAR_CACHE: cache,
-    HATCH_GRAMMAR_DIR: empty, // и подменяем grammars/ рядом с пакетом
+    HATCH_GRAMMAR_DIR: empty,
   });
   assert.equal(r.status, 0);
   assert.match(r.stdout, /tree-sitter-go\.wasm/);

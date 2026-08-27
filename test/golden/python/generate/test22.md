@@ -1,0 +1,16 @@
+# match py
+    ...
+        with open(
+    ...
+    ) as fh:
+    ...
+    >>>
+            fh.write(data)
+    <<<
+    ...
+    return path
+    ...
+# end
+# patch
+    fh.write(data + "\n")
+# end

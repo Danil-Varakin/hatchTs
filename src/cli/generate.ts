@@ -84,7 +84,7 @@ be set in ${CONFIG_FILE_NAME}; the flag wins for this run.
                           unfolds further on its own, one NAMED bracket at a time,
                           and stops as soon as no bracket tells the places apart
   --min-siblings <n>      neighbouring significant lines EVERY pattern carries,
-                          per side (default: 1)
+                          per side (default: 0)
   --siblings <n>          cap of neighbouring significant lines per side
                           (default: 8). 0 forbids leaning on neighbours at all —
                           anchoring stays purely structural
@@ -142,8 +142,6 @@ function parseArgs(argv: readonly string[]): Options {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    // --log takes an OPTIONAL place: bare `--log` means the default directory, and the
-    // next token counts as a value only when it is not another flag.
     if (a === '--log') {
       const next = argv[i + 1];
       opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
@@ -217,7 +215,7 @@ function isDirectory(path: string): boolean {
   try {
     return statSync(path).isDirectory();
   } catch {
-    return false; // no such path: treat it as a file name
+    return false;
   }
 }
 
@@ -235,8 +233,6 @@ function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
   return { confirm, close: () => rl.close() };
 }
 
-// The trace goes through the logger, so `-v` shows it on the terminal and `--log` keeps
-// it in the file — the same text, one source.
 function makeTracer(log: Logger): Tracer {
   const write = (line: string): void => log.trace(line);
   const indent = (s: string): string => s.replace(/^/gm, '        ');
@@ -343,15 +339,10 @@ export async function main(argv: readonly string[]): Promise<void> {
       process.stdout.write(formatConfig(config));
       return;
     }
-    // The resolved config goes into the log too: a .md that surprises somebody a month
-    // later is explained by the settings it was generated under, not by the flags they
-    // remember typing.
     if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
     await run(opts, config, log);
     if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
   } catch (e) {
-    // generate reads the OLD version to anchor against, and that is the text a failure
-    // report has to quote.
     process.exitCode = log.fail(e, errorContext(opts));
   } finally {
     log.close();

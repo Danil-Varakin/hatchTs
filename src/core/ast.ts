@@ -1,9 +1,9 @@
 export type GapMode =
-  | { op: 'tight' } // no skipping
-  | { op: 'skipAny' }; // ...
+  | { op: 'tight' }
+  | { op: 'skipAny' };
 
 export interface PlacedMark {
-  side: 'left' | 'right'; // left = cursor position BEFORE the jump; right = AFTER
+  side: 'left' | 'right';
   mdLine: number;
 }
 
@@ -14,8 +14,8 @@ export interface Literal {
 
 export interface Gap {
   mode: GapMode;
-  insert?: PlacedMark; // >>>
-  replaceEnd?: PlacedMark; // <<<
+  insert?: PlacedMark;
+  replaceEnd?: PlacedMark;
 }
 
 export type Anchor =
@@ -34,7 +34,7 @@ export interface MatchPattern {
 export interface Hunk {
   match: MatchPattern;
   patch: string;
-  mdSpan?: [number, number]; // origin in the .md; synthesis has none
+  mdSpan?: [number, number];
 }
 
 export interface HatchFile {

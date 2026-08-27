@@ -40,8 +40,6 @@ export function matchPattern(
   let stop = false; 
   let deepestPos = -1; 
   let deepestStep = 0;
-  // What the deepest failure stood ON, and what it had already matched. A step NUMBER
-  // tells a human nothing; the anchor they wrote, and how far the walk got, does.
   let deepestAnchor: string | undefined;
   let deepestMatched: Matched | null = null;
   const recordDeepest = (pos: number, i: number, anchor: string | undefined, last: Matched | null): void => {
@@ -89,8 +87,6 @@ export function matchPattern(
 
     if (i === steps.length) {
       if (pos !== eof) {
-        // Ran out of steps with file left over. By our semantics that means the pattern
-        // claims the file ENDS here — the case that needs saying out loud, see below.
         recordDeepest(pos, i, undefined, last);
         return false;
       }
@@ -158,13 +154,6 @@ export function matchPattern(
   }
   return [...edits.values()][0]!;
 
-  /**
-   * The one failure mode worth naming separately: a pattern that runs out of steps with
-   * file left over is CLAIMING the file ends there (README §8, the semantics of a
-   * missing trailing `...`). It reads as "my anchor is fine, why no match", and used to
-   * cost an hour every time. Everything else carries its facts and is rendered by
-   * infra/log.ts.
-   */
   function noMatch(): MatchError {
     const ranPastEnd = deepestStep >= steps.length;
     const detail: {
@@ -197,7 +186,6 @@ export function matchPattern(
   }
 }
 
-/** The last anchor that DID match, carried down the walk so a failure can quote it. */
 interface Matched {
   readonly text: string;
   readonly pos: number;

@@ -175,7 +175,6 @@ function makeHunkContext(
 function resolveHunk(context: HunkContext): ResolvedHunk {
   let fallback: ResolvedHunk | undefined;
   let bestFailure: unknown;
-  // Verdicts, not just seen-signatures: see the loop below.
   const tried = new Map<string, Attempt>();
 
   const ladder = candidatePatterns(context);
@@ -439,47 +438,19 @@ function patternFor(
   const minBelow = cut.pinsRight ? Math.min(context.limits.minSiblings, context.limits.maxSiblings) : 0;
   const generalized: Generalized[] = [];
   const lead = buildLead(context, parentCount, policies, cut.needsAbove ? aboveRows : 0, generalized);
-  // Ask before building: a flush form that cannot close is not worth a full probe.
   if (needsFlushLead(cut) && !flushGapCanClose(context, generalized)) return null;
   const tail = buildTail(context, parentCount, policies, Math.max(belowRows, minBelow), generalized);
   const pattern = assemblePattern(context, lead, cut, tail);
   return pattern === null ? null : { pattern, generalized };
 }
 
-/** The forms that put the removed text flush against the lead, with no `...` between. */
 function needsFlushLead(cut: Cut): boolean {
   return (cut.kind === 'context' || cut.kind === 'contextAbove') && cut.looseLeft !== true;
 }
 
-/**
- * Whether a flush gap between the lead and the cut can close AT THE CUT WE MEAN — one
- * normalize of a short string instead of a full walk of the file.
- *
- * A flush gap demands that the cut begin exactly where the lead ended, so it closes only
- * when the canon holds nothing in between. Not a word about which language: the question
- * is put to the canon, and the canon is the adapter's answer. Two things come of it.
- *
- * SPEED, which is why it was written. In a brace language the answer is usually yes and
- * this costs one string compare. In a language with significant indentation the canon
- * really does hold `\n` + indent between a header and its body, no literal carries it,
- * and every flush form is dead on arrival — Python was spending 29 of its 99 corpus
- * probes walking through forms that could not close.
- *
- * SHAPE, which turned out to matter more. A flush anchor is TEXT, so when the text is a
- * duplicate it can close somewhere else entirely: `void f() { >>> step();` matched the
- * FIRST of six identical `step();` instead of the fifth we meant, and the hunk still
- * passed verification — by replacing the whole body with the whole new body. Correct,
- * and a terrible hunk to read or to rebase. Asking about the intended cut refuses that
- * candidate, and the ladder goes on to anchor the edit where it actually is (corpus
- * cpp/17 and cpp/41: both hunks got shorter, one down to an empty patch body).
- *
- * One honest edge: a lead ending in a word next to a cut starting with a word normalizes
- * to '' in isolation where context would give a space. Then we build a flush form that
- * fails its probe — exactly the old behaviour, so a missed saving, never a wrong hunk.
- */
 function flushGapCanClose(context: HunkContext, leadRanges: readonly Generalized[]): boolean {
   const last = leadRanges[leadRanges.length - 1];
-  if (last === undefined) return true; // nothing to sit flush against
+  if (last === undefined) return true;
   const { map, source, adapter } = context;
   const leadEnd = map.toOriginalPos(map.toCanonPos(last.to), 'left');
   const cutStart = map.toOriginalPos(context.canonStart, 'right');
@@ -666,7 +637,6 @@ function headerWidenBoundary(context: HunkContext, span: BlockSpan, index: numbe
   return to > map.toOriginalPos(span.open + 1, 'left') ? to : null;
 }
 
-
 function closerStep(context: HunkContext, span: BlockSpan): Step | null {
   const { map, source } = context;
   if (span.closeEnd !== undefined) {
@@ -675,7 +645,7 @@ function closerStep(context: HunkContext, span: BlockSpan): Step | null {
     return anchor === null ? null : skipStep(anchor);
   }
   const start = map.toOriginalPos(span.close, 'right');
-  if (start >= source.length) return null; // the block runs to the end of the file
+  if (start >= source.length) return null;
   const lineEnd = source.indexOf('\n', start);
   const raw = source.slice(start, lineEnd === -1 ? source.length : lineEnd);
   const anchor = literalAnchor(context, raw);

@@ -1,0 +1,16 @@
+# match m
+    ...
+    static NSDictionary *Defaults(
+    ...
+    ) {
+    ...
+    >>>
+        @"limit" : @(10),
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    @"limit" : @(25),
+# end

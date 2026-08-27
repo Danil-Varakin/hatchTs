@@ -1,0 +1,25 @@
+{
+  // Build config for the PACKAGE. Development keeps tsconfig.json exactly as it is:
+  // noEmit, imports written with .ts, executed straight through
+  // `node --experimental-strip-types`. That is a good way to work on the code and a bad
+  // way to ship it — the flag needs a recent Node and prints a warning into the user's
+  // stderr, and `./apply.ts` does not resolve once the file is JavaScript.
+  //
+  // The one option that makes both worlds possible is rewriteRelativeImportExtensions:
+  // sources keep saying `./apply.ts`, the emitted JS says `./apply.js`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    // .d.ts is what makes the published types real for a TypeScript consumer; without it
+    // they get `any` and the public surface in src/index.ts means nothing.
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src"],
+  "exclude": ["test", "corpus"]
+}

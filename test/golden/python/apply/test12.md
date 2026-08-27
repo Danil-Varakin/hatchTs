@@ -1,0 +1,18 @@
+Три строки схлопываются в одну.
+
+# match python
+    ...
+        async def drain(self, paths):
+    ...
+    >>>
+            for task in tasks:
+                with suppress(asyncio.CancelledError):
+                    results.append(task.result())
+    <<<
+    ...
+            return results
+    ...
+# end
+# patch
+    results = [task.result() for task in tasks]
+# end

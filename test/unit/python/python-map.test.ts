@@ -1,5 +1,3 @@
-// Карта Python В ОТРЫВЕ от матчера (00-general-rules §6): проверяем ровно то, что
-// адаптер обещает ядру — где начинается и где кончается блок с ЗНАЧИМЫМ ОТСТУПОМ.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -15,7 +13,6 @@ def g():
     pass
 `;
 
-// канон Python сохраняет отступ и '\n', поэтому позиции ищем прямо в нём
 const CANON = normalize(SRC);
 const at = (needle: string): number => {
   const i = CANON.indexOf(needle);
@@ -31,7 +28,6 @@ test('build the Python map (init once)', async () => {
 
 test('the colon is the opening token: after `if a:` the cursor is INSIDE the body', () => {
   const ifStart = at('if a:');
-  // до двоеточия — ещё снаружи if (но уже внутри тела def), после — внутри
   assert.equal(map.depthAt(ifStart), 1);
   assert.equal(map.depthAt(ifStart + 'if a:'.length), 2);
 });
@@ -39,14 +35,13 @@ test('the colon is the opening token: after `if a:` the cursor is INSIDE the bod
 test('the end of the block is the beginning of the line of the OUTER level', () => {
   const ifBody = at('        x=1');
   const close = map.enclosingEnd(ifBody);
-  // за концом блока начинается строка внешнего уровня — `y = 2`, а не пустота/EOF
   assert.equal(CANON.slice(close, close + 3), 'y=2');
 });
 
 test('a nested block is closed by the outer one, and the outer one is closed by the next def', () => {
   const ifBody = at('        x=1');
-  const spans = map.enclosing(ifBody); // ВНУТРЬ→НАРУЖУ
-  assert.equal(spans.length, 2); // тело if, тело def
+  const spans = map.enclosing(ifBody);
+  assert.equal(spans.length, 2);
   assert.equal(CANON.slice(spans[0]!.close, spans[0]!.close + 3), 'y=2');
   assert.equal(CANON.slice(spans[1]!.close, spans[1]!.close + 8), 'def g():');
 });
@@ -64,7 +59,7 @@ test('there is no closing TOKEN in Python → no closeEnd (there is nothing to c
 });
 
 test('brackets remain blocks too: `(a)` in the signature is a regular span', () => {
-  const parens = map.enclosing(at('def f(a):') + 6); // внутри (a)
+  const parens = map.enclosing(at('def f(a):') + 6);
   assert.ok(
     parens.some((s) => CANON[s.open] === '(' && CANON[s.close] === ')'),
     JSON.stringify(parens),
@@ -72,9 +67,6 @@ test('brackets remain blocks too: `(a)` in the signature is a regular span', () 
 });
 
 test('the neighbouring def is a different block: the depth does not leak through a blank line', () => {
-  // конвенция карты: закрывашка принадлежит СВОЕМУ блоку (inside = (open, close]),
-  // а close тела `def f` это и есть начало строки `def g():` — ровно как `}` в C++
-  // считается глубиной своего блока. На символ дальше — уже верхний уровень.
   assert.equal(map.depthAt(at('def g():')), 1);
   assert.equal(map.depthAt(at('def g():') + 1), 0);
   assert.equal(map.depthAt(at('    pass')), 1);
@@ -86,7 +78,7 @@ test('a one-line body (`if x: pass`) is also a block — the colon opens it', as
   const m = pythonAdapter.buildMap(src);
   const canon = normalize(src);
   const afterColon = canon.indexOf('if x:') + 'if x:'.length;
-  assert.equal(m.depthAt(afterColon), 2); // тело def + тело if
+  assert.equal(m.depthAt(afterColon), 2);
 });
 
 test('everything is measured by the tree, not by tabs: mixed indentation does not break the block', async () => {

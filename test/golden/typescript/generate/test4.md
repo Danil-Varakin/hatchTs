@@ -1,0 +1,16 @@
+# match ts
+    ...
+    type Boxed<
+    ...
+    > = {
+    ...
+    >>>
+      [K in keyof T]: { value: T[K]; dirty: boolean };
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    [K in keyof T]: { value: T[K]; dirty: boolean; stamp: number };
+# end

@@ -1,0 +1,16 @@
+# match py
+    ...
+            case {
+    ...
+    }:
+    ...
+    >>>
+                return 1
+    <<<
+    ...
+    case _:
+    ...
+# end
+# patch
+    return 2
+# end

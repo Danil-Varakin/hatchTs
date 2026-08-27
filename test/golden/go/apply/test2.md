@@ -1,0 +1,13 @@
+# match go
+    ...
+    func (p *Pool[T]) Add(job T) {
+    ...
+    >>>
+    	p.jobs = append(p.jobs, job)
+    <<<
+    ...
+# end
+# patch
+    p.jobs = append(p.jobs, job)
+    	p.state = StateBusy
+# end

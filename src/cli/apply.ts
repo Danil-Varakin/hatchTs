@@ -1,65 +1,25 @@
-// cli/apply.ts — команда `apply`: наложить .md-инструкции на исходник.
-//
-// Ханки применяются ПОСЛЕДОВАТЕЛЬНО, каждый против ТЕКУЩЕГО (уже изменённого)
-// состояния: read → для каждого ханка buildMap(current) → matcher → patcher →
-// current = правка. В конце ОДНА атомарная запись (temp+rename). Так ханк может
-// зацепиться за то, что вставил предыдущий (00-general-rules §3, phase-3).
-//
-// Разбор аргументов — свой (без commander): поверхность мала. Коды выхода берутся
-// из HatchError.exitCode (0 успех, 2 parse, 3 match, 4 ambiguity, 1 иное).
-//
-// Запуск:
-//   node --experimental-strip-types src/cli/apply.ts \
-//     --match patch.md --in src.cc --out out.cc [--language cpp] [--dry-run|--verify]
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseHatchFile } from '../core/hatch-parser.ts';
-import { matchPattern } from '../core/matcher.ts';
-import { patchHunk } from '../core/patcher.ts';
-import type { Edit } from '../core/patcher.ts';
-import type { HatchFile } from '../core/ast.ts';
+import { applyAll } from '../core/apply.ts';
+import type { AppliedEdit } from '../core/apply.ts';
 import { writeFileAtomic } from '../infra/fs.ts';
+import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import { HatchError } from '../core/errors.ts';
-
-/** Одна применённая правка: сама правка и вырезанный текст (для показа замены). */
-export interface AppliedEdit {
-  edit: Edit;
-  oldText: string; // вырезаемый текст (для замены; '' для чистой вставки)
-}
-
-/** Итог наложения всех ханков ПОСЛЕДОВАТЕЛЬНО (каждый против текущего состояния). */
-export interface ApplyResult {
-  source: string;
-  edits: AppliedEdit[];
-}
-
-/**
- * Чистое ядро apply: наложить все ханки по очереди на source. Требует уже
- * инициализированного adapter (await adapter.init()). Без файлового ввода-вывода —
- * тестируется напрямую. Бросает MatchError/AmbiguityError матчера как есть.
- */
-export function applyAll(source: string, file: HatchFile, adapter: LanguageAdapter): ApplyResult {
-  let current = source;
-  const edits: AppliedEdit[] = [];
-  for (const hunk of file.hunks) {
-    const map = adapter.buildMap(current); // карта ТЕКУЩЕГО текста (O(n) на ханк)
-    const marks = matchPattern(hunk.match, map, adapter.normalize); // MatchError/AmbiguityError
-    const result = patchHunk(current, map, marks, hunk.patch);
-    edits.push({ edit: result.edit, oldText: current.slice(result.edit.start, result.edit.end) });
-    current = result.source;
-  }
-  return { source: current, edits };
-}
+import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import type { Logger } from '../infra/log.ts';
 
 interface Options {
   match?: string;
   in?: string;
   out?: string;
+  log?: string;
   language?: string;
   dryRun: boolean;
   verify: boolean;
+  downloadGrammars: boolean;
   help: boolean;
 }
 
@@ -72,10 +32,15 @@ const USAGE = `hatch apply — apply .md instructions to a source file
                           the file extension)
   --dry-run               show planned edits, write nothing
   --verify                exit code only (0 = applies cleanly), write nothing
+  --download-grammars     allow fetching the language's grammar if it is missing
+                          (off by default; npm run grammars fetches them once)
+  --log [place]           also write a full log; every run gets its own file. A place
+                          that is a directory (or ends in /) receives a generated name,
+                          otherwise it IS the name; omitted → ./hatch-logs/
   --help,  -h             this help`;
 
 function parseArgs(argv: readonly string[]): Options {
-  const opts: Options = { dryRun: false, verify: false, help: false };
+  const opts: Options = { dryRun: false, verify: false, downloadGrammars: false, help: false };
   const takesValue: Record<string, 'match' | 'in' | 'out' | 'language'> = {
     '--match': 'match', '-m': 'match',
     '--in': 'in', '-i': 'in',
@@ -84,8 +49,14 @@ function parseArgs(argv: readonly string[]): Options {
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === '--log') {
+      const next = argv[i + 1];
+      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
+      continue;
+    }
     if (a === '--dry-run') opts.dryRun = true;
     else if (a === '--verify') opts.verify = true;
+    else if (a === '--download-grammars') opts.downloadGrammars = true;
     else if (a === '--help' || a === '-h') opts.help = true;
     else {
       const key = takesValue[a];
@@ -98,7 +69,6 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Язык: --language > заголовок `# match <lang>` в .md > расширение исходника.
 function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
   if (opts.language !== undefined) return adapterForLanguage(opts.language);
   if (mdLanguage !== undefined) return adapterForLanguage(mdLanguage);
@@ -113,7 +83,7 @@ function describeEdit(applied: AppliedEdit, index: number, total: number): strin
   return `hunk ${index + 1}/${total}:\n  ${kind} ${where}\n    new: ${JSON.stringify(edit.text)}${old}`;
 }
 
-async function run(opts: Options): Promise<void> {
+async function run(opts: Options, log: Logger): Promise<void> {
   if (opts.match === undefined) throw new Error('missing --match <file.md>');
   if (opts.in === undefined) throw new Error('missing --in <file>');
   const willWrite = !opts.dryRun && !opts.verify;
@@ -121,24 +91,25 @@ async function run(opts: Options): Promise<void> {
     throw new Error('missing --out <file> (or use --dry-run / --verify)');
   }
 
-  const file = parseHatchFile(readFileSync(opts.match, 'utf8')); // ParseError (exit 2)
+  const file = parseHatchFile(readFileSync(opts.match, 'utf8'));
   const adapter = resolveAdapter(opts, file.language);
-  await adapter.init(); // разовая загрузка грамматики tree-sitter
+  await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
   const source = readFileSync(opts.in, 'utf8');
-  const { source: result, edits } = applyAll(source, file, adapter); // MatchError/AmbiguityError
+  log.trace(`source: ${opts.in} (${source.length} bytes), ${file.hunks.length} hunk(s)`);
+  const { source: result, edits } = applyAll(source, file, adapter);
 
   if (opts.dryRun) {
-    for (const [i, e] of edits.entries()) console.log(describeEdit(e, i, edits.length));
-    console.log(`dry-run: ${edits.length} hunk(s) would apply (nothing written)`);
+    for (const [i, e] of edits.entries()) log.info(describeEdit(e, i, edits.length));
+    log.info(`dry-run: ${edits.length} hunk(s) would apply (nothing written)`);
     return;
   }
   if (opts.verify) {
-    console.log(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
+    log.info(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
     return;
   }
   writeFileAtomic(opts.out!, result);
-  console.log(`applied ${edits.length} hunk(s) → ${opts.out}`);
+  log.info(`applied ${edits.length} hunk(s) → ${opts.out}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -146,29 +117,50 @@ export async function main(argv: readonly string[]): Promise<void> {
   try {
     opts = parseArgs(argv);
   } catch (e) {
-    console.error(`error: ${(e as Error).message}\n\n${USAGE}`);
+    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
     return;
   }
   if (opts.help) {
-    console.log(USAGE);
+    process.stdout.write(`${USAGE}\n`);
     return;
   }
+
+  let log: Logger;
   try {
-    await run(opts);
+    log = createLogger({
+      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'apply') } : {}),
+      header: logHeader('apply', argv),
+    });
   } catch (e) {
-    if (e instanceof HatchError) {
-      console.error(`${e.name}: ${e.message}`);
-      process.exitCode = e.exitCode;
-    } else {
-      console.error(`error: ${(e as Error).message}`);
-      process.exitCode = 1;
-    }
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    return;
+  }
+
+  try {
+    await run(opts, log);
+    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
+  } catch (e) {
+    process.exitCode = log.fail(e, errorContext(opts));
+  } finally {
+    log.close();
   }
 }
 
-// Запускать main() ТОЛЬКО когда файл вызван напрямую (node …/apply.ts), а не при
-// импорте из тестов — иначе import выполнил бы CLI.
+function errorContext(opts: Options): { source?: string; sourcePath?: string; mdPath?: string } {
+  const ctx: { source?: string; sourcePath?: string; mdPath?: string } = {};
+  if (opts.in !== undefined) {
+    ctx.sourcePath = opts.in;
+    try {
+      ctx.source = readFileSync(opts.in, 'utf8');
+    } catch {
+    }
+  }
+  if (opts.match !== undefined) ctx.mdPath = opts.match;
+  return ctx;
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv.slice(2));
 }

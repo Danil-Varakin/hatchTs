@@ -1,0 +1,43 @@
+// [BULK] 40 строк, правка каждой ВТОРОЙ (соседи тоже дрейфуют)
+void f() {
+  step_0(changed);
+  step_1();
+  step_2(changed);
+  step_3();
+  step_4(changed);
+  step_5();
+  step_6(changed);
+  step_7();
+  step_8(changed);
+  step_9();
+  step_10(changed);
+  step_11();
+  step_12(changed);
+  step_13();
+  step_14(changed);
+  step_15();
+  step_16(changed);
+  step_17();
+  step_18(changed);
+  step_19();
+  step_20(changed);
+  step_21();
+  step_22(changed);
+  step_23();
+  step_24(changed);
+  step_25();
+  step_26(changed);
+  step_27();
+  step_28(changed);
+  step_29();
+  step_30(changed);
+  step_31();
+  step_32(changed);
+  step_33();
+  step_34(changed);
+  step_35();
+  step_36(changed);
+  step_37();
+  step_38(changed);
+  step_39();
+}

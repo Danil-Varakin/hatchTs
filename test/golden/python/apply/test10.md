@@ -1,0 +1,17 @@
+Правка внутри `async with` внутри `async def`: `raise TimeoutError(path)` есть и в
+`fetch`, и в `push`, различает только заголовок метода.
+
+# match python
+    ...
+        async def fetch(self, path):
+    ...
+                body = await response.read()
+    ...
+    >>>
+                return body.decode("utf-8")
+    <<<
+    ...
+# end
+# patch
+    return body.decode("utf-8", errors="replace")
+# end

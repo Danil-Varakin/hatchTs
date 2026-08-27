@@ -1,18 +1,5 @@
-// cli/generate.ts — команда `generate`: из двух версий файла породить .md-инструкции.
-//
-// Обратный конвейер: diff → synth → printer. Старую версию берём из файла (--in-old)
-// или из git-ветки (--branch). Язык — из --language или расширения --in. Результат в
-// --out (или stdout). Режим -a: подтвердить каждый ханк перед записью. Режим -e:
-// требовать дословного (байт в байт) воспроизведения new; без него достаточно
-// ПОСТРОЧНОГО совпадения по нормализации языка — пробелы внутри строк не в счёт.
-//
-// Разбор аргументов свой (как в apply.ts — поверхность мала). Коды выхода из
-// HatchError.exitCode (0 успех, 2 parse, 3 match, 4 ambiguity, 1 иное).
-//
-// Запуск:
-//   node --experimental-strip-types src/cli/generate.ts \
-//     --in new.cc (--in-old old.cc | --branch main) [--out patch.md] [--language cpp] [-a] [-e]
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { dirname, basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 import { synthesize } from '../generate/synth.ts';
@@ -23,9 +10,14 @@ import { reviewHunks } from '../generate/agreement.ts';
 import type { Confirm } from '../generate/agreement.ts';
 import { fileFromBranch } from '../infra/git.ts';
 import { writeFileAtomic } from '../infra/fs.ts';
+import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
+import { CONFIG_FILE_NAME, formatConfig, loadConfig } from '../infra/config/index.ts';
+import type { FlagOverride, ResolvedConfig } from '../infra/config/index.ts';
 import { HatchError } from '../core/errors.ts';
+import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import type { Logger } from '../infra/log.ts';
 
 interface Options {
   in?: string;
@@ -33,6 +25,19 @@ interface Options {
   branch?: string;
   out?: string;
   language?: string;
+  config?: string;
+  log?: string;
+  parents?: unknown;
+  minParents?: unknown;
+  parentDetailBase?: unknown;
+  siblings?: unknown;
+  minSiblings?: unknown;
+  siblingDetailBase?: unknown;
+  bridgeGap?: unknown;
+  requireParents: boolean;
+  downloadGrammars: boolean;
+  useConfig: boolean;
+  printConfig: boolean;
   agreement: boolean;
   exact: boolean;
   debug: boolean;
@@ -44,7 +49,10 @@ const USAGE = `hatch generate — synthesize .md instructions from two versions 
   --in,     -i <file>     new version of the file                    [required]
   --in-old     <file>     old version (from a file)      [one of --in-old/--branch]
   --branch, -b <branch>   old version = <branch>:<--in path> (git)
-  --out,    -o <file>     write .md here (default: stdout)
+  --out,    -o <path>     where to write the .md. A file path is taken as is; a
+                          directory (existing, or ending with a slash) gets
+                          <name of --in>.md inside it; omitted means next to
+                          --in. \`-\` writes to stdout
   --language,-l <lang>    force language (else: extension of --in)
   --agreement,-a          confirm each hunk before writing
   --exact,  -e            reproduce the new file byte for byte; without it every
@@ -52,24 +60,109 @@ const USAGE = `hatch generate — synthesize .md instructions from two versions 
                           and inner spacing are free, the set of lines is not)
   --debug,  -v            trace synthesis to stderr: every segment, each probe
                           attempt (incl. non-unique) and the chosen hunk
-  --help,   -h            this help`;
+  --download-grammars     allow fetching the language's grammar if it is missing
+                          (off by default; npm run grammars fetches them once)
+  --log [place]           also write a full log — the resolved config and the whole
+                          synthesis trace, whether or not -v is on. Every run gets its
+                          own file. A place that is a directory (or ends in /) receives
+                          a generated name, otherwise it IS the name; omitted →
+                          ./hatch-logs/
+  --help,   -h            this help
+
+Anchoring (how much context a generated hunk carries). Every one of these can also
+be set in ${CONFIG_FILE_NAME}; the flag wins for this run.
+
+  --parents <n|all>       cap on climbing up: at most n enclosing blocks per
+                          pattern (default: all)
+  --min-parents <n>       enclosing blocks EVERY pattern carries (default: 1).
+                          A hunk with no parent is not structural — drifting
+                          neighbours can land it in another function
+  --parent-detail <n>     bracket levels spelled out in parent headers, counting
+                          from the outermost: 0 gives \`foo( ... )\`, 1 gives
+                          \`foo(bar( ... ))\` (default: 0). This is the READABLE
+                          baseline; when an anchor turns out ambiguous the ladder
+                          unfolds further on its own, one NAMED bracket at a time,
+                          and stops as soon as no bracket tells the places apart
+  --min-siblings <n>      neighbouring significant lines EVERY pattern carries,
+                          per side (default: 0)
+  --siblings <n>          cap of neighbouring significant lines per side
+                          (default: 8). 0 forbids leaning on neighbours at all —
+                          anchoring stays purely structural
+  --sibling-detail <n>    same bracket baseline for neighbour anchors (default: 0)
+  --require-parents       never fall back to a parentless pattern: fail instead of
+                          emitting an anchor that drift can move
+  --bridge-gap <n>        stitch edits split by up to n unchanged non-blank lines
+                          back into one hunk (default: 0)
+
+Configuration
+
+  --config <file>         use this config file instead of searching for
+                          ${CONFIG_FILE_NAME} upwards from --in
+  --no-config             ignore config files entirely (built-in defaults + flags)
+  --print-config          print the effective settings with the origin of each
+                          (default / config / flag) and exit`;
+
+type StringOption = 'in' | 'inOld' | 'branch' | 'out' | 'language' | 'config';
+type CountOption =
+  | 'parents'
+  | 'minParents'
+  | 'parentDetailBase'
+  | 'minSiblings'
+  | 'siblings'
+  | 'siblingDetailBase'
+  | 'bridgeGap';
 
 function parseArgs(argv: readonly string[]): Options {
-  const opts: Options = { agreement: false, exact: false, debug: false, help: false };
-  const takesValue: Record<string, 'in' | 'inOld' | 'branch' | 'out' | 'language'> = {
+  const opts: Options = {
+    requireParents: false,
+    downloadGrammars: false,
+    useConfig: true,
+    printConfig: false,
+    agreement: false,
+    exact: false,
+    debug: false,
+    help: false,
+  };
+  const takesValue: Record<string, StringOption> = {
     '--in': 'in', '-i': 'in',
     '--in-old': 'inOld',
     '--branch': 'branch', '-b': 'branch',
     '--out': 'out', '-o': 'out',
     '--language': 'language', '-l': 'language',
+    '--config': 'config',
+  };
+  const takesCount: Record<string, CountOption> = {
+    '--parents': 'parents',
+    '--min-parents': 'minParents',
+    '--parent-detail': 'parentDetailBase',
+    '--min-siblings': 'minSiblings',
+    '--siblings': 'siblings',
+    '--sibling-detail': 'siblingDetailBase',
+    '--bridge-gap': 'bridgeGap',
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === '--log') {
+      const next = argv[i + 1];
+      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
+      continue;
+    }
     if (a === '--agreement' || a === '-a') opts.agreement = true;
     else if (a === '--exact' || a === '-e') opts.exact = true;
     else if (a === '--debug' || a === '-v') opts.debug = true;
     else if (a === '--help' || a === '-h') opts.help = true;
+    else if (a === '--require-parents') opts.requireParents = true;
+    else if (a === '--download-grammars') opts.downloadGrammars = true;
+    else if (a === '--no-config') opts.useConfig = false;
+    else if (a === '--print-config') opts.printConfig = true;
     else {
+      const countKey = takesCount[a];
+      if (countKey !== undefined) {
+        const val = argv[++i];
+        if (val === undefined) throw new Error(`option ${a} needs a value`);
+        opts[countKey] = parseCountValue(val);
+        continue;
+      }
       const key = takesValue[a];
       if (key === undefined) throw new Error(`unknown argument: ${a}`);
       const val = argv[++i];
@@ -80,20 +173,56 @@ function parseArgs(argv: readonly string[]): Options {
   return opts;
 }
 
-// Метка языка для заголовка `# match <lang>`: --language, иначе расширение --in без точки.
-function langLabel(opts: Options): string | undefined {
-  if (opts.language !== undefined) return opts.language;
-  const dot = opts.in!.lastIndexOf('.');
-  return dot === -1 ? undefined : opts.in!.slice(dot + 1);
+function parseCountValue(raw: string): unknown {
+  if (raw === 'all') return 'all';
+  return /^\d+$/.test(raw) ? Number(raw) : raw;
 }
 
-function resolveAdapter(opts: Options): LanguageAdapter {
-  if (opts.language !== undefined) return adapterForLanguage(opts.language);
-  return adapterForFile(opts.in!);
+function flagOverrides(opts: Options): FlagOverride[] {
+  const out: FlagOverride[] = [];
+  const push = (key: FlagOverride['key'], value: unknown, flag: string): void => {
+    if (value !== undefined) out.push({ key, value, flag });
+  };
+  push('out', opts.out, '--out');
+  push('language', opts.language, '--language');
+  push('exact', opts.exact ? true : undefined, '--exact');
+  push('bridgeGap', opts.bridgeGap, '--bridge-gap');
+  push('minParents', opts.minParents, '--min-parents');
+  push('maxParents', opts.parents, '--parents');
+  push('parentDetailBase', opts.parentDetailBase, '--parent-detail');
+  push('parentsRequired', opts.requireParents ? true : undefined, '--require-parents');
+  push('minSiblings', opts.minSiblings, '--min-siblings');
+  push('maxSiblings', opts.siblings, '--siblings');
+  push('siblingDetailBase', opts.siblingDetailBase, '--sibling-detail');
+  return out;
 }
 
-// Интерактивное подтверждение через stdin (ответы/подсказки — в stderr, чтобы не
-// смешивать с .md в stdout).
+function langLabel(language: string | null, inPath: string): string | undefined {
+  if (language !== null) return language;
+  const dot = inPath.lastIndexOf('.');
+  return dot === -1 ? undefined : inPath.slice(dot + 1);
+}
+
+export function resolveOutPath(out: string | undefined, inPath: string): string | undefined {
+  const defaultName = `${basename(inPath)}.md`;
+  if (out === undefined) return join(dirname(inPath), defaultName);
+  if (out === '-') return undefined;
+  if (/[/\\]$/.test(out) || isDirectory(out)) return join(out, defaultName);
+  return out;
+}
+
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function resolveAdapter(language: string | null, inPath: string): LanguageAdapter {
+  return language !== null ? adapterForLanguage(language) : adapterForFile(inPath);
+}
+
 function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const confirm: Confirm = (question) =>
@@ -104,17 +233,16 @@ function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
   return { confirm, close: () => rl.close() };
 }
 
-// Отладочный трейсер (--debug): печатает ход синтеза в stderr, чтобы не смешаться с
-// .md в stdout. Отступ pattern делает вложенность привязки наглядной.
-function makeTracer(): Tracer {
+function makeTracer(log: Logger): Tracer {
+  const write = (line: string): void => log.trace(line);
   const indent = (s: string): string => s.replace(/^/gm, '        ');
   const kindOf = (e: Extract<SynthEvent, { kind: 'segment' }>): string =>
     e.seg.removed.length > 0 && e.seg.added.length > 0 ? 'replace' : e.seg.added.length > 0 ? 'insert' : 'delete';
   return (e) => {
     if (e.kind === 'segment') {
-      process.stderr.write(`\n── segment #${e.index + 1} (${kindOf(e)}) @ old line ${e.seg.oldStart}\n`);
-      for (const l of e.seg.removed) process.stderr.write(`   - ${l}\n`);
-      for (const l of e.seg.added) process.stderr.write(`   + ${l}\n`);
+      write(`\n── segment #${e.index + 1} (${kindOf(e)}) @ old line ${e.seg.oldStart}`);
+      for (const l of e.seg.removed) write(`   - ${l}`);
+      for (const l of e.seg.added) write(`   + ${l}`);
     } else if (e.kind === 'attempt') {
       const tag =
         e.result === 'unique'
@@ -122,14 +250,14 @@ function makeTracer(): Tracer {
           : e.result === 'ambiguous'
             ? `✗ ambiguous (${e.matches}+ matches — need more context)`
             : '∅ no match';
-      process.stderr.write(`   try → ${tag}\n${indent(printPattern(e.pattern))}\n`);
+      write(`   try → ${tag}\n${indent(printPattern(e.pattern))}`);
     } else {
-      process.stderr.write(`   ➜ CHOSEN, patch: ${JSON.stringify(e.patch)}\n`);
+      write(`   ➜ CHOSEN, patch: ${JSON.stringify(e.patch)}`);
     }
   };
 }
 
-async function run(opts: Options): Promise<void> {
+async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<void> {
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
   if ((opts.inOld === undefined) === (opts.branch === undefined)) {
     throw new Error('provide exactly one source of the OLD version: --in-old <file> OR --branch <branch>');
@@ -139,12 +267,15 @@ async function run(opts: Options): Promise<void> {
   const oldStr =
     opts.inOld !== undefined ? readFileSync(opts.inOld, 'utf8') : await fileFromBranch(opts.branch!, opts.in);
 
-  const adapter = resolveAdapter(opts);
-  await adapter.init(); // разовая загрузка грамматики tree-sitter
+  const settings = config.generate;
+  const adapter = resolveAdapter(settings.language, opts.in);
+  await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
   let hunks = synthesize(oldStr, newStr, adapter, {
-    exact: opts.exact,
-    trace: opts.debug ? makeTracer() : undefined,
+    exact: settings.exact,
+    bridgeGap: settings.bridgeGap,
+    trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
+    limits: settings,
   });
 
   if (opts.agreement) {
@@ -156,15 +287,18 @@ async function run(opts: Options): Promise<void> {
     }
   }
 
-  for (const w of trailingSpaceWarnings(hunks)) console.error(`warning: ${w}`);
+  for (const w of trailingSpaceWarnings(hunks)) log.note(`warning: ${w}`);
 
-  const md = printHatchFile(hunks, langLabel(opts));
-  if (opts.out !== undefined) {
-    writeFileAtomic(opts.out, md);
-    console.error(`generated ${hunks.length} hunk(s) → ${opts.out}`);
-  } else {
+  const md = printHatchFile(hunks, langLabel(settings.language, opts.in));
+  const outPath = resolveOutPath(settings.out ?? undefined, opts.in);
+  if (outPath === undefined) {
     process.stdout.write(md);
+    return;
   }
+  const outDir = dirname(outPath);
+  if (!isDirectory(outDir)) throw new Error(`no such directory: ${outDir} (--out ${outPath})`);
+  writeFileAtomic(outPath, md);
+  log.note(`generated ${hunks.length} hunk(s) → ${outPath}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
@@ -172,28 +306,58 @@ export async function main(argv: readonly string[]): Promise<void> {
   try {
     opts = parseArgs(argv);
   } catch (e) {
-    console.error(`error: ${(e as Error).message}\n\n${USAGE}`);
+    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
     return;
   }
   if (opts.help) {
-    console.log(USAGE);
+    process.stdout.write(`${USAGE}\n`);
     return;
   }
+
+  let log: Logger;
   try {
-    await run(opts);
+    log = createLogger({
+      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'generate') } : {}),
+      verbose: opts.debug,
+      header: logHeader('generate', argv),
+    });
   } catch (e) {
-    if (e instanceof HatchError) {
-      console.error(`${e.name}: ${e.message}`);
-      process.exitCode = e.exitCode;
-    } else {
-      console.error(`error: ${(e as Error).message}`);
-      process.exitCode = 1;
+    process.stderr.write(`${(e as Error).message}\n`);
+    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    return;
+  }
+
+  try {
+    const config = loadConfig({
+      explicitPath: opts.config,
+      startDir: opts.in !== undefined ? dirname(resolve(opts.in)) : process.cwd(),
+      useFile: opts.useConfig,
+      flags: flagOverrides(opts),
+    });
+    if (opts.printConfig) {
+      process.stdout.write(formatConfig(config));
+      return;
     }
+    if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
+    await run(opts, config, log);
+    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
+  } catch (e) {
+    process.exitCode = log.fail(e, errorContext(opts));
+  } finally {
+    log.close();
   }
 }
 
-// Запускать main() только при прямом вызове (не при импорте из тестов).
+function errorContext(opts: Options): { source?: string; sourcePath?: string } {
+  if (opts.inOld === undefined) return {};
+  try {
+    return { source: readFileSync(opts.inOld, 'utf8'), sourcePath: opts.inOld };
+  } catch {
+    return { sourcePath: opts.inOld };
+  }
+}
+
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main(process.argv.slice(2));
 }

@@ -1,0 +1,16 @@
+# match kt
+    ...
+    infix fun Int.upTo(
+    ...
+    ): IntRange {
+    ...
+    >>>
+        return this..other
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return this until other
+# end

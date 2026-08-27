@@ -1,0 +1,16 @@
+# match py
+    ...
+        def size(
+    ...
+    ):
+    ...
+    >>>
+            return len(self.items)
+    <<<
+    ...
+    class Gamma:
+    ...
+# end
+# patch
+    return len(self.items) - 1
+# end

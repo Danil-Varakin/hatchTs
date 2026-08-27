@@ -1,0 +1,29 @@
+# match py
+    ...
+    # [PYDUP] восемь одинаковых import подряд, правка СЕДЬМОГО (родителя нет вовсе)
+    from pkg import mod
+    from pkg import mod
+    from pkg import mod
+    from pkg import mod
+    from pkg import mod
+    from pkg import mod
+    >>>
+    ...
+# end
+# patch
+
+    from pkg import other
+# end
+
+# match py
+    ...
+    from pkg import other
+    from pkg import mod
+    >>>
+    ...
+    from pkg import mod
+    <<<
+    ...
+# end
+# patch
+# end

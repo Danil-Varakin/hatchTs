@@ -118,3 +118,100 @@ green on every commit.
 3. Public behaviour changes are reflected in `README.md` **and** `README.ru.md`,
    and the CLI `--help` text matches the README.
 4. The commit message says *why*, not just *what* changed.
+
+## Grammars
+
+Grammars are not in the repository. Fetch them once after `npm install`:
+
+```bash
+npm run grammars
+```
+
+`npm test` runs this for you (`pretest`), so a fresh clone needs network access on
+its first test run; afterwards everything comes from the shared user cache. Nothing
+else ever downloads on its own — see the Grammars section of the README.
+
+
+## Releasing
+
+Releases are cut by **CI**, not by hand. All it takes is a tag:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`.github/workflows/release.yml` then checks the tag against `version` in
+`package.json` on a clean machine, runs typecheck and tests, builds `dist/`, runs
+`npm pack` and creates the GitHub Release with the `.tgz` attached. Red tests mean no
+release.
+
+The tag/version check stops `v0.2.0` being cut from code that still calls itself
+`0.1.0`: bump `package.json`, commit, then tag.
+
+To build the archive locally, sending nothing anywhere:
+
+```bash
+npm run pack
+```
+
+To list the files without creating anything:
+
+```bash
+npm pack --dry-run
+```
+
+It must contain only `dist/`, both READMEs, `hatch.config.schema.json` and
+`package.json` — the `files` field in `package.json` decides. Nothing from `src/`,
+`test/` or `docs/`.
+
+How a user installs it:
+
+```bash
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+```
+
+They get a `hatch` command. Grammars are not in the tarball (~17 MB across eleven
+languages), so the first run tells them what to do: `hatch grammars`.
+
+Installing straight from the repository works too
+(`npm i -g github:Danil-Varakin/hatchTs`) — that is what `prepare` is for.
+
+## Checks (CI)
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+- **matrix** — Linux, macOS, Windows across Node 22 and 24, six combinations;
+- **grammars** are cached between runs (`HATCH_GRAMMAR_CACHE` points at a directory
+  inside the workspace, which `actions/cache` remembers);
+- **a separate job** builds the package and prints its contents, so a stray file in
+  `files` shows up before it ships.
+
+`test/golden` runs as part of `npm test`.
+
+## Corpus and golden
+
+`test/golden/` holds 345 hand-written cases across eleven languages. They live in the
+repository and run with plain `npm test`, and they check TWO different things:
+
+- **round-trip** — `synthesize → print → parse → apply → compare with new`: the result
+  is correct;
+- **golden** — the printed `.md` is compared byte for byte with a committed snapshot.
+  Round-trip says nothing about shape: a hunk that rewrites a whole function body
+  reproduces the file just as faithfully as a one-line one.
+
+When a change is MEANT to alter the printed form, regenerate and **read the diff**:
+
+```bash
+UPDATE_GOLDEN=1 npm test
+```
+
+Two markers, both on the first line of a case:
+
+- `MUST-REFUSE` — the instructions must NOT apply (a silent false match is the worst
+  class of bug we have, so it gets a test);
+- `KNOWN-GAP` — synthesis cannot do this yet, said out loud. Fix it and the test fails
+  with "it works now, remove the marker".
+
+Hatch has also been exercised against real Chromium files carrying real Brave patches.
+That material is third-party code under a third-party licence and is not part of this
+repository; `test/golden` is the suite everyone can run.

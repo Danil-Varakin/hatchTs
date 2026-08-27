@@ -1,0 +1,16 @@
+# match cc
+    ...
+    void Init() {
+    ...
+    >>>
+      Run();
+    <<<
+    ...
+    #else
+    ...
+    }
+    ...
+# end
+# patch
+    RunWin();
+# end

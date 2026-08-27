@@ -1,0 +1,16 @@
+# match js
+    ...
+    function* walk(
+    ...
+    ) {
+    ...
+    >>>
+      yield node;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    yield node.value;
+# end

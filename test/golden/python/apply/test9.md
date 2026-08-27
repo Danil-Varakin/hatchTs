@@ -1,0 +1,20 @@
+Вставка метода МЕЖДУ двумя property: точка вставки прижата к концу тела `width`,
+а нижняя граница — заголовок `height`.
+
+# match python
+    ...
+    class Shape:
+    ...
+            return max(xs) - min(xs)
+    >>>
+    ...
+        @property
+        def height(self) -> int:
+    ...
+# end
+# patch
+
+
+        def area(self) -> int:
+            return self.width * self.height
+# end

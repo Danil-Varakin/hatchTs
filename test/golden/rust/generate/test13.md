@@ -1,0 +1,16 @@
+# match rs
+    ...
+        fn describe(
+    ...
+    ) -> String {
+    ...
+    >>>
+            format!("area = {}", self.area())
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    format!("area is {:.2}", self.area())
+# end

@@ -240,9 +240,13 @@ matcher computes the canon lazily once the adapter is known, caching it per run
 - **C++** (also fine for C-likes): whitespace is significant *only between two word
   characters* `[A-Za-z0-9_]`; everywhere else — around punctuation, newlines, and
   the leading indent — it is dropped. So `int x` ≠ `intx`, but
-  `features {` ≡ `features{`. Known limit: whitespace inside string literals is
-  data (`" "` → `""`); both sides canonicalize the same way, so self-matching
-  holds.
+  `features {` ≡ `features{`. Whitespace **inside a string literal is data** and is
+  kept verbatim, so `Log("a  b")` and `Log("a b")` are different anchors. The
+  exception is a literal that spans lines (`R"(…)"`, a docstring, a template
+  literal): a `.md` anchor is a fragment cut on line boundaries and can begin inside
+  one without knowing it, so those stay transparent. Where a language's string
+  literals start and end is declared per language; the scanner is shared
+  (`lang/zones.ts`).
 - **Python** (`lang/python/normalize.ts`): the leading indent is *preserved* as a
   level marker. That is why the parser keeps the leading whitespace of a
   line-start fragment in `raw`.

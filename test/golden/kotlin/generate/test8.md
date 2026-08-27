@@ -1,0 +1,16 @@
+# match kt
+    ...
+    fun titleOf(
+    ...
+    ): String {
+    ...
+    >>>
+        return node?.header?.let { it.text.trim() } ?: "untitled"
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return node?.header?.let { it.text.trim() } ?: "no title"
+# end

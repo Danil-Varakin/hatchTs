@@ -1,0 +1,16 @@
+# match java
+    ...
+            int apply(
+    ...
+    ) {
+    ...
+    >>>
+                return a + b;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return Math.addExact(a, b);
+# end

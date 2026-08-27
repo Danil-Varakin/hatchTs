@@ -1,0 +1,16 @@
+# match c
+    ...
+    int clamp(
+    ...
+    ) {
+    ...
+    >>>
+      if (v > hi) return hi;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    if (v > hi) return hi - 1;
+# end

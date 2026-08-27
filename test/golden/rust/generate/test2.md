@@ -1,0 +1,16 @@
+# match rs
+    ...
+        fn fmt(
+    ...
+    ) -> fmt::Result {
+    ...
+    >>>
+            write!(f, "ticket #{}", self.id)
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    write!(f, "ticket #{} ({})", self.id, self.state)
+# end

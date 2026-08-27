@@ -1,0 +1,16 @@
+# match js
+    ...
+    function scramble(
+    ...
+    ) {
+    ...
+    >>>
+      h >>>= 8;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    h >>>= 11;
+# end

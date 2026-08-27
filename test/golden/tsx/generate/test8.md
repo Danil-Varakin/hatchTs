@@ -1,0 +1,16 @@
+# match tsx
+    ...
+    (
+    ...
+    ) => (
+    ...
+    >>>
+            <li key={item.id}>{item.label}</li>
+    <<<
+    ...
+    )
+    ...
+# end
+# patch
+    <li key={item.id}>{item.caption}</li>
+# end

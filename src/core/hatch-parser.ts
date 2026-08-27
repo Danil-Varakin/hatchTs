@@ -9,11 +9,9 @@ import type {
 } from './ast.ts';
 import { ParseError } from './errors.ts';
 
-
 function freshGap(): Gap {
   return { mode: { op: 'tight' } };
 }
-
 
 class PatternBuilder {
   private steps: Step[] = [];
@@ -120,13 +118,8 @@ class PatternBuilder {
   }
 }
 
-
 const OP_RE = /(?<=^|\s)(\.\.\.|>>>|<<<)(?=\s|$)/g;
 
-// Экран снимается ТОЛЬКО там, где оператор без '\' был бы распознан как
-// обособленное слово; снимается ОДНА '\' с начала цепочки. '\...' в середине
-// слова (например, внутри строкового литерала C++) — обычный текст, не трогаем.
-// Принтер симметрично ДОБАВЛЯЕТ одну '\' — round-trip не теряет и не плодит слэши.
 const ESCAPE_RE = /(?<=^|\s)\\(?=\\*(?:\.\.\.|>>>|<<<)(?:\s|$))/g;
 
 function scanLineInto(line: string, mdLine: number, builder: PatternBuilder): void {
@@ -169,27 +162,19 @@ function feedOperator(op: string, mdLine: number, builder: PatternBuilder): void
   }
 }
 
-
 const MATCH_HEADING = /^#{1,6}[ \t]*match:?(?:[ \t]+(\S+))?[ \t]*$/i;
 const PATCH_HEADING = /^#{1,6}[ \t]*patch:?[ \t]*$/i;
 const END_HEADING = /^#{1,6}[ \t]*end[ \t]*$/i;
 
-// Жёлоб. Колонка 0 отдана структуре целиком: КАЖДАЯ строка нагрузки несёт эти четыре
-// пробела, поэтому ни ограда ```, ни строка '# patch' внутри raw string разметкой быть
-// не могут — им негде оказаться в колонке 0. Разделителя, который можно случайно
-// написать в коде, в формате нет вовсе.
 const GUTTER = '    ';
 
 interface Block {
-  body: string[]; // строки нагрузки, жёлоб снят
-  firstLine: number; // номер строки первой строки тела (1-based)
-  endLine: number; // номер строки '# end'
-  next: number; // индекс следующей строки файла (0-based)
+  body: string[]; 
+  firstLine: number; 
+  endLine: number; 
+  next: number; 
 }
 
-// Тело идёт до '# end'. Внутри допустимы только строки с жёлобом и пустые; пустая —
-// это пустая строка нагрузки (границу держит '# end', а не отступ, поэтому срезание
-// хвостовых пробелов редактором ничего не теряет).
 function readBlock(lines: string[], start: number, kind: 'match' | 'patch', headLine: number): Block {
   const body: string[] = [];
   for (let i = start; i < lines.length; i++) {
@@ -240,7 +225,6 @@ export function parseHatchFile(md: string): HatchFile {
   const hunks: Hunk[] = [];
   let language: string | undefined;
 
-  // Всё до первого '# match' — свободная проза, там живёт описание файла.
   let i = 0;
   while (i < lines.length && !MATCH_HEADING.test(lines[i]!)) i++;
 

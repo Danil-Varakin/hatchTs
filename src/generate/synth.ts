@@ -1,27 +1,3 @@
-// generate/synth.ts — обратная задача матчеру: разница двух версий файла → Hatch-ханки.
-//
-// Каждый ханк привязывается структурно: место правки описывается заголовками
-// охватывающих конструкций (сигнатура функции, class, if) и ИХ ЗАКРЫВАШКАМИ —
-// незакрытая `{` только упорядочивает, но не запирает (docs/matcher-window-stack.md
-// §0.1), поэтому без закрывающего токена якорь-родитель не удерживает правку внутри
-// себя. Уникальность добирается вложенными родителями, деталью якорей и соседними
-// строками. Контекстные якоря обобщаются: нутро сбалансированных скобок заменяется
-// на `...`, чтобы якорь пережил правку аргументов.
-//
-// Ханки строятся против текущего состояния файла (old + уже применённые ханки) и
-// сразу применяются настоящим патчером; кандидат принимается, только если его
-// применение воспроизводит ожидаемый результат. НАСКОЛЬКО точно — решает флаг
-// exact (SynthOptions):
-//   exact: true  — ДОСЛОВНО, байт в байт; нормализованное совпадение идёт лишь
-//                  запасным вариантом, и итог сверяется с new посимвольно;
-//   exact: false — по НОРМАЛИЗОВАННОМУ виду ПОСТРОЧНО (умолчание): отступы и лишние
-//                  пробелы внутри строк в счёт не идут, но состав строк обязан
-//                  сойтись. Лестница тогда останавливается на первом же рабочем
-//                  шаблоне — он обычно короче, а дословность стоит лишних ступеней.
-//
-// Почему построчно, а не «нормализовать оба текста целиком»: normalize слеп к
-// переводам строк, а конвейер на них держится — сегменты адресуются номерами строк
-// (см. normalizedLines).
 import type { MatchPattern, Step, Gap, Anchor, Hunk } from '../core/ast.ts';
 import type { LanguageAdapter, SourceMap, BlockSpan } from '../lang/source-map.ts';
 import { matchPattern } from '../core/matcher.ts';
@@ -31,72 +7,79 @@ import { AmbiguityError, MatchError } from '../core/errors.ts';
 import { changeSegments } from './diff.ts';
 import type { ChangeSegment } from './diff.ts';
 
-/** Событие трейса (--debug): сегмент; проба привязки с исходом; выбранный ханк. */
 export type SynthEvent =
   | { kind: 'segment'; index: number; seg: ChangeSegment }
   | { kind: 'attempt'; pattern: MatchPattern; result: 'unique' | 'ambiguous' | 'no-match'; matches: number }
   | { kind: 'hunk'; pattern: MatchPattern; patch: string };
 export type Tracer = (event: SynthEvent) => void;
 
-/** Настройки синтеза. Все поля необязательны — умолчания в normalizeOptions. */
+export interface SynthLimits {
+  readonly minParents: number;
+  readonly maxParents: number | 'all';
+  readonly parentDetailBase: number;
+  readonly minSiblings: number;
+  readonly maxSiblings: number;
+  readonly siblingDetailBase: number;
+  readonly parentsRequired: boolean;
+}
+
+export const DEFAULT_SYNTH_LIMITS: SynthLimits = {
+  minParents: 1,
+  maxParents: 'all',
+  parentDetailBase: 0,
+  minSiblings: 0,
+  maxSiblings: 8,
+  siblingDetailBase: 0,
+  parentsRequired: false,
+} as const;
+
+export type PartialLimits = { [K in keyof SynthLimits]?: SynthLimits[K] | undefined };
+
+export function resolveLimits(patch: PartialLimits | undefined): SynthLimits {
+  const out = { ...DEFAULT_SYNTH_LIMITS };
+  for (const [key, value] of Object.entries(patch ?? {})) {
+    if (value !== undefined) Object.assign(out, { [key]: value });
+  }
+  return Object.freeze(out);
+}
+
 export interface SynthOptions {
-  /** Бюджет сшивки соседних правок в один ханк (см. changeSegments). По умолчанию 0. */
   bridgeGap?: number;
-  /**
-   * Требовать ДОСЛОВНОГО воспроизведения (байт в байт), а не построчно-канонического.
-   * По умолчанию false: пробелы и отступы ВНУТРИ строк не считаются расхождением
-   * (состав строк — считается всегда). Включай, когда важен ровно тот же файл —
-   * форматтеры, whitespace-чувствительные тесты, языки со значащим отступом.
-   */
   exact?: boolean;
-  /** Трейсер хода синтеза (--debug). `| undefined` — чтобы звать с `debug ? f : undefined`. */
   trace?: Tracer | undefined;
+  limits?: PartialLimits | undefined;
 }
 
 type MatchMarks = ReturnType<typeof matchPattern>;
 
-const MAX_NEIGHBOUR_ROWS = 3; // потолок добора соседями с каждой стороны (значащих строк)
-const MAX_DETAIL_LEVELS = 2; // на сколько уровней вглубь можно РАСКРЫТЬ обобщённые скобки
-
-// Всё, что нужно для построения одного ханка. Собирается один раз makeHunkContext,
-// дальше только читается — поэтому функции построения не вложены, а берут ctx.
 interface HunkContext {
   readonly segment: ChangeSegment;
   readonly adapter: LanguageAdapter;
-  readonly source: string; // текущее состояние файла
+  readonly source: string; 
   readonly map: SourceMap;
   readonly lines: string[];
   readonly lineStartOffsets: number[];
   readonly lineCount: number;
-  readonly firstChangedRowIndex: number; // 0-based первая изменённая / точка вставки
-  readonly rowIndexAfterChange: number; // 0-based первая строка после правки
-  readonly changeStartOffset: number; // смещение начала изменённых строк
-  readonly changeEndOffset: number; // смещение конца изменённых строк
-  // КАНОН-границы правки: первый значащий символ правки и первый значащий ПОСЛЕ неё.
-  // Именно по ним (а не по номерам строк) определяются края файла и блока: пустые
-  // строки сверху/снизу канон не видит, поэтому canonStart===0 — честное «выше нет
-  // ничего значащего», а canonEnd===eof — «ниже нет ничего значащего».
+  readonly firstChangedRowIndex: number; 
+  readonly rowIndexAfterChange: number; 
+  readonly changeStartOffset: number; 
+  readonly changeEndOffset: number; 
   readonly canonStart: number;
   readonly canonEnd: number;
-  readonly parents: readonly BlockSpan[]; // охватывающие блоки С ЗАГОЛОВКОМ, внутрь→наружу
-  readonly intendedSource: string; // source с этим сегментом (по границам строк)
-  readonly normalizedIntendedLines: readonly string[]; // канон intendedSource ПОСТРОЧНО
-  readonly requireExact: boolean; // сверять применение дословно, а не построчно
+  readonly parents: readonly BlockSpan[]; 
+  readonly intendedSource: string; 
+  readonly normalizedIntendedLines: readonly string[]; 
+  readonly requireExact: boolean; 
+  readonly limits: SynthLimits; 
   readonly trace: Tracer | undefined;
 }
 
-// Найденный и проверенный ханк вместе с результатом его применения.
 interface ResolvedHunk {
   readonly pattern: MatchPattern;
   readonly patch: string;
   readonly appliedSource: string;
 }
 
-/**
- * Породить ханки из (oldSource, newSource). adapter уже инициализирован (await init()).
- * Гарантия (проверяется внутри): применение ханков к oldSource даёт newSource — при
- * options.exact ДОСЛОВНО, иначе с точностью до нормализации языка (пробелы/отступы).
- */
 export function synthesize(
   oldSource: string,
   newSource: string,
@@ -104,17 +87,18 @@ export function synthesize(
   options: SynthOptions = {},
 ): Hunk[] {
   const { bridgeGap = 0, exact = false, trace } = options;
+  const limits = resolveLimits(options.limits);
   const segments = changeSegments(oldSource, newSource, bridgeGap);
   const hunks: Hunk[] = [];
 
   let currentSource = oldSource;
-  let rowShift = 0; // сдвиг номеров строк от применённых ханков (added - removed)
+  let rowShift = 0; 
 
   for (const [index, originalSegment] of segments.entries()) {
     trace?.({ kind: 'segment', index, seg: originalSegment });
     const segment: ChangeSegment = { ...originalSegment, oldStart: originalSegment.oldStart + rowShift };
 
-    const context = makeHunkContext(segment, currentSource, adapter, newSource.endsWith('\n'), exact, trace);
+    const context = makeHunkContext(segment, currentSource, adapter, newSource.endsWith('\n'), exact, limits, trace);
     const resolved = resolveHunk(context);
 
     hunks.push({ match: resolved.pattern, patch: resolved.patch });
@@ -122,10 +106,6 @@ export function synthesize(
     rowShift += segment.added.length - segment.removed.length;
   }
 
-  // Финальный рубеж той же строгости, что и приёмка кандидатов. exact — дословно:
-  // иначе .md, отличающийся от new отступами, уходил бы наружу молча. Без exact
-  // расхождение по пробелам ВНУТРИ строк не считается — сверять их здесь значило бы
-  // отвергать ханки, которые сами же и приняли; но состав строк обязан сойтись.
   const reproduced = exact
     ? currentSource === newSource
     : sameByLines(normalizedLines(currentSource, adapter), normalizedLines(newSource, adapter));
@@ -143,15 +123,13 @@ function makeHunkContext(
   adapter: LanguageAdapter,
   newEndsWithNewline: boolean,
   requireExact: boolean,
+  limits: SynthLimits,
   trace: Tracer | undefined,
 ): HunkContext {
   const lineStartOffsets = getLineStartOffsets(source);
   const lineCount = lineStartOffsets.length - 1;
   const firstChangedRowIndex = segment.oldStart - 1;
   const rowIndexAfterChange = firstChangedRowIndex + segment.removed.length;
-  // Инвариант, а не молчаливый undefined: oldStart 1-based, правка обязана лежать в
-  // файле. Нарушение — баг диффа/сдвига строк, и без проверки он утёк бы дальше
-  // как `lineStartOffsets[-1] → undefined → slice(0, undefined) → весь файл`.
   if (firstChangedRowIndex < 0 || rowIndexAfterChange > lineCount) {
     throw new Error(
       `synth: segment outside the file (oldStart=${segment.oldStart}, removed=${segment.removed.length}, lines=${lineCount})`,
@@ -163,9 +141,6 @@ function makeHunkContext(
   const canonStart = map.toCanonPos(changeStartOffset);
   const canonEnd = map.toCanonPos(changeEndOffset);
 
-  // Терминатор последней добавленной строки. Обычно `\n`, но если правка упирается в
-  // КОНЕЦ файла, а новый файл переводом строки не кончается — его быть не должно
-  // (иначе ханк допишет лишний `\n`, и результат разойдётся с new на один байт).
   const endsFile = changeEndOffset === source.length;
   const terminator = endsFile && !newEndsWithNewline ? '' : '\n';
   const addedBlock = segment.added.length > 0 ? segment.added.join('\n') + terminator : '';
@@ -185,49 +160,37 @@ function makeHunkContext(
     changeEndOffset,
     canonStart,
     canonEnd,
-    // Родители — блоки, охватывающие правку ЦЕЛИКОМ и выразимые текстом:
-    //   close >= canonEnd — правка не съедает закрывашку самого блока (удаление `};`
-    //     уничтожает блок: закрывать в шаблоне нечего, якорем снизу он тоже не будет);
-    //   headerStart есть  — голый вложенный блок описать текстом нечем: его `{` в
-    //     шаблон не попадёт, а значит и `}` в конце вешать не на что.
-    // Граница НЕстрогая: у чистой вставки canonEnd === canonStart, и блок, на чьей
-    // закрывашке она стоит (вставка в конец блока), проходит по равенству — карта
-    // считает закрывашку частью СВОЕГО блока (inside = (open, close]). У замены же
-    // canonEnd > canonStart, поэтому блок, кончающийся на её первом символе, из
-    // родителей выпадает — правка его как раз и сносит.
     parents: map
       .enclosing(canonStart)
       .filter((span) => span.headerStart !== undefined && span.close >= canonEnd),
     intendedSource,
     normalizedIntendedLines: normalizedLines(intendedSource, adapter),
     requireExact,
+    limits,
     trace,
   };
 }
 
-// ── подбор и проверка кандидатов ──────────────────────────────────────────────────
-
-// Перебрать кандидатов по возрастанию контекста; вернуть первого, чьё применение
-// воспроизводит изменение.
-//
-// requireExact — вернуть первого ДОСЛОВНОГО. Кандидат, совпавший лишь построчно (рез
-// лёг на другую границу пробелов — отступы поедут), придерживается запасным и берётся,
-// только если дословного не нашлось вовсе.
-// Без requireExact построчного совпадения достаточно: берём первого же рабочего и
-// лестницу дальше не крутим — она бы только добирала контекст ради пробелов.
+// ── candidates ───────────────────────────────────────────────────────────────────
 function resolveHunk(context: HunkContext): ResolvedHunk {
   let fallback: ResolvedHunk | undefined;
-  let lastFailure: unknown;
-  const tried = new Set<string>();
+  let bestFailure: unknown;
+  const tried = new Map<string, Attempt>();
 
-  for (const pattern of candidatePatterns(context)) {
-    const signature = printPattern(pattern);
-    if (tried.has(signature)) continue; // ступени лестницы схлопываются — не перепроверяем
-    tried.add(signature);
+  const ladder = candidatePatterns(context);
+  let verdict: Attempt | undefined;
 
-    const attempt = verifyPattern(context, pattern);
+  for (;;) {
+    const step = ladder.next(verdict);
+    if (step.done === true) break;
+    const pattern = step.value;
+    const signature = patternSignature(pattern);
+    const attempt = tried.get(signature) ?? verifyPattern(context, pattern);
+    tried.set(signature, attempt);
+    verdict = attempt;
+
     if ('failure' in attempt) {
-      lastFailure = attempt.failure;
+      bestFailure = moreInformative(bestFailure, attempt.failure);
       continue;
     }
     if (attempt.exact || !context.requireExact) {
@@ -241,13 +204,35 @@ function resolveHunk(context: HunkContext): ResolvedHunk {
     context.trace?.({ kind: 'hunk', pattern: fallback.pattern, patch: fallback.patch });
     return fallback;
   }
-  throw lastFailure ?? new AmbiguityError('synth: could not anchor the change with available context', []);
+  throw bestFailure ?? new AmbiguityError('synth: could not anchor the change with available context', []);
+}
+
+function moreInformative(current: unknown, next: unknown): unknown {
+  if (current === undefined) return next;
+  const a = rankFailure(current);
+  const b = rankFailure(next);
+  if (b > a) return next;
+  if (b < a) return current;
+  if (current instanceof MatchError && next instanceof MatchError) {
+    return next.failedStepIndex > current.failedStepIndex ? next : current;
+  }
+  return current;
+}
+
+function rankFailure(e: unknown): number {
+  if (e instanceof AmbiguityError) return 2;
+  if (e instanceof MatchError) return 1;
+  return 0;
+}
+
+function patternSignature(pattern: MatchPattern): string {
+  return printPattern(pattern);
 }
 
 type Attempt = { hunk: ResolvedHunk; exact: boolean } | { failure: unknown };
 
-// Проба одного шаблона: матч → патч из меток → применение патчером → сверка с
-// ожидаемым результатом. Не совпал/неоднозначен/не воспроизвёл — failure.
+type Ladder = Generator<MatchPattern, void, Attempt | undefined>;
+
 function verifyPattern(context: HunkContext, pattern: MatchPattern): Attempt {
   const { map, adapter, source, trace } = context;
   let marks: MatchMarks;
@@ -278,13 +263,6 @@ function verifyPattern(context: HunkContext, pattern: MatchPattern): Attempt {
   return { hunk: { pattern, patch, appliedSource }, exact: false };
 }
 
-// Канон исходника ПОСТРОЧНО: normalize применяется к каждой строке отдельно, границы
-// строк сохраняются. Сверять целиком нормализованные тексты нельзя — normalize слеп к
-// переводам строк (в C++ они просто пробелы), поэтому ханк, съевший или дописавший
-// ЦЕЛУЮ строку, прошёл бы такую сверку как «то же самое». А следующие сегменты
-// адресуются номерами строк (segment.oldStart + rowShift, где сдвиг = added−removed):
-// уехавшая на строку разметка ломает адресацию, и падает уже СОСЕДНИЙ ханк — далеко от
-// места, где приняли слишком щедрого кандидата.
 function normalizedLines(text: string, adapter: LanguageAdapter): string[] {
   return text.split('\n').map((line) => adapter.normalize(line));
 }
@@ -293,140 +271,216 @@ function sameByLines(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((line, i) => line === b[i]);
 }
 
-// Оригинальные смещения реза [start, end) из канонических меток.
 function computeCutRange(marks: MatchMarks, map: SourceMap): { startOffset: number; endOffset: number } {
   const startOffset = map.toOriginalPos(marks.insert.pos, marks.insert.side);
   const endOffset = marks.replaceEnd === undefined ? startOffset : map.toOriginalPos(marks.replaceEnd.pos, marks.replaceEnd.side);
   return { startOffset, endOffset };
 }
 
-// Текст замены для реза [start, end): соответствующий фрагмент нового файла. Метки
-// стоят на неизменном контексте/краях правки, поэтому префикс до start и суффикс после
-// end у source и intendedSource совпадают — искомый фрагмент лежит между теми же
-// позициями в intendedSource, со сдвигом хвоста на разницу длин.
 function extractReplacementText(intendedSource: string, source: string, startOffset: number, endOffset: number): string {
   const suffixLength = source.length - endOffset;
   return intendedSource.slice(startOffset, intendedSource.length - suffixLength);
 }
 
-// ── лестница кандидатов ───────────────────────────────────────────────────────────
+interface DetailPolicy {
+  readonly base: number;
+  readonly spelled: ReadonlySet<number>;
+}
 
-// Шаблоны по возрастанию «стоимости». Ленивый генератор: строится ровно столько,
-// сколько успеет проверить resolveHunk (обычно 1–2), а не весь список.
-//
-// ВНЕШНИЙ цикл — форма реза (от предпочтительной к запасной), ВНУТРЕННИЙ — добор
-// контекста. Не наоборот: запасные формы опираются на соседей, и при обратном порядке
-// сосед вытеснял бы родителя уже на первой ступени, а родитель устойчивее (§0.1).
-function* candidatePatterns(context: HunkContext): Generator<MatchPattern> {
+interface Policies {
+  readonly parent: DetailPolicy;
+  readonly sibling: DetailPolicy;
+  readonly widened: ReadonlySet<number>;
+}
+
+type PolicyOwner = 'parent' | 'sibling';
+
+interface Generalized {
+  readonly owner: PolicyOwner;
+  readonly from: number;
+  readonly to: number;
+  readonly collapsed: readonly BlockSpan[];
+  readonly candidates: readonly BlockSpan[];
+  readonly widen?: { readonly parentOpen: number; readonly to: number };
+}
+
+function withSpelled(policies: Policies, owner: PolicyOwner, open: number): Policies {
+  const next = new Set(policies[owner].spelled);
+  next.add(open);
+  return { ...policies, [owner]: { base: policies[owner].base, spelled: next } };
+}
+
+function withWidened(policies: Policies, parentOpen: number): Policies {
+  const next = new Set(policies.widened);
+  next.add(parentOpen);
+  return { ...policies, widened: next };
+}
+
+type Move =
+  | { kind: 'spell'; owner: PolicyOwner; open: number }
+  | { kind: 'widen'; parentOpen: number };
+
+function mostSelective(
+  context: HunkContext,
+  generalized: readonly Generalized[],
+  policies: Policies,
+): Move | null {
+  let best: { move: Move; drop: number; width: number } | null = null;
+  const offer = (move: Move, drop: number, width: number): void => {
+    if (drop <= 0) return;
+    if (best === null || drop > best.drop || (drop === best.drop && width < best.width)) {
+      best = { move, drop, width };
+    }
+  };
+
+  for (const g of generalized) {
+    const policy = policies[g.owner];
+    const before = selectivity(context, g, policy);
+
+    if (g.collapsed.length > 0) {
+      for (const span of g.candidates) {
+        const after = selectivity(context, g, {
+          base: policy.base,
+          spelled: new Set([...policy.spelled, span.open]),
+        });
+        offer({ kind: 'spell', owner: g.owner, open: span.open }, before - after, span.close - span.open);
+      }
+    }
+
+    if (g.widen !== undefined) {
+      const wider = { ...g, to: g.widen.to };
+      const after = selectivity(context, wider, policy);
+      offer({ kind: 'widen', parentOpen: g.widen.parentOpen }, before - after, g.widen.to - g.to);
+    }
+  }
+  return best === null ? null : (best as { move: Move }).move;
+}
+
+function selectivity(context: HunkContext, g: Generalized, policy: DetailPolicy): number {
+  const steps = stepsForRange(context, g.from, g.to, policy, null, g.owner);
+  let fewest = Number.POSITIVE_INFINITY;
+  for (const step of steps) {
+    if (step.anchor.target !== 'literal') continue;
+    const norm = context.adapter.normalize(step.anchor.literal.raw);
+    if (norm === '') continue;
+    fewest = Math.min(fewest, context.map.occurrences(norm, 0, context.map.eof).length);
+  }
+  return fewest === Number.POSITIVE_INFINITY ? 0 : fewest;
+}
+
+// ── candidate ladder ─────────────────────────────────────────────────────────────
+
+function* candidatePatterns(context: HunkContext): Ladder {
   for (const cut of cutForms(context)) yield* contextLadder(context, cut);
 }
 
-// Лестница добора контекста для ОДНОЙ формы реза:
-//   1) добор РОДИТЕЛЕЙ (ближний→дальний) — самая устойчивая привязка (§0.1);
-//   2) раскрытие ДЕТАЛИ обобщённых скобок — уточняем сам якорь, а не тащим соседей;
-//   3) добор СОСЕДЕЙ вверх/вниз — последнее средство, соседи дрейфуют.
-function* contextLadder(context: HunkContext, cut: Cut): Generator<MatchPattern> {
-  const parentCount = context.parents.length;
-  // Ближайший родитель входит в шаблон С НУЛЕВОЙ ступени, даже когда правка уникальна
-  // сама по себе: «голый минимум» (`... >>> target = 1; <<< ...`) структуры не несёт
-  // вовсе и на дрейфе спокойно ложится в другую функцию — а привязка обязана быть
-  // СТРУКТУРНОЙ (§0.1). Цена — каждый ханк тащит заголовок родителя и его закрывашку.
-  const minParents = Math.min(1, parentCount);
+function* contextLadder(context: HunkContext, cut: Cut): Ladder {
+  const { minParents, maxParents, minSiblings, maxSiblings, parentsRequired } = context.limits;
 
-  for (let parents = minParents; parents <= parentCount; parents++) {
-    yield* patternFor(context, cut, parents, 0, 1, 0);
+  const available = context.parents.length;
+  const topParents = maxParents === 'all' ? available : Math.min(maxParents, available);
+  const baseParents = Math.min(minParents, topParents);
+  const baseAbove = Math.min(minSiblings, maxSiblings);
+
+  for (let parents = baseParents; parents <= topParents; parents++) {
+    yield* rung(context, cut, parents, baseAbove, 0);
   }
-  for (let detail = 1; detail <= MAX_DETAIL_LEVELS; detail++) {
-    yield* patternFor(context, cut, parentCount, detail, 1, 0);
-  }
-  for (let distance = 1; distance <= 2 * MAX_NEIGHBOUR_ROWS - 1; distance++) {
-    for (let extraAbove = 0; extraAbove <= Math.min(distance, MAX_NEIGHBOUR_ROWS - 1); extraAbove++) {
+  for (let distance = 1; distance <= 2 * maxSiblings - baseAbove; distance++) {
+    for (let extraAbove = 0; extraAbove <= Math.min(distance, maxSiblings - baseAbove); extraAbove++) {
       const below = distance - extraAbove;
-      if (below > MAX_NEIGHBOUR_ROWS) continue;
-      yield* patternFor(context, cut, parentCount, 0, 1 + extraAbove, below);
+      if (below > maxSiblings) continue;
+      yield* rung(context, cut, topParents, baseAbove + extraAbove, below);
     }
   }
-  // Последнее средство — вообще без родителей. Сюда доходим, только если ни одна
-  // структурная привязка не легла: разбор поехал (ERROR-узлы на макросах) или
-  // родительские формы не воспроизводят правку дословно.
-  if (minParents > 0) yield* patternFor(context, cut, 0, 0, 1, 0);
+  if (baseParents > 0 && !parentsRequired) {
+    yield* rung(context, cut, 0, baseAbove, 0);
+  }
 }
 
-// Одна ступень: фиксированы и форма реза, и контекст. Сосед сверху идёт в лид, только
-// если форма на него опирается; так же и якорь снизу — он нужен лишь формам с правой
-// меткой (иначе шаблон таскал бы лишний контекст).
-function* patternFor(
+function* rung(
   context: HunkContext,
   cut: Cut,
   parentCount: number,
-  detail: number,
   aboveRows: number,
   belowRows: number,
-): Generator<MatchPattern> {
-  const lead = buildLead(context, parentCount, detail, cut.needsAbove ? aboveRows : 0);
-  const tail = buildTail(context, parentCount, detail, cut.pinsRight ? Math.max(belowRows, 1) : belowRows);
-  const pattern = assemblePattern(context, lead, cut, tail);
-  if (pattern !== null) yield pattern;
+): Ladder {
+  let policies: Policies = {
+    parent: { base: context.limits.parentDetailBase, spelled: new Set() },
+    sibling: { base: context.limits.siblingDetailBase, spelled: new Set() },
+    widened: new Set(),
+  };
+
+  for (;;) {
+    const built = patternFor(context, cut, parentCount, policies, aboveRows, belowRows);
+    if (built === null) return;
+
+    const verdict = yield built.pattern;
+    if (verdict === undefined || !('failure' in verdict)) return;
+    if (!(verdict.failure instanceof AmbiguityError)) return;
+
+    const pick = mostSelective(context, built.generalized, policies);
+    if (pick === null) return;
+    policies =
+      pick.kind === 'spell'
+        ? withSpelled(policies, pick.owner, pick.open)
+        : withWidened(policies, pick.parentOpen);
+  }
 }
 
-// ── формы реза ────────────────────────────────────────────────────────────────────
+function patternFor(
+  context: HunkContext,
+  cut: Cut,
+  parentCount: number,
+  policies: Policies,
+  aboveRows: number,
+  belowRows: number,
+): { pattern: MatchPattern; generalized: Generalized[] } | null {
+  const minBelow = cut.pinsRight ? Math.min(context.limits.minSiblings, context.limits.maxSiblings) : 0;
+  const generalized: Generalized[] = [];
+  const lead = buildLead(context, parentCount, policies, cut.needsAbove ? aboveRows : 0, generalized);
+  if (needsFlushLead(cut) && !flushGapCanClose(context, generalized)) return null;
+  const tail = buildTail(context, parentCount, policies, Math.max(belowRows, minBelow), generalized);
+  const pattern = assemblePattern(context, lead, cut, tail);
+  return pattern === null ? null : { pattern, generalized };
+}
 
-// Как ханк описывает МЕСТО правки.
-//   needsAbove — форма опирается на якорь ПЕРЕД правкой (левая метка на курсоре);
-//   pinsRight  — форма опирается на якорь ПОСЛЕ правки (он обязан стоять ровно на
-//                границе изменения, иначе рез съест лишнее);
-//   allowEdge  — засчитывать ли за такой якорь КРАЙ ФАЙЛА (начало / EOF) вместо
-//                настоящего литерала. См. cutForms: для вставки край — законная
-//                семантика, для замены/удаления — последнее средство.
+function needsFlushLead(cut: Cut): boolean {
+  return (cut.kind === 'context' || cut.kind === 'contextAbove') && cut.looseLeft !== true;
+}
+
+function flushGapCanClose(context: HunkContext, leadRanges: readonly Generalized[]): boolean {
+  const last = leadRanges[leadRanges.length - 1];
+  if (last === undefined) return true;
+  const { map, source, adapter } = context;
+  const leadEnd = map.toOriginalPos(map.toCanonPos(last.to), 'left');
+  const cutStart = map.toOriginalPos(context.canonStart, 'right');
+  if (cutStart <= leadEnd) return true;
+  return adapter.normalize(source.slice(leadEnd, cutStart)) === '';
+}
+
+// ── cut forms ────────────────────────────────────────────────────────────────────
 type Cut =
-  | { kind: 'insert'; side: 'left' | 'right'; needsAbove: boolean; pinsRight: boolean; allowEdge: boolean }
-  | { kind: 'exact'; needsAbove: false; pinsRight: false; allowEdge: boolean }
-  | { kind: 'context'; needsAbove: true; pinsRight: true; allowEdge: boolean }
-  | { kind: 'contextBelow'; needsAbove: false; pinsRight: true; allowEdge: boolean }
-  | { kind: 'contextAbove'; needsAbove: true; pinsRight: false; allowEdge: boolean }
-  | { kind: 'span'; needsAbove: true; pinsRight: true; allowEdge: boolean };
+  | { kind: 'insert'; side: 'left' | 'right'; needsAbove: boolean; pinsRight: boolean; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'exact'; needsAbove: false; pinsRight: false; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'context'; needsAbove: true; pinsRight: true; allowEdge: boolean; looseLeft?: boolean }
+  | { kind: 'contextBelow'; needsAbove: false; pinsRight: true; allowEdge: boolean; looseLeft?: false }
+  | { kind: 'contextAbove'; needsAbove: true; pinsRight: false; allowEdge: boolean; looseLeft?: boolean }
+  | { kind: 'span'; needsAbove: true; pinsRight: true; allowEdge: boolean; looseLeft?: false };
 
-// Формы в порядке предпочтения.
-//
-// ВСТАВКА в начало файла / дозапись в конец — по смыслу ПОЗИЦИОННЫЕ: «в начало» и
-// значит в начало, что там лежит — неважно. Поэтому краю файла тут разрешено быть
-// якорем (`>>> ...`, `... >>>`), и такой шаблон ложится всегда.
-//
-// УДАЛЕНИЕ/ЗАМЕНА первой (последней) строки — НЕ «правка начала (конца) файла», а
-// правка КОНКРЕТНЫХ строк, которая просто оказалась с краю: сверху или снизу могут
-// дописать что угодно, и ханк обязан это пережить. Поэтому такие резы держатся за
-// содержимое:
-//   `>>> removed ... <<< B` — соседа сверху нет, левый край реза = сам removed;
-//   `A >>> removed <<<`     — соседа снизу нет, правый край реза = сам removed.
-// Край файла для них — последнее средство (когда дословно иначе не воспроизвести).
-//
-// Исключение — ЗАМЕНА ВСЕГО ФАЙЛА: она позиционна ровно так же, как вставка в начало
-// («снести всё, что есть»), поэтому `>>> ... <<<` идёт первым.
 function* cutForms(context: HunkContext): Generator<Cut> {
   const { segment, map, parents, canonStart, canonEnd } = context;
 
   if (segment.removed.length === 0) {
-    // Точка вставки стоит НА закрывашке ближайшего родителя = вставка в конец блока.
-    // Равенство здесь возможно только потому, что это ветка ЧИСТОЙ вставки: canonEnd
-    // === canonStart, и фильтр родителей (close >= canonEnd) пропускает блок по
-    // равенству. У замены такой родитель отфильтрован — она бы его снесла.
     const atBlockEnd = parents.length > 0 && canonStart === parents[0]!.close;
     const atFileEnd = canonStart === map.eof;
     const toLeft: Cut = { kind: 'insert', side: 'left', needsAbove: true, pinsRight: false, allowEdge: true };
     const toRight: Cut = { kind: 'insert', side: 'right', needsAbove: false, pinsRight: true, allowEdge: true };
-    // В конце блока/файла якорь снизу (`}`, EOF) устойчивее последнего оператора.
     if (atBlockEnd || atFileEnd) yield* [toRight, toLeft];
     else yield* [toLeft, toRight];
-    // Запасная форма: чистая точка `>>>` режет ровно на границе пробелов, а метка
-    // канонична — поэтому она НЕ воспроизводит вставку дословно, когда отступ новой
-    // строки отличается от соседского или сверху пустая строка. Тогда берём рез по
-    // ЗАЗОРУ между соседями: оба конца в неизменном тексте, значит патч точен.
-    // Форма менее чистая (у вставки появляется `<<<`), поэтому она последняя.
     yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: true };
     return;
   }
 
-  // Весь значащий файл целиком: `>>> ... <<<` короче и честнее, чем литерал во весь файл.
   if (canonStart === 0 && canonEnd === map.eof) {
     yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: true };
   }
@@ -437,39 +491,29 @@ function* cutForms(context: HunkContext): Generator<Cut> {
   yield { kind: 'contextBelow', needsAbove: false, pinsRight: true, allowEdge: false };
   yield { kind: 'contextAbove', needsAbove: true, pinsRight: false, allowEdge: false };
   yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: false };
-  // Досюда доходим, только если настоящих якорей не хватило: правка упирается в край
-  // файла, и описать её иначе нечем.
+  yield { kind: 'context', needsAbove: true, pinsRight: true, allowEdge: false, looseLeft: true };
+  yield { kind: 'contextAbove', needsAbove: true, pinsRight: false, allowEdge: false, looseLeft: true };
   yield { kind: 'context', needsAbove: true, pinsRight: true, allowEdge: true };
   yield { kind: 'span', needsAbove: true, pinsRight: true, allowEdge: true };
 }
 
-// Сборка шаблона: `<lead> <рез> <tail>`. Метки живут на зазорах: левая — на курсоре
-// (сразу за последним якорем лида), правая — на найденном якоре хвоста. Возвращает
-// null, если форма на этом контексте невыразима.
 function assemblePattern(context: HunkContext, lead: Step[], cut: Cut, tail: Tail): MatchPattern | null {
   const [first, ...rest] = tail.steps;
   const head = first!;
 
-  // Левая метка отсчитывается от конца лида, правая садится на первый якорь хвоста
-  // (он обязан стоять ровно там, где кончается правка, иначе рез съест лишнее).
-  // Настоящий якорь — литерал; край файла (пустой лид / EOF в хвосте) засчитывается,
-  // только если форма это разрешает (см. cutForms).
   const hasLeft = lead.length > 0 || (cut.allowEdge && context.canonStart === 0);
   const hasRight =
     tail.startCanon === context.canonEnd && (cut.allowEdge || head.anchor.target === 'literal');
   if (cut.needsAbove && !hasLeft) return null;
   if (cut.pinsRight && !hasRight) return null;
 
-  // Снимаемое как литерал: пустое по канону (сняли пустую строку) — не литерал, а
-  // ничто, такие резы невыразимы (их закрывает форма `span`).
   const removedAnchor = (): Anchor | null =>
     literalAnchor(context, context.segment.removed.join('\n'));
-  // Рез, начинающийся с самого removed: зазор с ПРАВОЙ меткой ищется, поэтому левый
-  // край реза = найденная позиция removed, а не курсор. Соседа сверху не требует.
   const fromRemoved = (anchor: Anchor): Step => ({ gap: markedGap(skipGap(), ['insert', 'right']), anchor });
-  // Рез, начинающийся за соседом сверху: tight — снимаемое идёт ВСТЫК за лидом,
-  // иначе рез поехал бы по строкам.
-  const afterLead = (anchor: Anchor): Step => ({ gap: markedGap(tightGap(), ['insert', 'left']), anchor });
+  const afterLead = (anchor: Anchor): Step => ({
+    gap: markedGap(cut.looseLeft === true ? skipGap() : tightGap(), ['insert', 'left']),
+    anchor,
+  });
 
   switch (cut.kind) {
     case 'insert':
@@ -500,11 +544,6 @@ function assemblePattern(context: HunkContext, lead: Step[], cut: Cut, tail: Tai
   }
 }
 
-// Собрать шаблон и, если лид пуст, а правка упирается в начало файла, сделать первый
-// зазор встык: шаблон без ведущего `...` требует лечь с позиции 0 (§0.3) — это и есть
-// привязка к началу файла вместо «где-то там». Два исключения: EOF-якорь (встык к
-// нему — это «файл пуст», а не «правка в начале») и зазор с ПРАВОЙ меткой (в .md
-// сторона метки читается по наличию `...`, и tight превратил бы её в левую).
 function pattern(context: HunkContext, lead: Step[], rest: Step[]): MatchPattern {
   const steps = [...lead, ...rest];
   const head = steps[0]!;
@@ -518,34 +557,39 @@ function pattern(context: HunkContext, lead: Step[], rest: Step[]): MatchPattern
   return { steps };
 }
 
-// ── лид и хвост ───────────────────────────────────────────────────────────────────
-
-// Лид: заголовки parentCount охватывающих конструкций (наружу→внутрь) + сосед сверху.
-// Соседа нет (правка — первое значащее в блоке/файле) — не беда: тогда роль «якоря
-// слева» играет сам заголовок родителя (или начало файла).
-function buildLead(context: HunkContext, parentCount: number, detail: number, aboveRows: number): Step[] {
+// ── lead and tail ────────────────────────────────────────────────────────────────
+function buildLead(
+  context: HunkContext,
+  parentCount: number,
+  policies: Policies,
+  aboveRows: number,
+  generalized: Generalized[],
+): Step[] {
   const steps: Step[] = [];
-  for (let i = parentCount - 1; i >= 0; i--) steps.push(...headerSteps(context, context.parents[i]!, detail));
-  steps.push(...neighbourStepsAbove(context, aboveRows, detail));
+  for (let i = parentCount - 1; i >= 0; i--) {
+    steps.push(...headerSteps(context, context.parents[i]!, i, policies, generalized));
+  }
+  steps.push(...neighbourStepsAbove(context, aboveRows, policies.sibling, generalized));
   return steps;
 }
 
-// Хвост шаблона: [сосед снизу] + закрывашки взятых родителей (внутрь→наружу) + `...`.
-// startCanon — позиция первого якоря хвоста: по ней проверяется, что правая метка
-// сядет ровно на границу правки. Соседа и закрывашку различать не нужно — и то и
-// другое просто «первый якорь после правки» (в языке без закрывающего токена
-// закрывашек не будет вовсе, хвост тогда упрётся в `...`).
 interface Tail {
   readonly steps: Step[];
   readonly startCanon: number;
 }
 
-function buildTail(context: HunkContext, parentCount: number, detail: number, belowRows: number): Tail {
+function buildTail(
+  context: HunkContext,
+  parentCount: number,
+  policies: Policies,
+  belowRows: number,
+  generalized: Generalized[],
+): Tail {
   const steps: Step[] = [];
   let startCanon: number | null = null;
 
   if (belowRows > 0) {
-    const below = neighbourStepsBelow(context, belowRows, detail);
+    const below = neighbourStepsBelow(context, belowRows, policies.sibling, generalized);
     if (below.length > 0) {
       steps.push(...below);
       startCanon = context.canonEnd;
@@ -553,7 +597,7 @@ function buildTail(context: HunkContext, parentCount: number, detail: number, be
   }
   for (let i = 0; i < parentCount; i++) {
     const closer = closerStep(context, context.parents[i]!);
-    if (closer === null) break; // язык без закрывающего токена — дальше закрывать нечем
+    if (closer === null) break; 
     steps.push(closer);
     startCanon ??= context.parents[i]!.close;
   }
@@ -561,34 +605,60 @@ function buildTail(context: HunkContext, parentCount: number, detail: number, be
   return { steps, startCanon: startCanon ?? context.map.eof };
 }
 
-// Якорь-родитель — заголовок узла [headerStart, open]: сигнатура функции, `class Foo`,
-// `if (...)`, а не «строка со скобкой». Заголовок кончается открывашкой — так матчер
-// в момент совпадения кладёт закрывашку блока в свой стек (advance), и хвостовой `}`
-// достаётся обязательством, а не поиском.
-function headerSteps(context: HunkContext, span: BlockSpan, detail: number): Step[] {
+function headerSteps(
+  context: HunkContext,
+  span: BlockSpan,
+  index: number,
+  policies: Policies,
+  generalized: Generalized[],
+): Step[] {
   const { map } = context;
   const from = map.toOriginalPos(span.headerStart ?? span.open, 'right');
-  const to = map.toOriginalPos(span.open + 1, 'left');
-  return stepsForRange(context, from, to, detail);
+  const plain = map.toOriginalPos(span.open + 1, 'left');
+  const inwards = headerWidenBoundary(context, span, index);
+  const widened = policies.widened.has(span.open) && inwards !== null;
+  const to = widened ? inwards! : plain;
+
+  const before = generalized.length;
+  const steps = stepsForRange(context, from, to, policies.parent, generalized, 'parent');
+  if (!widened && inwards !== null && generalized.length > before) {
+    const g = generalized[generalized.length - 1]!;
+    generalized[generalized.length - 1] = { ...g, widen: { parentOpen: span.open, to: inwards } };
+  }
+  return steps;
 }
 
-// Закрывающий токен родителя как якорь: текст [close, closeEnd) из карты, а не «строка
-// с `}`» — иначе в литерал уезжали бы `};`, `} else {` и хвостовые комментарии.
+function headerWidenBoundary(context: HunkContext, span: BlockSpan, index: number): number | null {
+  const { map, parents } = context;
+  const inner = index > 0 ? parents[index - 1]! : null;
+  const canonEdge = inner === null ? context.canonStart : inner.headerStart ?? inner.open;
+  if (canonEdge <= span.open + 1 || canonEdge > span.close) return null;
+  const to = map.toOriginalPos(canonEdge, 'left');
+  return to > map.toOriginalPos(span.open + 1, 'left') ? to : null;
+}
+
 function closerStep(context: HunkContext, span: BlockSpan): Step | null {
-  if (span.closeEnd === undefined) return null;
   const { map, source } = context;
-  const raw = source.slice(map.toOriginalPos(span.close, 'right'), map.toOriginalPos(span.closeEnd, 'left'));
+  if (span.closeEnd !== undefined) {
+    const raw = source.slice(map.toOriginalPos(span.close, 'right'), map.toOriginalPos(span.closeEnd, 'left'));
+    const anchor = literalAnchor(context, raw);
+    return anchor === null ? null : skipStep(anchor);
+  }
+  const start = map.toOriginalPos(span.close, 'right');
+  if (start >= source.length) return null;
+  const lineEnd = source.indexOf('\n', start);
+  const raw = source.slice(start, lineEnd === -1 ? source.length : lineEnd);
   const anchor = literalAnchor(context, raw);
   return anchor === null ? null : skipStep(anchor);
 }
 
-// ── соседние строки ───────────────────────────────────────────────────────────────
-
-// Соседи сверху: aboveRows ЗНАЧАЩИХ строк над правкой, не выше содержимого ближайшего
-// родителя (пустые строки бесплатны и в счёт не идут). Верхняя граница — позиция за
-// открывашкой родителя, а НЕ начало его строки: иначе сосед повторил бы текст, уже
-// съеденный якорем-заголовком, и шаблон потребовал бы вторую `{`.
-function neighbourStepsAbove(context: HunkContext, rows: number, detail: number): Step[] {
+// ── neighbours ───────────────────────────────────────────────────────────────────
+function neighbourStepsAbove(
+  context: HunkContext,
+  rows: number,
+  policy: DetailPolicy,
+  generalized: Generalized[],
+): Step[] {
   const { parents, map, lines, lineStartOffsets, firstChangedRowIndex } = context;
   const limit = parents.length > 0 ? map.toOriginalPos(parents[0]!.open + 1, 'right') : 0;
 
@@ -598,15 +668,16 @@ function neighbourStepsAbove(context: HunkContext, rows: number, detail: number)
     row--;
     if (!isBlankLine(lines[row])) taken++;
   }
-  // Бюджет не выбран — значит упёрлись в границу родителя (или в начало файла):
-  // берём всё до неё, включая хвост строки, на которой родитель открылся.
   const from = taken < rows ? limit : Math.max(lineStartOffsets[row]!, limit);
-  return stepsForRange(context, from, context.changeStartOffset, detail);
+  return stepsForRange(context, from, context.changeStartOffset, policy, generalized, 'sibling');
 }
 
-// Соседи снизу: rows значащих строк под правкой, не ниже закрывашки ближайшего
-// родителя (сама закрывашка приходит отдельным шагом хвоста, см. buildTail).
-function neighbourStepsBelow(context: HunkContext, rows: number, detail: number): Step[] {
+function neighbourStepsBelow(
+  context: HunkContext,
+  rows: number,
+  policy: DetailPolicy,
+  generalized: Generalized[],
+): Step[] {
   const { parents, map, lines, lineStartOffsets, lineCount, rowIndexAfterChange } = context;
   const limit = parents.length > 0 ? map.toOriginalPos(parents[0]!.close, 'right') : context.source.length;
 
@@ -617,56 +688,69 @@ function neighbourStepsBelow(context: HunkContext, rows: number, detail: number)
     row++;
   }
   const to = Math.min(taken < rows ? limit : lineStartOffsets[row]!, limit);
-  return stepsForRange(context, context.changeEndOffset, to, detail);
+  return stepsForRange(context, context.changeEndOffset, to, policy, generalized, 'sibling');
 }
 
-// ── обобщённые якоря ──────────────────────────────────────────────────────────────
-
-// Шаги якоря для ОРИГИНАЛЬНОГО диапазона [from, to): нутро сбалансированных скобок →
-// `...`. Каждый непустой сегмент — шаг `... <литерал>`. Пустые скобки (`foo()`)
-// остаются как есть. Отбор скобок — по карте, не по тексту.
-//   detail — сколько уровней скобок оставить НЕобобщёнными: 0 → `foo( ... )`,
-//   1 → `foo(bar( ... ))`. Лестница поднимает detail, когда обобщённый якорь оказался
-//   неоднозначным: уточнять сам якорь честнее, чем тащить соседей (§0.1).
-function stepsForRange(context: HunkContext, from: number, to: number, detail: number): Step[] {
+// ── generalized anchors ──────────────────────────────────────────────────────────
+function stepsForRange(
+  context: HunkContext,
+  from: number,
+  to: number,
+  policy: DetailPolicy,
+  generalized: Generalized[] | null,
+  owner: PolicyOwner,
+): Step[] {
   if (to <= from) return [];
   const { map } = context;
   const canonFrom = map.toCanonPos(from);
   const canonTo = map.toCanonPos(to);
-  if (canonTo <= canonFrom) return []; // в диапазоне нет ничего значащего
+  if (canonTo <= canonFrom) return [];
+
+  const collapsed = bracketsToGeneralize(map, canonFrom, canonTo, policy);
+  if (generalized !== null) {
+     const candidates = map
+      .blocksWithin(canonFrom, canonTo)
+      .filter((span) => span.close > span.open + 1 && !policy.spelled.has(span.open));
+    generalized.push({ owner, from, to, collapsed, candidates });
+  }
 
   const steps: Step[] = [];
   let cursor = canonFrom;
-  for (const bracket of bracketsToGeneralize(map, canonFrom, canonTo, detail)) {
-    appendLiteralSegment(context, steps, cursor, bracket.open + 1); // сегмент до открывашки включительно
-    cursor = bracket.close; // возобновляем на закрывашке
+  for (const bracket of collapsed) {
+    appendLiteralSegment(context, steps, cursor, bracket.open + 1); 
+    cursor = bracket.close; 
   }
   appendLiteralSegment(context, steps, cursor, canonTo);
   return steps;
 }
 
-// Скобки, чьё нутро схлопывается в `...`: глубина вложенности >= detail, непустые,
-// не лежащие внутри уже схлопнутых. blocksWithin отдаёт пролёты по open возрастающе,
-// поэтому вложенность считается одним стеком за проход.
-function bracketsToGeneralize(map: SourceMap, canonFrom: number, canonTo: number, detail: number): BlockSpan[] {
+function bracketsToGeneralize(
+  map: SourceMap,
+  canonFrom: number,
+  canonTo: number,
+  policy: DetailPolicy,
+): BlockSpan[] {
   const out: BlockSpan[] = [];
-  const open: number[] = []; // close-ы ещё не закрытых пролётов
+  const open: number[] = []; 
   for (const span of map.blocksWithin(canonFrom, canonTo)) {
     while (open.length > 0 && open[open.length - 1]! <= span.open) open.pop();
     const depth = open.length;
     open.push(span.close);
-    if (span.close <= span.open + 1) continue; // пустые скобки — обобщать нечего
-    if (depth < detail) continue; // этот уровень оставляем видимым
-    if (out.length > 0 && span.open < out[out.length - 1]!.close) continue; // внутри уже схлопнутых
+    if (span.close <= span.open + 1) continue; 
+    if (depth < policy.base) continue; 
+    if (policy.spelled.has(span.open)) continue;
+    if (containsSpelled(span, policy.spelled)) continue;
+    if (out.length > 0 && span.open < out[out.length - 1]!.close) continue; 
     out.push(span);
   }
   return out;
 }
 
-// Литерал канон-сегмента [canonFrom, canonTo). Начало доводится до начала СТРОКИ,
-// если левее в ней только пробелы: ведущий отступ значим для языков с отступами
-// (в Python он и есть маркер уровня), а языки, где он не значим, выкинут его сами
-// в normalize. Литерал без значащего текста шагом не становится.
+function containsSpelled(span: BlockSpan, spelled: ReadonlySet<number>): boolean {
+  for (const open of spelled) if (open > span.open && open < span.close) return true;
+  return false;
+}
+
 function appendLiteralSegment(context: HunkContext, steps: Step[], canonFrom: number, canonTo: number): void {
   if (canonTo <= canonFrom) return;
   const { source, map, lineStartOffsets } = context;
@@ -679,17 +763,12 @@ function appendLiteralSegment(context: HunkContext, steps: Step[], canonFrom: nu
   if (anchor !== null) steps.push(skipStep(anchor));
 }
 
-// Якорь-литерал или null, если текст пуст по канону языка. Пустой литерал — не
-// «пустой якорь», а невыразимый: матчер на нём падает контрактной ошибкой карты.
 function literalAnchor(context: HunkContext, raw: string): Anchor | null {
   if (context.adapter.normalize(raw) === '') return null;
   return { target: 'literal', literal: { raw, mdSpan: [0, 0] } };
 }
 
-// ── строки, пробелы ─────────────────────────────────────────────────────────────
-
-// Смещения начал строк. Длина = число строк + 1; последний элемент = text.length
-// (сентинел), поэтому диапазон любой строки [offsets[row], offsets[row+1]) валиден.
+// ── lines and whitespace ─────────────────────────────────────────────────────────
 function getLineStartOffsets(text: string): number[] {
   const offsets = [0];
   for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) offsets.push(i + 1);
@@ -697,7 +776,6 @@ function getLineStartOffsets(text: string): number[] {
   return offsets;
 }
 
-// Индекс строки, содержащей смещение (наибольшая строка, чьё начало ≤ offset).
 function findRowIndexAt(lineStartOffsets: number[], offset: number): number {
   let lo = 0;
   let hi = lineStartOffsets.length - 1;
@@ -713,9 +791,6 @@ function isBlankLine(line: string | undefined): boolean {
   return (line ?? '').trim() === '';
 }
 
-// Сохраняет ли removed-бракетинг границы: ведущий отступ первой строки удержан, а
-// хвостовой пробел последней совпадает у removed и added (иначе рез по removed их
-// не тронет, и отступ/хвост поехали бы).
 function preservesBoundaryWhitespace(removed: string[], added: string[]): boolean {
   return (
     added[0]!.startsWith(getLeadingWhitespace(removed[0]!)) &&
@@ -730,8 +805,7 @@ function getTrailingWhitespace(line: string): string {
   return /[ \t]*$/.exec(line)![0];
 }
 
-// ── конструкторы шагов ────────────────────────────────────────────────────────────
-
+// ── step constructors ────────────────────────────────────────────────────────────
 const EOF_ANCHOR: Anchor = { target: 'eof' };
 
 type Mark = ['insert' | 'replaceEnd', 'left' | 'right'];
@@ -752,8 +826,6 @@ function hasRightMark(gap: Gap): boolean {
 function skipStep(anchor: Anchor): Step {
   return { gap: skipGap(), anchor };
 }
-// Копия шага с метками: шаги лида/хвоста переиспользуются между формами реза одной
-// ступени, поэтому метки нельзя дописывать в общий зазор — только в свежий.
 function withMarks(step: Step, ...marks: Mark[]): Step {
   return { gap: markedGap({ mode: step.gap.mode }, ...marks), anchor: step.anchor };
 }

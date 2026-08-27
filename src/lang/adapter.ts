@@ -1,39 +1,68 @@
-// lang/adapter.ts — ЗАКРЫТЫЙ реестр адаптеров (whitelist). Единственная точка, где
-// имя языка (из заголовка `# match <lang>` или из --language) или расширение файла превращается
-// в адаптер. НИКАКОГО динамического import() по строке из недоверенного .md: только
-// этот статический список. Добавить язык = импортировать его адаптер и дописать
-// две строки ниже (реестр + синонимы имени). Пошагово — docs/adapter-layer.md.
 import type { LanguageAdapter } from './source-map.ts';
 import { cppAdapter } from './cpp/index.ts';
-// import { pythonAdapter } from './python/index.ts';   // TODO(phase-5)
+import { cAdapter } from './c/index.ts';
+import { objcAdapter } from './objc/index.ts';
+import { pythonAdapter } from './python/index.ts';
+import { javascriptAdapter } from './javascript/index.ts';
+import { typescriptAdapter } from './typescript/index.ts';
+import { tsxAdapter } from './tsx/index.ts';
+import { rustAdapter } from './rust/index.ts';
+import { javaAdapter } from './java/index.ts';
+import { kotlinAdapter } from './kotlin/index.ts';
+import { goAdapter } from './go/index.ts';
 
-// Все поддерживаемые адаптеры. Порядок важен для adapterForFile: первый с
-// подходящим расширением выигрывает (пересечений расширений сейчас нет).
 const REGISTRY: readonly LanguageAdapter[] = [
   cppAdapter,
-  // pythonAdapter,
+  cAdapter,
+  objcAdapter,
+  pythonAdapter,
+  javascriptAdapter,
+  typescriptAdapter,
+  tsxAdapter,
+  rustAdapter,
+  javaAdapter,
+  kotlinAdapter,
+  goAdapter,
 ];
 
-// Синонимы имени языка (из заголовка / --language) → адаптер. Ключи в НИЖНЕМ регистре.
 const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['cpp', cppAdapter],
   ['c++', cppAdapter],
   ['cc', cppAdapter],
   ['cxx', cppAdapter],
-  ['c', cppAdapter],
   ['h', cppAdapter],
   ['hpp', cppAdapter],
-  // ['python', pythonAdapter], ['py', pythonAdapter],
+  ['c', cAdapter],
+  ['objc', objcAdapter],
+  ['objective-c', objcAdapter],
+  ['objectivec', objcAdapter],
+  ['objcpp', objcAdapter], 
+  ['objective-c++', objcAdapter],
+  ['python', pythonAdapter],
+  ['py', pythonAdapter],
+  ['javascript', javascriptAdapter],
+  ['js', javascriptAdapter],
+  ['jsx', javascriptAdapter], 
+  ['mjs', javascriptAdapter],
+  ['cjs', javascriptAdapter],
+  ['typescript', typescriptAdapter],
+  ['ts', typescriptAdapter],
+  ['tsx', tsxAdapter], 
+  ['rust', rustAdapter],
+  ['rs', rustAdapter],
+  ['java', javaAdapter],
+  ['kotlin', kotlinAdapter],
+  ['kt', kotlinAdapter],
+  ['go', goAdapter],
+  ['golang', goAdapter],
 ]);
 
-/** Имена языков, которые можно указать в заголовке `# match <lang>` или в --language. */
 export const supportedLanguages: readonly string[] = [...ALIASES.keys()];
 
-/**
- * Имя языка → адаптер. Пустое/undefined — «язык не задан» (укажите в заголовке
- * `# match <lang>` или в --language); неизвестное — «язык не поддерживается». Оба
- * случая — типичные ошибки пользователя; CLI (phase-3) переводит бросок в код выхода.
- */
+export function adaptersByName(): ReadonlyMap<string, LanguageAdapter> {
+  return ALIASES;
+}
+
 export function adapterForLanguage(name: string | undefined): LanguageAdapter {
   if (name === undefined || name.trim() === '') {
     throw new Error(
@@ -50,7 +79,6 @@ export function adapterForLanguage(name: string | undefined): LanguageAdapter {
   return adapter;
 }
 
-/** Путь/имя файла → адаптер по расширению (автоопределение для apply/generate). */
 export function adapterForFile(path: string): LanguageAdapter {
   const dot = path.lastIndexOf('.');
   const ext = dot === -1 ? '' : path.slice(dot).toLowerCase();

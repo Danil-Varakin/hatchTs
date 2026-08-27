@@ -1,0 +1,17 @@
+# match m
+    ...
+    // [NSSTR] заголовки разметки Hatch внутри строкового литерала Objective-C
+    static NSString *const kTemplate = @"# match objc\n    - (void)sample;\n# end\n";
+
+    - (NSString *)template {
+    ...
+    >>>
+      return [kTemplate copy];
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return [kTemplate mutableCopy];
+# end

@@ -32,3 +32,10 @@ yarn-error.log*
 
 # корпус ручных прогонов на chromium/brave (данные качаются, в git не хранятся)
 /corpus/
+
+# грамматики tree-sitter: не хранятся в git — качаются в пользовательский кеш
+# (`npm run grammars`), см. src/infra/grammar-store.ts
+/grammars/
+
+# архив, который делает npm pack
+*.tgz

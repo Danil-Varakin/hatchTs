@@ -1,0 +1,16 @@
+# match js
+    ...
+    function strip(
+    ...
+    ) {
+    ...
+    >>>
+      return text.replace(OPEN, '');
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return text.replace(OPEN, ' ');
+# end

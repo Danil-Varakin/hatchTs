@@ -1,0 +1,16 @@
+# match cc
+    ...
+    void f(
+    ...
+    ) {
+    ...
+    >>>
+        case 2: b(); break;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    case 2: c(); break;
+# end

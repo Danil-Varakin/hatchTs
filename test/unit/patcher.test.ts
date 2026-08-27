@@ -16,8 +16,8 @@ test('planEdit: чистая вставка — start == end', async () => {
   const map = cppAdapter.buildMap(src);
   const marks = matchPattern(pattern('... a(); >>> ...'), map, normalize);
   const edit = planEdit(marks, map, 'X();');
-  assert.equal(edit.start, edit.end); // вставка
-  assert.equal(src[edit.start], ' '); // сразу после a();
+  assert.equal(edit.start, edit.end);
+  assert.equal(src[edit.start], ' ');
 });
 
 test('planEdit: замена — end после start, span покрывает старый код', async () => {
@@ -31,8 +31,8 @@ test('planEdit: замена — end после start, span покрывает �
 });
 
 test('applyEdit: вставка и замена дают ожидаемую строку', () => {
-  assert.equal(applyEdit('ab', { start: 1, end: 1, text: 'X' }), 'aXb'); // вставка
-  assert.equal(applyEdit('aOLDb', { start: 1, end: 4, text: 'X' }), 'aXb'); // замена
+  assert.equal(applyEdit('ab', { start: 1, end: 1, text: 'X' }), 'aXb');
+  assert.equal(applyEdit('aOLDb', { start: 1, end: 4, text: 'X' }), 'aXb');
 });
 
 test('patchHunk: вставка — новый текст и правка', async () => {

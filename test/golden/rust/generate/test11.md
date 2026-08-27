@@ -1,0 +1,16 @@
+# match rs
+    ...
+        let Ok(value) = raw.parse::<
+    ...
+    >() else {
+    ...
+    >>>
+            return 0;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return u32::MAX;
+# end

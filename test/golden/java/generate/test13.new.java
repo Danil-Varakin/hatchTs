@@ -1,0 +1,7 @@
+// [SHIFT] `>>>` — беззнаковый сдвиг Java: оператор Hatch, стоящий В САМОЙ правящейся строке
+static int mix(int seed) {
+    int h = seed;
+    h ^= h >>> 13;
+    h *= 0x85ebca6b;
+    return h;
+}

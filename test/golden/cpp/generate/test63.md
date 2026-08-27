@@ -1,0 +1,14 @@
+# match cc
+    ...
+    void f() {
+    ...
+    >>>
+      call(arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, tail);
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    call(arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, arg_x, tail2);
+# end

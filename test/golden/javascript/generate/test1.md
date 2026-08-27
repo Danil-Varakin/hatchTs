@@ -1,0 +1,16 @@
+# match js
+    ...
+      if (
+    ...
+    ) {
+    ...
+    >>>
+        return b;
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    return b - 1;
+# end

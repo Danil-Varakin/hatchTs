@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hatch/hatch.config.schema.json",
+  "title": "Hatch configuration",
+  "description": "Project policy for `hatch generate`. Only the generate side is configurable: a .md patch is a public contract and must mean the same thing on every machine, so nothing here changes how `apply` reads an existing patch.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "generate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "out": {
+          "description": "Default place for the generated .md: a file path is taken as is, a directory (existing, or ending with a slash) gets <name of --in>.md inside it. null — next to --in.",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "language": {
+          "description": "Default language; null — inferred from the extension of --in.",
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "exact": {
+          "description": "Require the new file to be reproduced byte for byte.",
+          "type": "boolean"
+        },
+        "bridgeGap": {
+          "description": "Stitch edits split by up to n unchanged non-blank lines back into a single hunk.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "parents": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min": {
+              "description": "Enclosing blocks every generated pattern carries. 0 allows structureless anchors.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "max": {
+              "description": "Cap on climbing up the enclosing blocks; \"all\" means up to the outermost.",
+              "anyOf": [
+                { "type": "integer", "minimum": 0, "maximum": 1000 },
+                { "const": "all" }
+              ]
+            },
+            "detail": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "base": {
+                  "description": "Bracket levels spelled out in parent headers, counting from the outermost: 0 gives foo( ... ), 1 gives foo(bar( ... )). The readable baseline; on an ambiguous anchor the ladder unfolds further by itself, one named bracket at a time.",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            },
+            "required": {
+              "description": "Fail instead of emitting the last-resort pattern that carries no parent at all.",
+              "type": "boolean"
+            }
+          }
+        },
+        "siblings": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "min": {
+              "description": "Neighbouring significant lines every pattern carries, per side.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "max": {
+              "description": "Cap of neighbouring significant lines per side; 0 forbids leaning on neighbours at all.",
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "detail": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "base": {
+                  "description": "Bracket levels spelled out in neighbour anchors. On an ambiguous anchor the ladder unfolds further by itself, one named bracket at a time.",
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

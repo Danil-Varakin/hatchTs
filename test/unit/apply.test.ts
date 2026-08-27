@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
-import { applyAll } from '../../src/cli/apply.ts';
+import { applyAll } from '../../src/core/apply.ts';
 import { hatchMd } from '../helpers.ts';
 
 // ── applyAll: чистое ядро (без файлов) ────────────────────────────────────────
@@ -30,8 +30,7 @@ test('applyAll: второй ханк цепляется за вставку п�
     ]),
   );
   const { source, edits } = applyAll('namespace f {\n}\n', file, cppAdapter);
-  assert.equal(edits.length, 2); // оба применились
-  // второй ханк нашёл 'int a;', вставленный первым, — против исходника его там не было
+  assert.equal(edits.length, 2);
   assert.ok(source.includes('int a;') && source.includes('int b;'), source);
   assert.ok(source.indexOf('int a;') < source.indexOf('int b;'), source);
 });

@@ -1,0 +1,16 @@
+# match c
+    ...
+    int open_all(
+    ...
+    ) {
+    ...
+    >>>
+      cleanup();
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    cleanup_all();
+# end

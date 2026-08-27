@@ -1,0 +1,12 @@
+# match rust
+    ...
+        pub fn get( ... ) -> Option<Vec<u8>> {
+    ...
+    >>>
+            *counter += 1;
+    <<<
+    ...
+# end
+# patch
+    *counter = counter.saturating_add(1);
+# end

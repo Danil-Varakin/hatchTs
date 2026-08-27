@@ -1,0 +1,4 @@
+// header
+void f() {
+  work();
+}

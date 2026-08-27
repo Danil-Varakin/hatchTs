@@ -45,3 +45,30 @@ test('idempotence', () => {
     assert.equal(normalize(normalize(s)), normalize(s));
   }
 });
+
+test('whitespace inside a string literal is DATA and survives canon', () => {
+  assert.equal(normalize('    log("a  b")'), '    log("a  b")');
+  assert.notEqual(normalize('log("a  b")'), normalize('log("a b")'));
+  assert.equal(normalize("    x = ' '"), "    x=' '");
+});
+
+test('a one-line triple-quoted string is opaque like any other', () => {
+  assert.equal(normalize('    d = """a  b"""'), '    d="""a  b"""');
+});
+
+test('a MULTI-LINE docstring stays transparent, and that is deliberate', () => {
+  const doc = 'def f():\n    """Summary.\n\n    Detail   with   gaps.\n    """\n    return 1';
+  assert.ok(!normalize(doc).includes('Detail   with   gaps.'));
+  assert.ok(normalize(doc).includes('Detail with gaps.'));
+});
+
+test('a prefixed literal (f, r, rb) is a literal too', () => {
+  assert.equal(normalize('    x = f"a  {b}  c"'), '    x=f"a  {b}  c"');
+  assert.equal(normalize("    p = r'a  b'"), "    p=r'a  b'");
+});
+
+test('idempotence holds with strings in play', () => {
+  for (const s of ['    log("a  b")', 'def f():\n    """a  b\n    """\n    return 1']) {
+    assert.equal(normalize(normalize(s)), normalize(s));
+  }
+});

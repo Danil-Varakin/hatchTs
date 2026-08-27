@@ -34,23 +34,19 @@ export function firstMatch(md: string): MatchPattern {
 
 // ── сборка .md текущего формата: жёлоб в четыре пробела + '# end' ─────────────
 
-/** Строка нагрузки: жёлоб в четыре пробела; пустая остаётся пустой. */
 export function gutter(line: string): string {
   return line === '' ? '' : '    ' + line;
 }
 
-/** Блок целиком: заголовок, тело под жёлобом, '# end'. Пустое тело — блок без строк. */
 export function block(heading: string, body: string): string[] {
   return [heading, ...(body === '' ? [] : body.split('\n').map(gutter)), '# end'];
 }
 
 export interface HunkSpec {
   match: string;
-  /** Тело патча; по умолчанию 'X'. Пустая строка — ханк-удаление. */
   patch?: string;
 }
 
-/** Готовый .md из нескольких ханков. lang=undefined — заголовок без языка. */
 export function hatchMd(hunks: readonly HunkSpec[], lang: string | undefined = 'cpp'): string {
   const heading = lang === undefined ? '# match' : `# match ${lang}`;
   return (
@@ -60,7 +56,6 @@ export function hatchMd(hunks: readonly HunkSpec[], lang: string | undefined = '
   );
 }
 
-/** Один ханк: тело match как есть, тело патча — заглушка 'X'. */
 export function wrapMatch(body: string, lang = 'cpp'): string {
   return hatchMd([{ match: body }], lang);
 }

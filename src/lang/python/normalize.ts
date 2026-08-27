@@ -1,21 +1,24 @@
-// lang/python/normalize.ts — канон Python: ведущий отступ строки СОХРАНЯЕТСЯ
-// (маркер уровня вложенности), тело строки чистится тем же правилом, что C-подобные:
-// пробел значим только между словесными символами. Построчно; '\n' значим.
 import { isWordChar } from '../word.ts';
+import { replaceWhitespaceOutsideStrings } from '../zones.ts';
+import type { StringRule } from '../zones.ts';
+
+const STRINGS: readonly StringRule[] = [
+  { open: '"""', close: '"""', escape: '\\', multiline: true },
+  { open: "'''", close: "'''", escape: '\\', multiline: true },
+  { open: '"', close: '"', escape: '\\' },
+  { open: "'", close: "'", escape: '\\' },
+];
 
 export function normalize(raw: string): string {
-  return raw.split('\n').map(normalizeLine).join('\n');
+  return replaceWhitespaceOutsideStrings(raw, STRINGS, (ws, off) => collapseRun(raw, ws, off));
 }
 
-function normalizeLine(line: string): string {
-  const indent = /^[ \t]*/.exec(line)?.[0] ?? '';
-  const body = line.slice(indent.length);
-  return (
-    indent +
-    body.replace(/\s+/g, (ws, off: number) =>
-      off > 0 && isWordChar(body[off - 1]!) && isWordChar(body[off + ws.length] ?? '')
-        ? ' '
-        : '',
-    )
-  );
+function collapseRun(raw: string, ws: string, off: number): string {
+  if (off === 0) return ws;
+  const lastNewline = ws.lastIndexOf('\n');
+  if (lastNewline !== -1) {
+    const newlines = ws.slice(0, lastNewline + 1).replace(/[^\n]/g, '');
+    return newlines + ws.slice(lastNewline + 1);
+  }
+  return isWordChar(raw[off - 1]!) && isWordChar(raw[off + ws.length] ?? '') ? ' ' : '';
 }

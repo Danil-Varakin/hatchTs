@@ -1,0 +1,16 @@
+# match rs
+    ...
+    pub struct Buffer<
+    ...
+    > {
+    ...
+    >>>
+        data: [u8; N],
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    data: [u16; N],
+# end

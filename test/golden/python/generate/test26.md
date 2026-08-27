@@ -1,0 +1,16 @@
+# match py
+    ...
+    def group(
+    ...
+    ) -> dict[
+    ...
+    ]:
+    ...
+    >>>
+        out: dict[str, list[int]] = {}
+    <<<
+    ...
+# end
+# patch
+    out: dict[str, set[int]] = {}
+# end

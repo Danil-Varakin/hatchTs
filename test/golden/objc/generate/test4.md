@@ -1,0 +1,16 @@
+# match m
+    ...
+    ^(
+    ...
+    ) {
+    ...
+    >>>
+        [self handle:data];
+    <<<
+    ...
+    }
+    ...
+# end
+# patch
+    [self handle:data error:error];
+# end

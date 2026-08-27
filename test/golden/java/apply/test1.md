@@ -1,0 +1,13 @@
+# match java
+    ...
+            LRU {
+                int weight(int age, int hits) {
+    ...
+    >>>
+                    return age - hits;
+    <<<
+    ...
+# end
+# patch
+    return age - hits * 2;
+# end

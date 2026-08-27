@@ -2,17 +2,15 @@ import { readFileSync, statSync } from 'node:fs';
 import { dirname, basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
-import { synthesize } from '../generate/synth.ts';
 import type { Tracer, SynthEvent } from '../generate/synth.ts';
+import { generatePatch } from '../generate/pipeline.ts';
+import type { GenerateOutcome } from '../generate/pipeline.ts';
 import { printPattern } from '../core/hatch-printer.ts';
-import { printHatchFile, trailingSpaceWarnings } from '../generate/printer.ts';
 import { reviewHunks } from '../generate/agreement.ts';
 import type { Confirm } from '../generate/agreement.ts';
 import { fileFromBranch } from '../infra/git.ts';
 import { writeFileAtomic } from '../infra/fs.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
-import type { LanguageAdapter } from '../lang/source-map.ts';
 import { CONFIG_FILE_NAME, formatConfig, loadConfig } from '../infra/config/index.ts';
 import type { FlagOverride, ResolvedConfig } from '../infra/config/index.ts';
 import { HatchError } from '../core/errors.ts';
@@ -219,10 +217,6 @@ function isDirectory(path: string): boolean {
   }
 }
 
-function resolveAdapter(language: string | null, inPath: string): LanguageAdapter {
-  return language !== null ? adapterForLanguage(language) : adapterForFile(inPath);
-}
-
 function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const confirm: Confirm = (question) =>
@@ -268,37 +262,37 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<
     opts.inOld !== undefined ? readFileSync(opts.inOld, 'utf8') : await fileFromBranch(opts.branch!, opts.in);
 
   const settings = config.generate;
-  const adapter = resolveAdapter(settings.language, opts.in);
-  await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
-
-  let hunks = synthesize(oldStr, newStr, adapter, {
-    exact: settings.exact,
-    bridgeGap: settings.bridgeGap,
-    trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
-    limits: settings,
-  });
-
-  if (opts.agreement) {
-    const { confirm, close } = makeStdinConfirm();
-    try {
-      hunks = await reviewHunks(hunks, confirm);
-    } finally {
-      close();
-    }
+  const review = opts.agreement ? makeStdinConfirm() : null;
+  let outcome: GenerateOutcome;
+  try {
+    outcome = await generatePatch({
+      oldText: oldStr,
+      newText: newStr,
+      language: settings.language ?? undefined,
+      path: opts.in,
+      label: langLabel(settings.language, opts.in),
+      exact: settings.exact,
+      bridgeGap: settings.bridgeGap,
+      limits: settings,
+      init: { allowDownload: opts.downloadGrammars || downloadAllowedByEnv() },
+      trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
+      ...(review !== null ? { review: (hunks) => reviewHunks(hunks, review.confirm) } : {}),
+    });
+  } finally {
+    review?.close();
   }
 
-  for (const w of trailingSpaceWarnings(hunks)) log.note(`warning: ${w}`);
+  for (const w of outcome.warnings) log.note(`warning: ${w}`);
 
-  const md = printHatchFile(hunks, langLabel(settings.language, opts.in));
   const outPath = resolveOutPath(settings.out ?? undefined, opts.in);
   if (outPath === undefined) {
-    process.stdout.write(md);
+    process.stdout.write(outcome.md);
     return;
   }
   const outDir = dirname(outPath);
   if (!isDirectory(outDir)) throw new Error(`no such directory: ${outDir} (--out ${outPath})`);
-  writeFileAtomic(outPath, md);
-  log.note(`generated ${hunks.length} hunk(s) → ${outPath}`);
+  writeFileAtomic(outPath, outcome.md);
+  log.note(`generated ${outcome.hunkCount} hunk(s) → ${outPath}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {

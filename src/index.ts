@@ -6,6 +6,14 @@ export type { ApplyResult, AppliedEdit } from './core/apply.ts';
 export { synthesize } from './generate/synth.ts';
 export type { SynthOptions, SynthEvent, Tracer } from './generate/synth.ts';
 
+// ── the same generate pipeline behind one call, on text instead of paths ─────────
+export { generatePatch } from './generate/pipeline.ts';
+export type { GenerateRequest, GenerateOutcome } from './generate/pipeline.ts';
+
+// ── where hunks land: the .md, the baseline and the patched text, side by side ───
+export { resolveHunks } from './core/resolve.ts';
+export type { HunkLink, LinkFailure, LinkStatus, ResolveResult, Span } from './core/resolve.ts';
+
 // ── the .md format: read and write ───────────────────────────────────────────────
 export { parseHatchFile } from './core/hatch-parser.ts';
 export { printHatchFile, trailingSpaceWarnings } from './generate/printer.ts';

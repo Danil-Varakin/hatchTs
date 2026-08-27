@@ -35,6 +35,12 @@ test('--version reports the package version AND the config schema version', () =
   assert.match(r.stdout, /config schema v\d+/);
 });
 
+test('help and version work as words, not only as flags', () => {
+  assert.match(run(['help']).stdout, /hatch <command>/);
+  assert.match(run(['version']).stdout, /config schema v\d+/);
+  assert.match(run(['help', 'generate']).stdout, /hatch generate —/);
+});
+
 test('an unknown command names the known ones and exits 1', () => {
   const r = run(['aply']);
   assert.equal(r.status, 1);

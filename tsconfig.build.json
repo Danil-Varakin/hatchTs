@@ -14,8 +14,11 @@
     "rootDir": "src",
     "allowImportingTsExtensions": false,
     "rewriteRelativeImportExtensions": true,
-    // .d.ts is what makes the published types real for a TypeScript consumer; without it
-    // they get `any` and the public surface in src/index.ts means nothing.
+    // LF regardless of the machine that builds: the bin file starts with a shebang, and
+    // npm's Windows shim reads it to pick the interpreter. Built on Windows, tsc would
+    // emit CRLF and that line would end in `node\r`.
+    "newLine": "lf",
+    // .d.ts is what makes the published types real for a TypeScript consumer.
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true

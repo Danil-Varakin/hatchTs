@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -42,11 +43,17 @@ Exit codes: 0 ok · 1 usage · 2 .md parse · 3 no match · 4 ambiguous · 5 con
 export async function main(argv: readonly string[]): Promise<void> {
   const [first, ...rest] = argv;
 
-  if (first === undefined || first === '--help' || first === '-h') {
+  if (first === undefined || first === '--help' || first === '-h' || first === 'help') {
+    const topic = first === 'help' ? rest[0] : undefined;
+    const named = topic === undefined ? undefined : COMMANDS[topic];
+    if (named !== undefined) {
+      await (await named.load()).main(['--help']);
+      return;
+    }
     process.stdout.write(`${USAGE}\n`);
     return;
   }
-  if (first === '--version' || first === '-V') {
+  if (first === '--version' || first === '-V' || first === 'version') {
     process.stdout.write(`${version()}\n`);
     return;
   }

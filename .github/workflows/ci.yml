@@ -39,6 +39,9 @@ jobs:
           path: ${{ github.workspace }}/.grammars
           key: grammars-${{ hashFiles('src/lang/*/index.ts') }}
 
+      - name: grammars
+        run: npm run grammars
+
       - name: typecheck
         run: npm run typecheck
 

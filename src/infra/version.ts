@@ -8,7 +8,6 @@ export interface PackageIdentity {
 
 const UNKNOWN: PackageIdentity = { name: 'hatch', version: '0.0.0' };
 
-/** Name and version of this package, read from its own package.json. */
 export function packageIdentity(): PackageIdentity {
   try {
     const pkg = JSON.parse(

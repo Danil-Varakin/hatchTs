@@ -10,7 +10,7 @@ function pattern(...lines: string[]) {
   return firstMatch(wrapMatch(lines.join('\n')));
 }
 
-test('planEdit: чистая вставка — start == end', async () => {
+test('planEdit: a pure insertion has start == end', async () => {
   await cppAdapter.init();
   const src = 'void f(){ a(); b(); }';
   const map = cppAdapter.buildMap(src);
@@ -20,7 +20,7 @@ test('planEdit: чистая вставка — start == end', async () => {
   assert.equal(src[edit.start], ' ');
 });
 
-test('planEdit: замена — end после start, span покрывает старый код', async () => {
+test('planEdit: a replacement puts end after start, spanning the old code', async () => {
   await cppAdapter.init();
   const src = 'a; old(); b;';
   const map = cppAdapter.buildMap(src);
@@ -30,12 +30,12 @@ test('planEdit: замена — end после start, span покрывает �
   assert.equal(src.slice(edit.start, edit.end).trim(), 'old();');
 });
 
-test('applyEdit: вставка и замена дают ожидаемую строку', () => {
+test('applyEdit: insertion and replacement give the expected string', () => {
   assert.equal(applyEdit('ab', { start: 1, end: 1, text: 'X' }), 'aXb');
   assert.equal(applyEdit('aOLDb', { start: 1, end: 4, text: 'X' }), 'aXb');
 });
 
-test('patchHunk: вставка — новый текст и правка', async () => {
+test('patchHunk: an insertion returns the new text and the edit', async () => {
   await cppAdapter.init();
   const src = 'void f(){ a(); b(); }';
   const map = cppAdapter.buildMap(src);
@@ -45,7 +45,7 @@ test('patchHunk: вставка — новый текст и правка', asyn
   assert.equal(edit.start, edit.end);
 });
 
-test('patchHunk: замена — вырезает старый код, ставит патч', async () => {
+test('patchHunk: a replacement cuts the old code out and puts the patch in', async () => {
   await cppAdapter.init();
   const src = 'a; old(); b;';
   const map = cppAdapter.buildMap(src);

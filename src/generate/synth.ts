@@ -1,5 +1,6 @@
 import type { MatchPattern, Step, Gap, Anchor, Hunk } from '../core/ast.ts';
-import type { LanguageAdapter, SourceMap, BlockSpan } from '../lang/source-map.ts';
+import type { LanguageAdapter, SourceMap, BlockSpan, MapCache } from '../lang/source-map.ts';
+import { mapFor } from '../lang/source-map.ts';
 import { matchPattern } from '../core/matcher.ts';
 import { patchHunk } from '../core/patcher.ts';
 import { printPattern } from '../core/hatch-printer.ts';
@@ -8,7 +9,7 @@ import { changeSegments } from './diff.ts';
 import type { ChangeSegment } from './diff.ts';
 
 export type SynthEvent =
-  | { kind: 'segment'; index: number; seg: ChangeSegment }
+  | { kind: 'segment'; index: number; total: number; seg: ChangeSegment }
   | { kind: 'attempt'; pattern: MatchPattern; result: 'unique' | 'ambiguous' | 'no-match'; matches: number }
   | { kind: 'hunk'; pattern: MatchPattern; patch: string };
 export type Tracer = (event: SynthEvent) => void;
@@ -48,6 +49,7 @@ export interface SynthOptions {
   exact?: boolean;
   trace?: Tracer | undefined;
   limits?: PartialLimits | undefined;
+  maps?: MapCache | undefined;
 }
 
 type MatchMarks = ReturnType<typeof matchPattern>;
@@ -55,23 +57,24 @@ type MatchMarks = ReturnType<typeof matchPattern>;
 interface HunkContext {
   readonly segment: ChangeSegment;
   readonly adapter: LanguageAdapter;
-  readonly source: string; 
+  readonly source: string;
   readonly map: SourceMap;
   readonly lines: string[];
   readonly lineStartOffsets: number[];
   readonly lineCount: number;
-  readonly firstChangedRowIndex: number; 
-  readonly rowIndexAfterChange: number; 
-  readonly changeStartOffset: number; 
-  readonly changeEndOffset: number; 
+  readonly firstChangedRowIndex: number;
+  readonly rowIndexAfterChange: number;
+  readonly changeStartOffset: number;
+  readonly changeEndOffset: number;
   readonly canonStart: number;
   readonly canonEnd: number;
-  readonly parents: readonly BlockSpan[]; 
-  readonly intendedSource: string; 
-  readonly normalizedIntendedLines: readonly string[]; 
-  readonly requireExact: boolean; 
-  readonly limits: SynthLimits; 
+  readonly parents: readonly BlockSpan[];
+  readonly intendedSource: string;
+  readonly normalizedIntendedLines: readonly string[];
+  readonly requireExact: boolean;
+  readonly limits: SynthLimits;
   readonly trace: Tracer | undefined;
+  readonly hits: Map<string, number>;
 }
 
 interface ResolvedHunk {
@@ -86,19 +89,19 @@ export function synthesize(
   adapter: LanguageAdapter,
   options: SynthOptions = {},
 ): Hunk[] {
-  const { bridgeGap = 0, exact = false, trace } = options;
+  const { bridgeGap = 0, exact = false, trace, maps } = options;
   const limits = resolveLimits(options.limits);
   const segments = changeSegments(oldSource, newSource, bridgeGap);
   const hunks: Hunk[] = [];
 
   let currentSource = oldSource;
-  let rowShift = 0; 
+  let rowShift = 0;
 
   for (const [index, originalSegment] of segments.entries()) {
-    trace?.({ kind: 'segment', index, seg: originalSegment });
+    trace?.({ kind: 'segment', index, total: segments.length, seg: originalSegment });
     const segment: ChangeSegment = { ...originalSegment, oldStart: originalSegment.oldStart + rowShift };
 
-    const context = makeHunkContext(segment, currentSource, adapter, newSource.endsWith('\n'), exact, limits, trace);
+    const context = makeHunkContext(segment, currentSource, adapter, newSource.endsWith('\n'), exact, limits, trace, maps);
     const resolved = resolveHunk(context);
 
     hunks.push({ match: resolved.pattern, patch: resolved.patch });
@@ -125,6 +128,7 @@ function makeHunkContext(
   requireExact: boolean,
   limits: SynthLimits,
   trace: Tracer | undefined,
+  maps: MapCache | undefined,
 ): HunkContext {
   const lineStartOffsets = getLineStartOffsets(source);
   const lineCount = lineStartOffsets.length - 1;
@@ -137,7 +141,7 @@ function makeHunkContext(
   }
   const changeStartOffset = lineStartOffsets[firstChangedRowIndex]!;
   const changeEndOffset = lineStartOffsets[rowIndexAfterChange]!;
-  const map = adapter.buildMap(source);
+  const map = mapFor(adapter, source, maps);
   const canonStart = map.toCanonPos(changeStartOffset);
   const canonEnd = map.toCanonPos(changeEndOffset);
 
@@ -168,6 +172,7 @@ function makeHunkContext(
     requireExact,
     limits,
     trace,
+    hits: new Map(),
   };
 }
 
@@ -363,7 +368,12 @@ function selectivity(context: HunkContext, g: Generalized, policy: DetailPolicy)
     if (step.anchor.target !== 'literal') continue;
     const norm = context.adapter.normalize(step.anchor.literal.raw);
     if (norm === '') continue;
-    fewest = Math.min(fewest, context.map.occurrences(norm, 0, context.map.eof).length);
+    let n = context.hits.get(norm);
+    if (n === undefined) {
+      n = context.map.countOccurrences(norm, 0, context.map.eof);
+      context.hits.set(norm, n);
+    }
+    fewest = Math.min(fewest, n);
   }
   return fewest === Number.POSITIVE_INFINITY ? 0 : fewest;
 }
@@ -597,7 +607,7 @@ function buildTail(
   }
   for (let i = 0; i < parentCount; i++) {
     const closer = closerStep(context, context.parents[i]!);
-    if (closer === null) break; 
+    if (closer === null) break;
     steps.push(closer);
     startCanon ??= context.parents[i]!.close;
   }
@@ -706,41 +716,35 @@ function stepsForRange(
   const canonTo = map.toCanonPos(to);
   if (canonTo <= canonFrom) return [];
 
-  const collapsed = bracketsToGeneralize(map, canonFrom, canonTo, policy);
+  const within = map.blocksWithin(canonFrom, canonTo);
+  const collapsed = bracketsToGeneralize(within, policy);
   if (generalized !== null) {
-     const candidates = map
-      .blocksWithin(canonFrom, canonTo)
-      .filter((span) => span.close > span.open + 1 && !policy.spelled.has(span.open));
+    const candidates = within.filter((span) => span.close > span.open + 1 && !policy.spelled.has(span.open));
     generalized.push({ owner, from, to, collapsed, candidates });
   }
 
   const steps: Step[] = [];
   let cursor = canonFrom;
   for (const bracket of collapsed) {
-    appendLiteralSegment(context, steps, cursor, bracket.open + 1); 
-    cursor = bracket.close; 
+    appendLiteralSegment(context, steps, cursor, bracket.open + 1);
+    cursor = bracket.close;
   }
   appendLiteralSegment(context, steps, cursor, canonTo);
   return steps;
 }
 
-function bracketsToGeneralize(
-  map: SourceMap,
-  canonFrom: number,
-  canonTo: number,
-  policy: DetailPolicy,
-): BlockSpan[] {
+function bracketsToGeneralize(within: readonly BlockSpan[], policy: DetailPolicy): BlockSpan[] {
   const out: BlockSpan[] = [];
-  const open: number[] = []; 
-  for (const span of map.blocksWithin(canonFrom, canonTo)) {
+  const open: number[] = [];
+  for (const span of within) {
     while (open.length > 0 && open[open.length - 1]! <= span.open) open.pop();
     const depth = open.length;
     open.push(span.close);
-    if (span.close <= span.open + 1) continue; 
-    if (depth < policy.base) continue; 
+    if (span.close <= span.open + 1) continue;
+    if (depth < policy.base) continue;
     if (policy.spelled.has(span.open)) continue;
     if (containsSpelled(span, policy.spelled)) continue;
-    if (out.length > 0 && span.open < out[out.length - 1]!.close) continue; 
+    if (out.length > 0 && span.open < out[out.length - 1]!.close) continue;
     out.push(span);
   }
   return out;

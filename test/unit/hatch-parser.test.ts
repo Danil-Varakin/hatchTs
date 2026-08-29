@@ -92,7 +92,7 @@ test('insert at the beginning of the file ">>> foo"', () => {
 
 test('gluing: adjacent literals → ONE multiline literal', () => {
   const m = firstMatch(wrapMatch('line one\nline two\nline three\n>>>'));
-  
+
   assert.deepStrictEqual(strip(m), [
     {
       mode: { op: 'tight' },
@@ -177,7 +177,7 @@ test('FAIL: two skip operators in one gap (mark is transparent)', () => {
   expectParseError(wrapMatch('foo ... >>> ... bar'), 'two skip operators');
 });
 
-test('FAIL: два ... подряд — тоже два пропуска', () => {
+test('FAIL: two ... in a row are still two skips', () => {
   expectParseError(wrapMatch('foo ... ... bar >>>'), 'two skip operators');
 });
 
@@ -224,7 +224,7 @@ test('FAIL: the old fenced format is reported by name, with the fix in the hint'
   assert.match(err.hint ?? '', /# end/);
 });
 
-// ── жёлоб: колонка 0 за структурой, нагрузка до неё не дотягивается ───────────
+// ── the gutter: column 0 belongs to the structure, payload never reaches it ───
 
 test('a fence inside the patch body survives verbatim', () => {
   const file = parseHatchFile(
@@ -284,7 +284,7 @@ test('the gutter is stripped exactly: deeper indentation is preserved', () => {
 });
 
 test('prose before the first "# match" is ignored', () => {
-  const prose = 'Инструкции для foo.cc.\n\nЛюбой текст, даже ``` и # end.\n\n';
+  const prose = 'Instructions for foo.cc.\n\nAny text at all, even ``` and # end.\n\n';
   assert.equal(parseHatchFile(prose + wrapMatch('foo >>>')).hunks.length, 1);
 });
 

@@ -3,6 +3,7 @@ import { replaceWhitespaceOutsideStrings } from '../zones.ts';
 import type { StringRule } from '../zones.ts';
 
 const STRINGS: readonly StringRule[] = [
+  { open: '#', close: '\n', opaque: false },
   { open: '"""', close: '"""', escape: '\\', multiline: true },
   { open: "'''", close: "'''", escape: '\\', multiline: true },
   { open: '"', close: '"', escape: '\\' },

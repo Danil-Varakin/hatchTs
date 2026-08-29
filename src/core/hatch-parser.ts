@@ -35,8 +35,8 @@ class PatternBuilder {
     if (gapIsFresh && prev !== undefined && prev.anchor.target === 'literal') {
       const lit = prev.anchor.literal;
       lit.raw += '\n' + raw;
-      lit.mdSpan[1] = mdLine; 
-      return; 
+      lit.mdSpan[1] = mdLine;
+      return;
     }
 
     this.steps.push({
@@ -169,10 +169,10 @@ const END_HEADING = /^#{1,6}[ \t]*end[ \t]*$/i;
 const GUTTER = '    ';
 
 interface Block {
-  body: string[]; 
-  firstLine: number; 
-  endLine: number; 
-  next: number; 
+  body: string[];
+  firstLine: number;
+  endLine: number;
+  next: number;
 }
 
 function readBlock(lines: string[], start: number, kind: 'match' | 'patch', headLine: number): Block {

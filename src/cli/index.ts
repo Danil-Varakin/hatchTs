@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { HatchError } from '../core/errors.ts';
 import { renderError } from '../infra/log.ts';
-import { CONFIG_VERSION } from '../infra/config/schema.ts';
+import { CONFIG_VERSION } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
+import { invokedDirectly } from '../infra/entry.ts';
 
 interface Command {
   readonly summary: string;
@@ -83,16 +82,6 @@ function version(): string {
   return `${pkg.name} ${pkg.version} (config schema v${CONFIG_VERSION})`;
 }
 
-function invokedDirectly(): boolean {
-  const argv1 = process.argv[1];
-  if (argv1 === undefined) return false;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false; 
-  }
-}
-
-if (invokedDirectly()) {
+if (invokedDirectly(import.meta.url)) {
   await main(process.argv.slice(2));
 }

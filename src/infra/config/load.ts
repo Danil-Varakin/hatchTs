@@ -1,5 +1,6 @@
-import { readFileSync, statSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join, resolve } from 'node:path';
+import { isFile, isRepoRoot, upwards } from '../fs.ts';
 import { ConfigError } from '../../core/errors.ts';
 import {
   DEFAULT_SETTINGS,
@@ -11,7 +12,7 @@ import {
   checkValue,
   knownConfigKeys,
 } from './schema.ts';
-import type { GenerateSettings, PartialSettings } from './schema.ts';
+import type { FieldSpec, GenerateSettings, PartialSettings } from './schema.ts';
 import { CONFIG_VERSION } from './schema.ts';
 
 export const CONFIG_FILE_NAME = 'hatch.config.json';
@@ -29,23 +30,25 @@ export interface FlagOverride {
   readonly flag: string;
 }
 
-export function findConfigFile(startDir: string): string | undefined {
-  let dir = resolve(startDir);
-  for (;;) {
-    const candidate = join(dir, CONFIG_FILE_NAME);
-    if (isFile(candidate)) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) return undefined;
-    dir = parent;
+export function overridesFrom(
+  values: PartialSettings,
+  label: (spec: FieldSpec) => string,
+): FlagOverride[] {
+  const out: FlagOverride[] = [];
+  for (const spec of FIELDS) {
+    const value = values[spec.key];
+    if (value !== undefined) out.push({ key: spec.key, value, flag: label(spec) });
   }
+  return out;
 }
 
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
+export function findConfigFile(startDir: string): string | undefined {
+  for (const dir of upwards(startDir)) {
+    const candidate = join(dir, CONFIG_FILE_NAME);
+    if (isFile(candidate)) return candidate;
+    if (isRepoRoot(dir)) return undefined;
   }
+  return undefined;
 }
 
 export function readConfigFile(file: string): PartialSettings {
@@ -105,12 +108,12 @@ export function resolveConfig(options: {
 
   const fileOrigin = options.file !== undefined ? `config ${options.file}` : 'config';
 
-  
+
   for (const [key, value] of Object.entries(options.fromFile ?? {})) {
     if (value === undefined) continue;
     const spec = FIELD_BY_KEY.get(key as keyof GenerateSettings);
     if (spec === undefined) continue;
-    settings[key] = value;
+    settings[key] = checkValue(value, spec, options.file);
     origins[spec.path] = fileOrigin;
   }
 
@@ -154,7 +157,7 @@ export function loadConfig(options: {
 
 export function formatConfig(config: ResolvedConfig): string {
   const width = Math.max(...FIELDS.map((f) => f.path.length));
-  const lines = [`version = ${config.version}`];
+  const lines = [`version = ${config.version}`, `file    = ${config.file ?? '(none)'}`];
   for (const spec of FIELDS) {
     const value = JSON.stringify(config.generate[spec.key]);
     lines.push(`${spec.path.padEnd(width)} = ${value.padEnd(6)}  [${config.origins[spec.path]}]`);

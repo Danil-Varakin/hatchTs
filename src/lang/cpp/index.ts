@@ -6,9 +6,11 @@ import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
 const STRINGS: readonly StringRule[] = [
+  { open: '//', close: '\n', opaque: false },
+  { open: '/*', close: '*/', multiline: true, opaque: false },
   { open: /R"([^\s()\\]{0,16})\(/, close: (m) => `)${m[1] ?? ''}"`, multiline: true },
   { open: '"', close: '"', escape: '\\' },
-  { open: "'", close: "'", escape: '\\' },
+  { open: /(?<![0-9a-fA-F])'|'(?![0-9a-fA-F])/, close: "'", escape: '\\' },
 ];
 
 export function normalize(raw: string): string {
@@ -23,7 +25,7 @@ const PAIR = new Map<string, string>([
   ['{', '}'],
   ['(', ')'],
   ['[', ']'],
-  ['<', '>'], 
+  ['<', '>'],
 ]);
 
 function bracketPair(node: Node): { first: Node; last: Node } | null {
@@ -57,7 +59,7 @@ export const cppAdapter = makeAdapter({
     version: '0.23.4',
     sha256: '174eb0deb75b2ec7881bcacda9f995648d8e683956e5c2267e69ab6dc503fcbf',
   },
-  extensions: ['.cc', '.cpp', '.cxx', '.h', '.hpp', '.inc'], 
+  extensions: ['.cc', '.cpp', '.cxx', '.h', '.hpp', '.inc'],
   normalize,
   blockOf: cppBlockOf,
 });

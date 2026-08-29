@@ -4,6 +4,7 @@ export interface StringRule {
   readonly close: string | ((open: RegExpExecArray) => string);
   readonly escape?: string;
   readonly multiline?: boolean;
+  readonly opaque?: boolean;
 }
 
 export interface Zone {
@@ -58,6 +59,7 @@ interface Compiled {
   readonly close: string | ((open: RegExpExecArray) => string);
   readonly escape: string | undefined;
   readonly multiline: boolean;
+  readonly opaque: boolean | undefined;
 }
 
 function compile(rule: StringRule): Compiled {
@@ -68,6 +70,7 @@ function compile(rule: StringRule): Compiled {
     close: rule.close,
     escape: rule.escape,
     multiline: rule.multiline === true,
+    opaque: rule.opaque,
   };
 }
 
@@ -81,7 +84,7 @@ function zoneAt(text: string, start: number, rules: readonly Compiled[]): Zone |
     if (opened === null) continue;
     const closer = typeof rule.close === 'string' ? rule.close : rule.close(opened.match);
     const end = findClose(text, start + opened.length, closer, rule);
-    return { start, end, opaque: !text.slice(start, end).includes('\n') };
+    return { start, end, opaque: rule.opaque ?? !text.slice(start, end).includes('\n') };
   }
   return null;
 }

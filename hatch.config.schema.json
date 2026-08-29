@@ -6,20 +6,35 @@
   "type": "object",
   "additionalProperties": false,
   "properties": {
-    "$schema": { "type": "string" },
-    "version": { "const": 1 },
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
     "generate": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "out": {
           "description": "Default place for the generated .md: a file path is taken as is, a directory (existing, or ending with a slash) gets <name of --in>.md inside it. null — next to --in.",
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
+        },
+        "mirror": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep patches in a tree of their own: the .md goes to <out>/<path of the file inside the repository>.md, and missing directories are created. Requires \"out\" to name a directory; a relative one is taken from the repository root. Paths are measured from the nearest ancestor holding .git, so a file outside any repository is an error."
         },
         "language": {
           "description": "Default language; null — inferred from the extension of --in.",
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "exact": {
@@ -45,8 +60,14 @@
             "max": {
               "description": "Cap on climbing up the enclosing blocks; \"all\" means up to the outermost.",
               "anyOf": [
-                { "type": "integer", "minimum": 0, "maximum": 1000 },
-                { "const": "all" }
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1000
+                },
+                {
+                  "const": "all"
+                }
               ]
             },
             "detail": {

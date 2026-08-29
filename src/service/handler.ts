@@ -1,3 +1,4 @@
+import { dirname, isAbsolute } from 'node:path';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import type { ResolveResult } from '../core/resolve.ts';
 import type {
@@ -22,18 +23,19 @@ import {
   ConfigError,
   GrammarError,
   HatchError,
+  LanguageError,
   MatchError,
   ParseError,
+  PathError,
 } from '../core/errors.ts';
 import { generatePatch } from '../generate/pipeline.ts';
 import { adapterForFile, adapterForLanguage, supportedLanguages } from '../lang/adapter.ts';
-import { CONFIG_VERSION } from '../infra/config/schema.ts';
+import { checkParent } from '../infra/fs.ts';
+import { resolveOutPath } from '../infra/out-path.ts';
+import { CONFIG_VERSION, loadConfig, overridesFrom } from '../infra/config/index.ts';
+import type { FlagOverride, PartialSettings } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-
-// The service is a shell, exactly like the CLI: it decodes a request, calls the same
-// pipeline the CLI calls, and encodes the answer. Anything it would be tempted to
-// compute itself belongs one layer down, where the CLI can reach it too.
 
 export type Emit = (message: ProgressMessage) => void;
 
@@ -75,15 +77,24 @@ function version(): VersionResult {
 async function generate(p: GenerateParams, id: number, emit: Emit | undefined): Promise<GenerateResult> {
   text(p.baseText, 'baseText');
   text(p.newText, 'newText');
+  absolutePath(p);
+
+  const anchor = p.path !== undefined ? dirname(p.path) : undefined;
+  const config = loadConfig({
+    startDir: anchor ?? process.cwd(),
+    useFile: anchor !== undefined,
+    flags: paramOverrides(p),
+  });
+  const settings = config.generate;
 
   const outcome = await generatePatch({
     oldText: p.baseText,
     newText: p.newText,
-    language: p.language,
+    language: settings.language ?? undefined,
     path: p.path,
-    exact: p.exact,
-    bridgeGap: p.bridgeGap,
-    limits: p.limits,
+    exact: settings.exact,
+    bridgeGap: settings.bridgeGap,
+    limits: settings,
     init: grammarPolicy(p),
     provenance: true,
     ...(emit !== undefined
@@ -91,13 +102,33 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
       : {}),
   });
 
+  const out =
+    anchor === undefined
+      ? null
+      : resolveOutPath({ inPath: p.path!, out: settings.out, mirror: settings.mirror }).path ?? null;
+  if (out !== null) checkParent(out);
+
   return {
     md: outcome.md,
     language: outcome.language,
     warnings: outcome.warnings,
     hunks: outcome.links ?? [],
     reproducesNew: outcome.reproducesNew === true,
+    outPath: out,
+    config: { file: config.file ?? null, settings, origins: config.origins },
   };
+}
+
+function paramOverrides(p: GenerateParams): FlagOverride[] {
+  const values: PartialSettings = {
+    language: p.language,
+    exact: p.exact,
+    bridgeGap: p.bridgeGap,
+    out: p.out,
+    mirror: p.mirror,
+    ...(p.limits ?? {}),
+  };
+  return overridesFrom(values, (spec) => `params.${spec.key}`);
 }
 
 async function resolve(p: ResolveParams): Promise<ResolveResultMessage> {
@@ -113,6 +144,7 @@ async function apply(p: ApplyParams): Promise<ApplyResultMessage> {
 async function resolveRequest(p: ResolveParams): Promise<ResolveResult> {
   text(p.md, 'md');
   text(p.baseText, 'baseText');
+  absolutePath(p);
   const file = parseHatchFile(p.md);
   const adapter = await ready(p, file.language);
   return resolveHunks(p.baseText, file, adapter);
@@ -133,7 +165,6 @@ async function ready(p: LanguageParams, fromHeading: string | undefined): Promis
 function grammarPolicy(p: LanguageParams): { allowDownload: boolean; log: (m: string) => void } {
   return {
     allowDownload: p.allowDownload === true || downloadAllowedByEnv(),
-    // stdout belongs to the protocol; anything else goes to stderr
     log: (m: string) => process.stderr.write(`${m}\n`),
   };
 }
@@ -148,6 +179,16 @@ function params<T>(message: RequestMessage): T {
     throw new BadRequest(`method '${message.method}' needs params`);
   }
   return p as T;
+}
+
+function absolutePath(p: LanguageParams): void {
+  if (p.path !== undefined && !isAbsolute(p.path)) {
+    throw new BadRequest(
+      `params.path must be absolute (got '${p.path}'): the service is spawned by the client ` +
+        'and has no meaningful current directory. Send an absolute path, or omit path and ' +
+        'send params.language instead.',
+    );
+  }
 }
 
 function text(value: unknown, name: string): asserts value is string {
@@ -189,6 +230,13 @@ function detailOf(e: HatchError): Record<string, unknown> | undefined {
     };
   }
   if (e instanceof AmbiguityError) return { positions: e.positions };
+  if (e instanceof PathError) return { path: e.path, blocker: e.blocker };
+  if (e instanceof LanguageError) {
+    return {
+      ...(e.language !== undefined ? { language: e.language } : {}),
+      ...(e.extension !== undefined ? { extension: e.extension } : {}),
+    };
+  }
   if (e instanceof GrammarError) return e.grammar !== undefined ? { grammar: e.grammar } : undefined;
   if (e instanceof ConfigError) return e.file !== undefined ? { file: e.file } : undefined;
   return undefined;

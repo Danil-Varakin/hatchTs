@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 
 import { diffHunks, changeSegments, lineKind, lineText } from '../../src/generate/diff.ts';
 
-test('идентичные файлы → ноль ханков и ноль сегментов', () => {
+test('identical files yield no hunks and no segments', () => {
   const src = 'int a;\nint b;\nint c;\n';
   assert.deepEqual(diffHunks(src, src), []);
   assert.deepEqual(changeSegments(src, src), []);
 });
 
-test('одна изменённая строка: ханк несёт контекст, del и add', () => {
+test('one changed line: the hunk carries context, del and add', () => {
   const oldStr = 'a\nb\nc\nd\ne\n';
   const newStr = 'a\nb\nC\nd\ne\n';
   const hunks = diffHunks(oldStr, newStr);
@@ -22,14 +22,14 @@ test('одна изменённая строка: ханк несёт конте
   assert.ok(h.lines.includes(' d'));
 });
 
-test('context управляет шириной ханка и слиянием соседних правок', () => {
+test('context controls hunk width and the merging of neighbouring edits', () => {
   const oldStr = 'a\nb\nc\nd\ne\nf\ng\n';
   const newStr = 'A\nb\nc\nd\ne\nf\nG\n';
   assert.equal(diffHunks(oldStr, newStr, 1).length, 2);
   assert.equal(diffHunks(oldStr, newStr, 5).length, 1);
 });
 
-test('lineKind/lineText: разбор префикс-маркеров, включая eofnl', () => {
+test('lineKind/lineText: reading the prefix markers, eofnl included', () => {
   assert.equal(lineKind(' ctx'), 'context');
   assert.equal(lineKind('-gone'), 'del');
   assert.equal(lineKind('+new'), 'add');
@@ -38,9 +38,9 @@ test('lineKind/lineText: разбор префикс-маркеров, вклю�
   assert.equal(lineText('-old'), 'old');
 });
 
-// --- changeSegments: атомарные правки (один сегмент = один Hatch-ханк) ---
+// --- changeSegments: atomic edits, one segment per Hatch hunk ---
 
-test('замена одной строки → один сегмент {removed, added} с координатами', () => {
+test('replacing one line gives one segment {removed, added} with coordinates', () => {
   const oldStr = 'a\nb\nc\nd\ne\n';
   const newStr = 'a\nb\nC\nd\ne\n';
   const segs = changeSegments(oldStr, newStr);
@@ -48,7 +48,7 @@ test('замена одной строки → один сегмент {removed,
   assert.deepEqual(segs[0], { oldStart: 3, newStart: 3, removed: ['c'], added: ['C'] });
 });
 
-test('чистая вставка: removed пуст, oldStart = строка, ПЕРЕД которой вставка', () => {
+test('a pure insertion: removed is empty and oldStart is the line it goes BEFORE', () => {
   const oldStr = 'a\nb\nc\n';
   const newStr = 'a\nX\nb\nc\n';
   const segs = changeSegments(oldStr, newStr);
@@ -56,7 +56,7 @@ test('чистая вставка: removed пуст, oldStart = строка, П
   assert.deepEqual(segs[0], { oldStart: 2, newStart: 2, removed: [], added: ['X'] });
 });
 
-test('чистое удаление: added пуст', () => {
+test('a pure deletion: added is empty', () => {
   const oldStr = 'a\nb\nc\n';
   const newStr = 'a\nc\n';
   const segs = changeSegments(oldStr, newStr);
@@ -64,7 +64,7 @@ test('чистое удаление: added пуст', () => {
   assert.deepEqual(segs[0], { oldStart: 2, newStart: 2, removed: ['b'], added: [] });
 });
 
-test('две правки, разделённые неизменёнными строками → ДВА сегмента', () => {
+test('two edits split by unchanged lines give TWO segments', () => {
   const oldStr = 'a\nb\nc\nd\ne\nf\ng\n';
   const newStr = 'A\nb\nc\nd\ne\nf\nG\n';
   const segs = changeSegments(oldStr, newStr);
@@ -73,7 +73,7 @@ test('две правки, разделённые неизменёнными с�
   assert.deepEqual(segs[1], { oldStart: 7, newStart: 7, removed: ['g'], added: ['G'] });
 });
 
-test('правки через ПУСТУЮ неизменённую строку сшиваются по умолчанию (пустая → в блок)', () => {
+test('edits split by a BLANK unchanged line are stitched by default', () => {
   const oldStr = 'a\n\nb\n';
   const newStr = 'A\n\nB\n';
   const segs = changeSegments(oldStr, newStr);
@@ -81,7 +81,7 @@ test('правки через ПУСТУЮ неизменённую строку
   assert.deepEqual(segs[0], { oldStart: 1, newStart: 1, removed: ['a', '', 'b'], added: ['A', '', 'B'] });
 });
 
-test('непустая неизменённая строка (bar();) по умолчанию РЕЖЕТ; bridgeGap=1 — сшивает', () => {
+test('a non-blank unchanged line cuts by default; bridgeGap=1 stitches it', () => {
   const oldStr = 'foo();\nbar();\nbaz();\n';
   const newStr = 'foo2();\nbar();\nbaz2();\n';
   assert.equal(changeSegments(oldStr, newStr).length, 2);
@@ -95,7 +95,7 @@ test('непустая неизменённая строка (bar();) по ум�
   });
 });
 
-test('многострочная замена подряд → ОДИН сегмент со всеми строками', () => {
+test('a multi-line replacement in a row is ONE segment carrying every line', () => {
   const oldStr = 'x\na\nb\ny\n';
   const newStr = 'x\nA\nB\nC\ny\n';
   const segs = changeSegments(oldStr, newStr);
@@ -103,7 +103,7 @@ test('многострочная замена подряд → ОДИН сегм
   assert.deepEqual(segs[0], { oldStart: 2, newStart: 2, removed: ['a', 'b'], added: ['A', 'B', 'C'] });
 });
 
-test('вставка цельного блока = ОДНА вставка, НЕ построчно (пустая строка внутри — часть блока)', () => {
+test('inserting a whole block is ONE insertion, not line by line', () => {
   const oldStr = 'a\nb\n';
   const newStr = 'a\nX1\nX2\n\nX4\nb\n';
   const segs = changeSegments(oldStr, newStr);
@@ -111,7 +111,7 @@ test('вставка цельного блока = ОДНА вставка, НЕ
   assert.deepEqual(segs[0], { oldStart: 2, newStart: 2, removed: [], added: ['X1', 'X2', '', 'X4'] });
 });
 
-test('сегменты покрывают старый файл в порядке возрастания oldStart', () => {
+test('segments cover the old file in ascending oldStart order', () => {
   const oldStr = 'a\nb\nc\nd\ne\nf\ng\nh\n';
   const newStr = 'a\nB\nc\nd\nE\nf\ng\nH\n';
   const segs = changeSegments(oldStr, newStr);

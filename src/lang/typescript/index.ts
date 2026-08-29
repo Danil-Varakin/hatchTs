@@ -6,6 +6,8 @@ import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
 const STRINGS: readonly StringRule[] = [
+  { open: '//', close: '\n', opaque: false },
+  { open: '/*', close: '*/', multiline: true, opaque: false },
   { open: '\`', close: '\`', escape: '\\', multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
@@ -23,7 +25,7 @@ const PAIR = new Map<string, string>([
   ['{', '}'],
   ['(', ')'],
   ['[', ']'],
-  ['<', '>'], 
+  ['<', '>'],
 ]);
 
 function bracketPair(node: Node): { first: Node; last: Node } | null {

@@ -8,7 +8,7 @@ import type { MatchPattern } from '../../src/core/ast.ts';
 import { MatchError, AmbiguityError } from '../../src/core/errors.ts';
 import { firstMatch, wrapMatch } from '../helpers.ts';
 
-// ── помощники ─────────────────────────────────────────────────────────────────
+// ── helpers ───────────────────────────────────────────────────────────────────
 
 function pattern(...matchLines: string[]): MatchPattern {
   return firstMatch(wrapMatch(matchLines.join('\n')));
@@ -34,41 +34,41 @@ function insAt(src: string, marks: MatchMarks): number {
   return map.toOriginalPos(marks.insert.pos, marks.insert.side);
 }
 
-// ── края файла: BOF / EOF ─────────────────────────────────────────────────────
+// ── the edges of the file: BOF / EOF ──────────────────────────────────────────
 
-test('... >>> — вставка в конец файла (EOF)', async () => {
+test('... >>> inserts at the end of the file (EOF)', async () => {
   await cppAdapter.init();
   const src = 'int x = 1;';
   const marks = run(src, pattern('... >>>'));
   assert.equal(apply(src, marks, '\nint y = 2;'), 'int x = 1;\nint y = 2;');
 });
 
-test('>>> ... — вставка в начало файла (BOF)', async () => {
+test('>>> ... inserts at the start of the file (BOF)', async () => {
   await cppAdapter.init();
   const src = 'int x = 1;';
   const marks = run(src, pattern('>>> ...'));
   assert.equal(apply(src, marks, '#include "a.h"\n'), '#include "a.h"\nint x = 1;');
 });
 
-// ── якорь + вставка до/после ──────────────────────────────────────────────────
+// ── an anchor with the insertion before or after it ───────────────────────────
 
-test('... foo(); >>> ... — вставка сразу после найденного якоря', async () => {
+test('... foo(); >>> ... inserts right after the anchor it found', async () => {
   await cppAdapter.init();
   const src = 'void f(){ foo(); bar(); }';
   const marks = run(src, pattern('... foo(); >>> ...'));
   assert.equal(apply(src, marks, ' baz();'), 'void f(){ foo(); baz(); bar(); }');
 });
 
-test('... >>> bar(); ... — вставка прямо перед найденным якорем', async () => {
+test('... >>> bar(); ... inserts right before the anchor it found', async () => {
   await cppAdapter.init();
   const src = 'void f(){ foo(); bar(); }';
   const marks = run(src, pattern('... >>> bar(); ...'));
   assert.equal(apply(src, marks, 'baz(); '), 'void f(){ foo(); baz(); bar(); }');
 });
 
-// ── незакрытая { упорядочивает: контекст блока ────────────────────────────────
+// ── an unclosed { orders the search: the context of a block ───────────────────
 
-test('главный контрпример §3.1: ... func(...){ ... if(...){ ... >>> } ... } ...', async () => {
+test('the counterexample of §3.1: ... func(...){ ... if(...){ ... >>> } ... } ...', async () => {
   await cppAdapter.init();
   const src = [
     'void func(int a) {',
@@ -89,7 +89,7 @@ test('главный контрпример §3.1: ... func(...){ ... if(...){ .
   assert.ok(src.slice(0, ins).trimEnd().endsWith('doWork();'), src.slice(0, ins).slice(-20));
 });
 
-test('побег: ... func(...){ ... if(...){ ... >>> } ... — if в другой функции после func', async () => {
+test('escape: ... func(...){ ... if(...){ ... >>> } ... — an if in a later function', async () => {
   await cppAdapter.init();
   const src = [
     'void func(int a) {',
@@ -107,16 +107,16 @@ test('побег: ... func(...){ ... if(...){ ... >>> } ... — if в друго
   assert.ok(src.slice(0, ins).trimEnd().endsWith('fallback();'), src.slice(0, ins).slice(-20));
 });
 
-test('шаблон ЗАКРЫВАЕТ func: if в другой функции → MatchError (не сматчить чужой блок)', async () => {
+test('the pattern CLOSES func: an if in another function is a MatchError', async () => {
   await cppAdapter.init();
   const src = [
     'void func(int a) {',
-    '  // никакого if здесь нет',
+    '  // no if in here',
     '}',
     '',
     'void CriticalShutdown() {',
     '  if (danger) {',
-    '    // ← сюда прилетит вставка',
+    '    // ← the insertion lands here',
     '  }',
     '}',
   ].join('\n');
@@ -126,7 +126,7 @@ test('шаблон ЗАКРЫВАЕТ func: if в другой функции �
   );
 });
 
-test('if И внутри, И после func → AmbiguityError', async () => {
+test('an if both inside and after func is an AmbiguityError', async () => {
   await cppAdapter.init();
   const src = [
     'void func(int a) {',
@@ -146,9 +146,9 @@ test('if И внутри, И после func → AmbiguityError', async () => {
   );
 });
 
-// ── нет хвостового ... → последний литерал обязан упереться в EOF ──────────────
+// ── no trailing ... means the last literal must reach EOF ─────────────────────
 
-test('нет хвостового ...: якорь обязан быть в конце файла', async () => {
+test('without a trailing ... the anchor has to sit at the end of the file', async () => {
   await cppAdapter.init();
   const pat = pattern('... a(); >>> b();');
   const ok = 'a(); b();';
@@ -156,9 +156,9 @@ test('нет хвостового ...: якорь обязан быть в ко�
   assert.throws(() => run('a(); b(); c();', pat), MatchError);
 });
 
-// ── замена диапазона >>> ... <<< ──────────────────────────────────────────────
+// ── replacing a range: >>> ... <<< ────────────────────────────────────────────
 
-test('замена диапазона: ... a; >>> old(); <<< b; ...', async () => {
+test('replacing a range: ... a; >>> old(); <<< b; ...', async () => {
   await cppAdapter.init();
   const src = 'a; old(); b;';
   const marks = run(src, pattern('... a; >>> old(); <<< b; ...'));
@@ -166,29 +166,29 @@ test('замена диапазона: ... a; >>> old(); <<< b; ...', async () =
   assert.equal(apply(src, marks, 'new();'), 'a;new(); b;');
 });
 
-// ── диагностика отказа и неоднозначности ──────────────────────────────────────
+// ── what a refusal and an ambiguity report ────────────────────────────────────
 
-test('нет совпадения → MatchError', async () => {
+test('no match is a MatchError', async () => {
   await cppAdapter.init();
   const src = 'void f(){ foo(); }';
   assert.throws(() => run(src, pattern('... nonexistent(); >>> ...')), MatchError);
 });
 
-test('два одинаковых якоря → AmbiguityError с позициями', async () => {
+test('two identical anchors give an AmbiguityError carrying both places', async () => {
   await cppAdapter.init();
   const src = 'void f(){ ping(); ping(); }';
   try {
     run(src, pattern('... ping(); >>> ...'));
-    assert.fail('ожидался AmbiguityError');
+    assert.fail('expected an AmbiguityError');
   } catch (e) {
     assert.ok(e instanceof AmbiguityError);
     assert.equal(e.positions.length, 2);
   }
 });
 
-// ── обязательное: `... }` детерминирован через обязательство ───────────────────
+// ── the commitment: `... }` is decided by the block the pattern opened ────────
 
-test('... >>> } берёт закрывашку своего блока (обязательство), не чужую', async () => {
+test('... >>> } takes the closer of its own block, never someone else\'s', async () => {
   await cppAdapter.init();
   const src = 'void f(){ a(); } void g(){ b(); }';
   const marks = run(src, pattern('... f() { ... >>> }  ...'));

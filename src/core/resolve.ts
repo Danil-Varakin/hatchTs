@@ -1,16 +1,10 @@
 import type { HatchFile, Hunk } from './ast.ts';
-import type { LanguageAdapter, SourceMap } from '../lang/source-map.ts';
+import type { LanguageAdapter, SourceMap, MapCache } from '../lang/source-map.ts';
+import { mapFor } from '../lang/source-map.ts';
 import type { Edit } from './patcher.ts';
 import { matchPattern } from './matcher.ts';
 import { planEdit, applyEdit } from './patcher.ts';
 import { AmbiguityError, MatchError } from './errors.ts';
-
-// Where a hunk lands, in the two coordinate systems a caller can actually use: the
-// baseline as it sits on disk, and the text with every hunk applied. Neither is the
-// system the matcher works in — hunk k is matched against the file where hunks
-// 1..k-1 are ALREADY applied (see applyAll), so its raw position belongs to a stage
-// that exists nowhere on screen. Projecting it back and forth is this module's whole
-// job, and it lives next to the patcher so the rules of a splice are stated once.
 
 export interface Span {
   readonly start: number;
@@ -22,56 +16,44 @@ export type LinkStatus = 'ok' | 'no-match' | 'ambiguous' | 'error';
 export interface LinkFailure {
   readonly kind: string;
   readonly message: string;
-  /** line in the .md of the anchor that did not fit — where a squiggle belongs */
   readonly mdLine?: number;
   readonly failedStepIndex?: number;
   readonly totalSteps?: number;
-  /** how far into the source the matcher got before giving up (baseline-stage coords) */
   readonly origPos?: number;
   readonly anchorText?: string;
-  /** for an ambiguous pattern: every place it fits, in source coordinates */
   readonly candidates?: readonly number[];
 }
 
 export interface HunkLink {
   readonly index: number;
   readonly status: LinkStatus;
-  /** lines this hunk occupies in the .md, from `# match` to the closing `# end` */
   readonly mdSpan?: readonly [number, number];
-  /** what the hunk REPLACES, in baseline coordinates (start === end for an insertion) */
   readonly base?: Span;
-  /** what the hunk WRITES, in the coordinates of the fully applied text */
   readonly final?: Span;
   readonly finalText?: string;
-  /**
-   * The pattern does not fit the pristine baseline and only resolves once earlier
-   * hunks are in. Such a hunk has no place of its own in the baseline: `base` is the
-   * point where the earlier hunk inserts, not text this hunk could replace.
-   */
   readonly dependsOnEarlier: boolean;
   readonly failure?: LinkFailure;
 }
 
 export interface ResolveResult {
   readonly links: readonly HunkLink[];
-  /** the baseline with every hunk that resolved applied; failed hunks are skipped */
   readonly applied: string;
 }
 
-/**
- * Resolve every hunk of a file against a baseline. Unlike applyAll, a hunk that does
- * not fit does not end the run: the editor needs a per-hunk verdict, and a broken
- * anchor in hunk 2 says nothing about hunk 1.
- */
-export function resolveHunks(baseline: string, file: HatchFile, adapter: LanguageAdapter): ResolveResult {
-  const baselineMap = adapter.buildMap(baseline);
+export function resolveHunks(
+  baseline: string,
+  file: HatchFile,
+  adapter: LanguageAdapter,
+  maps?: MapCache,
+): ResolveResult {
+  const baselineMap = mapFor(adapter, baseline, maps);
   const staged: (Edit | null)[] = [];
   const drafts: Draft[] = [];
   let current = baseline;
 
   for (const [index, hunk] of file.hunks.entries()) {
     const untouched = current === baseline;
-    const map = untouched ? baselineMap : adapter.buildMap(current);
+    const map = untouched ? baselineMap : mapFor(adapter, current, maps);
     try {
       const edit = planEdit(matchPattern(hunk.match, map, adapter.normalize), map, hunk.patch);
       drafts.push({
@@ -112,7 +94,6 @@ function project(draft: Draft, staged: readonly (Edit | null)[], applied: string
     };
   }
 
-  // back to the baseline: undo every edit that went in before this one
   let baseStart = draft.edit.start;
   let baseEnd = draft.edit.end;
   for (let j = draft.index - 1; j >= 0; j--) {
@@ -122,7 +103,6 @@ function project(draft: Draft, staged: readonly (Edit | null)[], applied: string
     baseEnd = backThrough(baseEnd, earlier);
   }
 
-  // forward to the applied text: carry the written range through every later edit
   let finalStart = draft.edit.start;
   let finalEnd = draft.edit.start + draft.edit.text.length;
   for (let j = draft.index + 1; j < staged.length; j++) {
@@ -143,7 +123,6 @@ function project(draft: Draft, staged: readonly (Edit | null)[], applied: string
   };
 }
 
-/** a position in the text AFTER `edit`, expressed in the text before it */
 function backThrough(pos: number, edit: Edit): number {
   if (pos <= edit.start) return pos;
   const writtenEnd = edit.start + edit.text.length;
@@ -151,7 +130,6 @@ function backThrough(pos: number, edit: Edit): number {
   return edit.start; // inside what the edit wrote — the baseline has no such place
 }
 
-/** a position in the text BEFORE `edit`, expressed in the text after it */
 function forwardThrough(pos: number, edit: Edit): number {
   if (pos <= edit.start) return pos;
   if (pos >= edit.end) return pos + edit.text.length - (edit.end - edit.start);
@@ -190,7 +168,6 @@ function describe(e: unknown, hunk: Hunk): LinkFailure {
   }
 
   if (e instanceof AmbiguityError) {
-    // already in source coordinates: the matcher converts before it throws
     return { kind: 'AmbiguityError', message, candidates: e.positions };
   }
 

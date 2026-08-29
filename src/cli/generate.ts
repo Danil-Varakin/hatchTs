@@ -1,6 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
-import { dirname, basename, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { dirname, basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Tracer, SynthEvent } from '../generate/synth.ts';
 import { generatePatch } from '../generate/pipeline.ts';
@@ -9,13 +7,16 @@ import { printPattern } from '../core/hatch-printer.ts';
 import { reviewHunks } from '../generate/agreement.ts';
 import type { Confirm } from '../generate/agreement.ts';
 import { fileFromBranch } from '../infra/git.ts';
-import { writeFileAtomic } from '../infra/fs.ts';
+import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
+import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-import { CONFIG_FILE_NAME, formatConfig, loadConfig } from '../infra/config/index.ts';
-import type { FlagOverride, ResolvedConfig } from '../infra/config/index.ts';
-import { HatchError } from '../core/errors.ts';
-import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import { CONFIG_FILE_NAME, formatConfig, loadConfig, overridesFrom } from '../infra/config/index.ts';
+import type { FlagOverride, PartialSettings, ResolvedConfig } from '../infra/config/index.ts';
+import { createLoggerOrWarn, resolveLogPath, logHeader } from '../infra/log.ts';
 import type { Logger } from '../infra/log.ts';
+import { invokedDirectly } from '../infra/entry.ts';
+import { parseArgs } from './args.ts';
+import type { ArgSpec } from './args.ts';
 
 interface Options {
   in?: string;
@@ -33,6 +34,7 @@ interface Options {
   siblingDetailBase?: unknown;
   bridgeGap?: unknown;
   requireParents: boolean;
+  mirror: boolean;
   downloadGrammars: boolean;
   useConfig: boolean;
   printConfig: boolean;
@@ -47,10 +49,19 @@ const USAGE = `hatch generate — synthesize .md instructions from two versions 
   --in,     -i <file>     new version of the file                    [required]
   --in-old     <file>     old version (from a file)      [one of --in-old/--branch]
   --branch, -b <branch>   old version = <branch>:<--in path> (git)
-  --out,    -o <path>     where to write the .md. A file path is taken as is; a
-                          directory (existing, or ending with a slash) gets
-                          <name of --in>.md inside it; omitted means next to
-                          --in. \`-\` writes to stdout
+  --out,    -o <path>     where to write the .md. A directory (existing, or ending
+                          with a slash) gets <name of --in>.md inside it; any other
+                          path is written as is and overwritten. Missing directories
+                          are created. A relative path is measured from the
+                          repository root, not from the current directory. Omitted
+                          means next to --in; \`-\` writes to stdout
+  --mirror                keep the patches in a tree of their own: the .md goes to
+                          <--out>/<path of --in inside the repository>.md, and
+                          missing directories are created. Requires --out to name a
+                          directory; a relative one is taken from the repository
+                          root, never from the current directory. Paths are measured
+                          from the nearest ancestor holding .git, so a file outside
+                          any repository is an error rather than a guess
   --language,-l <lang>    force language (else: extension of --in)
   --agreement,-a          confirm each hunk before writing
   --exact,  -e            reproduce the new file byte for byte; without it every
@@ -61,10 +72,11 @@ const USAGE = `hatch generate — synthesize .md instructions from two versions 
   --download-grammars     allow fetching the language's grammar if it is missing
                           (off by default; npm run grammars fetches them once)
   --log [place]           also write a full log — the resolved config and the whole
-                          synthesis trace, whether or not -v is on. Every run gets its
-                          own file. A place that is a directory (or ends in /) receives
-                          a generated name, otherwise it IS the name; omitted →
-                          ./hatch-logs/
+                          synthesis trace, whether or not -v is on. A place that is a
+                          directory (or ends in /) receives a generated name, so every
+                          run gets its own file; any other place IS the name and is
+                          overwritten. Omitted → ./hatch-logs/. A log that cannot be
+                          opened is a warning, not a failure: the run goes on without it
   --help,   -h            this help
 
 Anchoring (how much context a generated hunk carries). Every one of these can also
@@ -95,41 +107,34 @@ be set in ${CONFIG_FILE_NAME}; the flag wins for this run.
 Configuration
 
   --config <file>         use this config file instead of searching for
-                          ${CONFIG_FILE_NAME} upwards from --in
+                          ${CONFIG_FILE_NAME} upwards from --in. The search stops
+                          at the repository root and never enters the home
+                          directory; --config itself has no such bound
   --no-config             ignore config files entirely (built-in defaults + flags)
   --print-config          print the effective settings with the origin of each
                           (default / config / flag) and exit`;
 
-type StringOption = 'in' | 'inOld' | 'branch' | 'out' | 'language' | 'config';
-type CountOption =
-  | 'parents'
-  | 'minParents'
-  | 'parentDetailBase'
-  | 'minSiblings'
-  | 'siblings'
-  | 'siblingDetailBase'
-  | 'bridgeGap';
-
-function parseArgs(argv: readonly string[]): Options {
-  const opts: Options = {
-    requireParents: false,
-    downloadGrammars: false,
-    useConfig: true,
-    printConfig: false,
-    agreement: false,
-    exact: false,
-    debug: false,
-    help: false,
-  };
-  const takesValue: Record<string, StringOption> = {
+const SPEC: ArgSpec<Options> = {
+  flags: {
+    '--agreement': 'agreement', '-a': 'agreement',
+    '--exact': 'exact', '-e': 'exact',
+    '--debug': 'debug', '-v': 'debug',
+    '--help': 'help', '-h': 'help',
+    '--require-parents': 'requireParents',
+    '--mirror': 'mirror',
+    '--download-grammars': 'downloadGrammars',
+    '--print-config': 'printConfig',
+  },
+  negated: { '--no-config': 'useConfig' },
+  values: {
     '--in': 'in', '-i': 'in',
     '--in-old': 'inOld',
     '--branch': 'branch', '-b': 'branch',
     '--out': 'out', '-o': 'out',
     '--language': 'language', '-l': 'language',
     '--config': 'config',
-  };
-  const takesCount: Record<string, CountOption> = {
+  },
+  counts: {
     '--parents': 'parents',
     '--min-parents': 'minParents',
     '--parent-detail': 'parentDetailBase',
@@ -137,84 +142,44 @@ function parseArgs(argv: readonly string[]): Options {
     '--siblings': 'siblings',
     '--sibling-detail': 'siblingDetailBase',
     '--bridge-gap': 'bridgeGap',
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === '--log') {
-      const next = argv[i + 1];
-      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
-      continue;
-    }
-    if (a === '--agreement' || a === '-a') opts.agreement = true;
-    else if (a === '--exact' || a === '-e') opts.exact = true;
-    else if (a === '--debug' || a === '-v') opts.debug = true;
-    else if (a === '--help' || a === '-h') opts.help = true;
-    else if (a === '--require-parents') opts.requireParents = true;
-    else if (a === '--download-grammars') opts.downloadGrammars = true;
-    else if (a === '--no-config') opts.useConfig = false;
-    else if (a === '--print-config') opts.printConfig = true;
-    else {
-      const countKey = takesCount[a];
-      if (countKey !== undefined) {
-        const val = argv[++i];
-        if (val === undefined) throw new Error(`option ${a} needs a value`);
-        opts[countKey] = parseCountValue(val);
-        continue;
-      }
-      const key = takesValue[a];
-      if (key === undefined) throw new Error(`unknown argument: ${a}`);
-      const val = argv[++i];
-      if (val === undefined) throw new Error(`option ${a} needs a value`);
-      opts[key] = val;
-    }
-  }
-  return opts;
-}
+  },
+  optional: { '--log': 'log' },
+};
 
-function parseCountValue(raw: string): unknown {
-  if (raw === 'all') return 'all';
-  return /^\d+$/.test(raw) ? Number(raw) : raw;
-}
+const INITIAL: Options = {
+  requireParents: false,
+  mirror: false,
+  downloadGrammars: false,
+  useConfig: true,
+  printConfig: false,
+  agreement: false,
+  exact: false,
+  debug: false,
+  help: false,
+};
 
 function flagOverrides(opts: Options): FlagOverride[] {
-  const out: FlagOverride[] = [];
-  const push = (key: FlagOverride['key'], value: unknown, flag: string): void => {
-    if (value !== undefined) out.push({ key, value, flag });
+  const values: PartialSettings = {
+    out: opts.out,
+    mirror: opts.mirror ? true : undefined,
+    language: opts.language,
+    exact: opts.exact ? true : undefined,
+    bridgeGap: opts.bridgeGap as PartialSettings['bridgeGap'],
+    minParents: opts.minParents as PartialSettings['minParents'],
+    maxParents: opts.parents as PartialSettings['maxParents'],
+    parentDetailBase: opts.parentDetailBase as PartialSettings['parentDetailBase'],
+    parentsRequired: opts.requireParents ? true : undefined,
+    minSiblings: opts.minSiblings as PartialSettings['minSiblings'],
+    maxSiblings: opts.siblings as PartialSettings['maxSiblings'],
+    siblingDetailBase: opts.siblingDetailBase as PartialSettings['siblingDetailBase'],
   };
-  push('out', opts.out, '--out');
-  push('language', opts.language, '--language');
-  push('exact', opts.exact ? true : undefined, '--exact');
-  push('bridgeGap', opts.bridgeGap, '--bridge-gap');
-  push('minParents', opts.minParents, '--min-parents');
-  push('maxParents', opts.parents, '--parents');
-  push('parentDetailBase', opts.parentDetailBase, '--parent-detail');
-  push('parentsRequired', opts.requireParents ? true : undefined, '--require-parents');
-  push('minSiblings', opts.minSiblings, '--min-siblings');
-  push('maxSiblings', opts.siblings, '--siblings');
-  push('siblingDetailBase', opts.siblingDetailBase, '--sibling-detail');
-  return out;
+  return overridesFrom(values, (spec) => spec.flag);
 }
 
 function langLabel(language: string | null, inPath: string): string | undefined {
   if (language !== null) return language;
   const dot = inPath.lastIndexOf('.');
   return dot === -1 ? undefined : inPath.slice(dot + 1);
-}
-
-export function resolveOutPath(out: string | undefined, inPath: string): string | undefined {
-  const defaultName = `${basename(inPath)}.md`;
-  if (out === undefined) return join(dirname(inPath), defaultName);
-  if (out === '-') return undefined;
-  if (/[/\\]$/.test(out) || isDirectory(out)) return join(out, defaultName);
-  return out;
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
@@ -257,9 +222,9 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<
     throw new Error('provide exactly one source of the OLD version: --in-old <file> OR --branch <branch>');
   }
 
-  const newStr = readFileSync(opts.in, 'utf8');
+  const newStr = readInputFile(opts.in, '--in');
   const oldStr =
-    opts.inOld !== undefined ? readFileSync(opts.inOld, 'utf8') : await fileFromBranch(opts.branch!, opts.in);
+    opts.inOld !== undefined ? readInputFile(opts.inOld, '--in-old') : await fileFromBranch(opts.branch!, opts.in);
 
   const settings = config.generate;
   const review = opts.agreement ? makeStdinConfirm() : null;
@@ -284,13 +249,13 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<
 
   for (const w of outcome.warnings) log.note(`warning: ${w}`);
 
-  const outPath = resolveOutPath(settings.out ?? undefined, opts.in);
+  const out = resolveOutPath({ inPath: resolve(opts.in), out: settings.out, mirror: settings.mirror });
+  const outPath = out.path;
   if (outPath === undefined) {
     process.stdout.write(outcome.md);
     return;
   }
-  const outDir = dirname(outPath);
-  if (!isDirectory(outDir)) throw new Error(`no such directory: ${outDir} (--out ${outPath})`);
+  ensureParent(outPath);
   writeFileAtomic(outPath, outcome.md);
   log.note(`generated ${outcome.hunkCount} hunk(s) → ${outPath}`);
 }
@@ -298,7 +263,7 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<
 export async function main(argv: readonly string[]): Promise<void> {
   let opts: Options;
   try {
-    opts = parseArgs(argv);
+    opts = parseArgs(argv, SPEC, { ...INITIAL });
   } catch (e) {
     process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
@@ -309,18 +274,11 @@ export async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  let log: Logger;
-  try {
-    log = createLogger({
-      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'generate') } : {}),
-      verbose: opts.debug,
-      header: logHeader('generate', argv),
-    });
-  } catch (e) {
-    process.stderr.write(`${(e as Error).message}\n`);
-    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
-    return;
-  }
+  const log = createLoggerOrWarn({
+    ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'generate') } : {}),
+    verbose: opts.debug,
+    header: logHeader('generate', argv),
+  });
 
   try {
     const config = loadConfig({
@@ -346,12 +304,12 @@ export async function main(argv: readonly string[]): Promise<void> {
 function errorContext(opts: Options): { source?: string; sourcePath?: string } {
   if (opts.inOld === undefined) return {};
   try {
-    return { source: readFileSync(opts.inOld, 'utf8'), sourcePath: opts.inOld };
+    return { source: readInputFile(opts.inOld, '--in-old'), sourcePath: opts.inOld };
   } catch {
     return { sourcePath: opts.inOld };
   }
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (invokedDirectly(import.meta.url)) {
   await main(process.argv.slice(2));
 }

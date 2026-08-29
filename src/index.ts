@@ -29,6 +29,9 @@ export {
   AmbiguityError,
   ConfigError,
   GrammarError,
+  GitError,
+  LanguageError,
+  PathError,
 } from './core/errors.ts';
 
 // ── types needed to write a signature against this API ───────────────────────────

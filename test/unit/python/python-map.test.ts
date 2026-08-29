@@ -4,6 +4,12 @@ import assert from 'node:assert/strict';
 import { pythonAdapter, normalize } from '../../../src/lang/python/index.ts';
 import type { SourceMap } from '../../../src/lang/source-map.ts';
 
+// depthAt / enclosingEnd жили в SourceMap, но в src/ их не звал никто — только тесты.
+// Оба выводятся из enclosing(), который возвращает спаны от самого внутреннего.
+const depthAt = (map: SourceMap, pos: number): number => map.enclosing(pos).length;
+const enclosingEnd = (map: SourceMap, pos: number): number => map.enclosing(pos)[0]?.close ?? map.eof;
+
+
 const SRC = `def f(a):
     if a:
         x = 1
@@ -16,7 +22,7 @@ def g():
 const CANON = normalize(SRC);
 const at = (needle: string): number => {
   const i = CANON.indexOf(needle);
-  assert.notEqual(i, -1, `нет в каноне: ${needle}`);
+  assert.notEqual(i, -1, `not in the canon: ${needle}`);
   return i;
 };
 
@@ -28,13 +34,13 @@ test('build the Python map (init once)', async () => {
 
 test('the colon is the opening token: after `if a:` the cursor is INSIDE the body', () => {
   const ifStart = at('if a:');
-  assert.equal(map.depthAt(ifStart), 1);
-  assert.equal(map.depthAt(ifStart + 'if a:'.length), 2);
+  assert.equal(depthAt(map, ifStart), 1);
+  assert.equal(depthAt(map, ifStart + 'if a:'.length), 2);
 });
 
 test('the end of the block is the beginning of the line of the OUTER level', () => {
   const ifBody = at('        x=1');
-  const close = map.enclosingEnd(ifBody);
+  const close = enclosingEnd(map, ifBody);
   assert.equal(CANON.slice(close, close + 3), 'y=2');
 });
 
@@ -67,9 +73,9 @@ test('brackets remain blocks too: `(a)` in the signature is a regular span', () 
 });
 
 test('the neighbouring def is a different block: the depth does not leak through a blank line', () => {
-  assert.equal(map.depthAt(at('def g():')), 1);
-  assert.equal(map.depthAt(at('def g():') + 1), 0);
-  assert.equal(map.depthAt(at('    pass')), 1);
+  assert.equal(depthAt(map, at('def g():')), 1);
+  assert.equal(depthAt(map, at('def g():') + 1), 0);
+  assert.equal(depthAt(map, at('    pass')), 1);
 });
 
 test('a one-line body (`if x: pass`) is also a block — the colon opens it', async () => {
@@ -78,7 +84,7 @@ test('a one-line body (`if x: pass`) is also a block — the colon opens it', as
   const m = pythonAdapter.buildMap(src);
   const canon = normalize(src);
   const afterColon = canon.indexOf('if x:') + 'if x:'.length;
-  assert.equal(m.depthAt(afterColon), 2);
+  assert.equal(depthAt(m, afterColon), 2);
 });
 
 test('everything is measured by the tree, not by tabs: mixed indentation does not break the block', async () => {
@@ -87,6 +93,6 @@ test('everything is measured by the tree, not by tabs: mixed indentation does no
   const m = pythonAdapter.buildMap(src);
   const canon = normalize(src);
   const body = canon.indexOf('\t\tx=1');
-  const close = m.enclosingEnd(body);
+  const close = enclosingEnd(m, body);
   assert.equal(canon.slice(close, close + 8), 'return x');
 });

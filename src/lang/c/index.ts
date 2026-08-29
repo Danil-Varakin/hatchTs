@@ -6,8 +6,10 @@ import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
 const STRINGS: readonly StringRule[] = [
+  { open: '//', close: '\n', opaque: false },
+  { open: '/*', close: '*/', multiline: true, opaque: false },
   { open: '"', close: '"', escape: '\\' },
-  { open: "'", close: "'", escape: '\\' },
+  { open: /(?<![0-9a-fA-F])'|'(?![0-9a-fA-F])/, close: "'", escape: '\\' },
 ];
 
 export function normalize(raw: string): string {

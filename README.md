@@ -162,7 +162,7 @@ From a clone it also works without installing: `npm run hatch -- <command>`.
 hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
 
 # generate
-hatch generate --in new.cpp --in-old old.cpp --out changes.md
+hatch generate --in new.cpp --in-old old.cpp --out changes.md   # a file: it has an extension
 
 # ...or take the old version from a git branch
 hatch generate --in src/main.cpp --branch master --out changes.md
@@ -179,7 +179,10 @@ Exit codes, for scripts to rely on:
 ```
 --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
 --in,    -i <file>      source file to patch                     [required]
---out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
+--out,   -o <path>      where to write the result   [required unless --dry-run/--verify]
+                        same placement rules as `generate --out`, minus `-` and
+                        mirroring: a directory gets <name of --in> inside it, any
+                        other path is written as is, directories are created
 --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
                         the file extension)
 --dry-run               show planned edits, write nothing
@@ -198,10 +201,18 @@ Exit codes, for scripts to rely on:
 --in,     -i <file>     new version of the file                    [required]
 --in-old     <file>     old version (from a file)      [one of --in-old/--branch]
 --branch, -b <branch>   old version = <branch>:<--in path> (git)
---out,    -o <path>     where to write the .md. A file path is taken as is; a
-                        directory (existing, or ending with a slash) gets
-                        <name of --in>.md inside it; omitted means next to
-                        --in. `-` writes to stdout
+--out,    -o <path>     where to write the .md. A path with no extension (or one
+                        ending with a slash, or an existing directory) is a
+                        DIRECTORY and gets <name of --in>.md inside it; a path with
+                        an extension is the file itself, overwritten. Missing
+                        directories are created. A relative path is measured from the
+                        repository root, not from the current directory. Omitted
+                        means next to --in; `-` writes to stdout
+--mirror                keep patches in a tree of their own: the .md goes to
+                        <--out>/<path of --in inside the repository>.md, and
+                        missing directories are created. Requires --out, which is
+                        then always a directory; a relative one is taken from the
+                        repository root, never from the current directory
 --language,-l <lang>    force language (else: extension of --in)
 --agreement,-a          confirm each hunk before writing
 --exact,  -e            reproduce the new file byte for byte; without it every
@@ -254,7 +265,10 @@ one pair of file versions, which is why it is policy rather than automatic.
 ### Configuration
 
 Anything above can be pinned as project policy in `hatch.config.json`, searched
-for **upwards from `--in`** (like eslint/prettier). Layers, weakest first:
+for **upwards from `--in`** — but only within the project: the walk stops at the
+repository root (the directory holding `.git`) and never climbs into your home
+directory. A config one level above the repo is not policy you agreed to, and
+nothing in the output would tell you it applied. Layers, weakest first:
 
 ```
 built-in defaults  <  hatch.config.json  <  CLI flags
@@ -275,18 +289,41 @@ built-in defaults  <  hatch.config.json  <  CLI flags
       "detail": { "base": 0 },
       "required": false
     },
-    "siblings": { "min": 1, "max": 8, "detail": { "base": 0 } }
+    "siblings": { "min": 1, "max": 8, "detail": { "base": 0 } },
+    "out": "patches",
+    "mirror": true
   }
 }
 ```
 
-`generate.out` is a *place*, not necessarily a name: a directory there gets
-`<name of --in>.md` written inside it.
+`generate.out` is a *place*, not necessarily a name. A value with **no extension** — or
+one ending with a slash, or naming a directory that is already there — is a directory, and
+`<name of --in>.md` is written inside it; a value with an extension is the file itself.
+Missing directories are created, and a file sitting where one of them has to go is
+reported by name rather than as `EEXIST … mkdir`. A relative value is measured from the **repository root**, never
+from the current directory — the same settings must mean the same place in a terminal, in
+an editor whose working directory is nobody's business, and in CI. Outside a repository
+the fallback is the directory of the file being patched. `apply --out` follows the same
+rules.
+
+`generate.mirror` changes that place into a tree. With it on, the patch for
+`chromium_src/browser/core/apdate.cc` goes to
+`<out>/chromium_src/browser/core/apdate.cc.md`, missing directories are created, and
+`out` is required and always read as a directory.
+
+Paths are measured from the **repository root** — the nearest ancestor holding `.git`,
+the same boundary the config search stops at. A file outside any repository is an error,
+not a guess, so mirrored patches can never land somewhere unrelated. A relative `out` is
+taken from that root as well, so running `hatch generate` from different directories
+writes to the same place.
 
 ```
---config <file>         use this config instead of searching upwards
+--config <file>         use this config instead of searching upwards; an
+                        explicit path is bounded by nothing, so this is how one
+                        config is shared by several repositories
 --no-config             ignore config files (built-in defaults + flags only)
---print-config          print the effective settings and where each came from
+--print-config          print the effective settings, the file they came from,
+                        and the origin of each value
 ```
 
 Only the **generate** side is configurable. A `.md` patch is a public contract

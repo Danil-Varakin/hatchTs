@@ -36,7 +36,7 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   }
 }
 
-test('URL выводится из пакета и версии; явный url перекрывает', () => {
+test('the URL follows from package and version; an explicit url wins', () => {
   const urls = grammarUrls(SOURCE);
   assert.equal(urls.length, 2);
   assert.ok(urls.every((u) => u.startsWith('https://')));
@@ -46,7 +46,7 @@ test('URL выводится из пакета и версии; явный url �
   assert.deepEqual(grammarUrls(custom), ['https://example.invalid/g.wasm']);
 });
 
-test('кеш: HATCH_GRAMMAR_CACHE перекрывает, XDG уважается, scope не создаёт вложенность', async () => {
+test('cache: HATCH_GRAMMAR_CACHE wins, XDG is honoured, a scope adds no nesting', async () => {
   await withEnv({ HATCH_GRAMMAR_CACHE: '/tmp/xx' }, async () => {
     assert.equal(grammarCacheDir(), '/tmp/xx');
   });
@@ -62,7 +62,7 @@ test('кеш: HATCH_GRAMMAR_CACHE перекрывает, XDG уважается
   });
 });
 
-test('без разрешения — отказ, а не тихая загрузка; в сообщении есть команда и код 6', async () => {
+test('without permission it refuses instead of fetching, naming the command and code 6', async () => {
   const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
   await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
     const e = await resolveGrammar(SOURCE).then(
@@ -77,7 +77,7 @@ test('без разрешения — отказ, а не тихая загру�
   });
 });
 
-test('сообщение называет ЯЗЫК и даёт команду ровно на него', async () => {
+test('the message names the LANGUAGE and gives the command for exactly it', async () => {
   const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
   await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
     const e = await resolveGrammar(SOURCE, {}, 'cpp').then(
@@ -91,7 +91,7 @@ test('сообщение называет ЯЗЫК и даёт команду р
   });
 });
 
-test('язык не назвали — сообщение всё равно рабочее, просто без него', async () => {
+test('with no language given the message still works, just without it', async () => {
   const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
   await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
     const e = await resolveGrammar(SOURCE).then(
@@ -104,7 +104,7 @@ test('язык не назвали — сообщение всё равно ра
   });
 });
 
-test('HATCH_GRAMMAR_DIR отдаёт файл как есть (своя сборка — своя контрольная сумма)', async () => {
+test('HATCH_GRAMMAR_DIR hands the file over as is: your build, your checksum', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hatch-grammars-'));
   const bytes = new Uint8Array([1, 2, 3]);
   await writeFile(join(dir, SOURCE.file), bytes);
@@ -114,7 +114,7 @@ test('HATCH_GRAMMAR_DIR отдаёт файл как есть (своя сбор
   });
 });
 
-test('битая запись кеша ИГНОРИРУЕТСЯ (её хеш мы знаем), а не идёт в дело', async () => {
+test('a broken cache entry is IGNORED, its checksum being known, not used', async () => {
   const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
   const entry = cacheEntry({ ...SOURCE });
   await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
@@ -126,7 +126,7 @@ test('битая запись кеша ИГНОРИРУЕТСЯ (её хеш м�
   assert.ok(entry.length > 0);
 });
 
-test('источник без пина не принимается вовсе', async () => {
+test('a source with no pin is not accepted at all', async () => {
   await assert.rejects(
     resolveGrammar({ file: 'x.wasm', package: 'p', version: '1' }),
     /sha256/,

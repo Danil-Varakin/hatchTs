@@ -1,41 +1,41 @@
-# глубокий дизайн (RU) — системная папка, в git не хранится (см. structure.md)
+# deep design notes (RU): a working folder, kept out of git (see structure.md)
 docs/
 
-# зависимости
+# dependencies
 node_modules/
 
-# артефакты сборки TS (на случай перехода с noEmit на dist/)
+# TypeScript build output
 dist/
 *.tsbuildinfo
 
-# логи npm
+# npm logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# атомарная запись infra/fs.ts (temp + rename) — на случай оборванного прогона
+# leftovers of the atomic write in infra/fs.ts, should a run be interrupted
 *.tmp
 
-# окружение
+# environment
 .env
 .env.*
 
 # macOS
 .DS_Store
 
-# редакторы
+# editors
 .idea/
 .vscode/
 
-# мусорные выводы ручных прогонов CLI (apply --out) — в git не хранятся
+# scratch output of manual CLI runs (apply --out): never committed
 /out.cpp
 
-# корпус ручных прогонов на chromium/brave (данные качаются, в git не хранятся)
+# the manual-run corpus over chromium/brave: fetched data, never committed
 /corpus/
 
-# грамматики tree-sitter: не хранятся в git — качаются в пользовательский кеш
-# (`npm run grammars`), см. src/infra/grammar-store.ts
+# tree-sitter grammars: not committed, fetched into the user cache
+# (`npm run grammars`), see src/infra/grammar-store.ts
 /grammars/
 
-# архив, который делает npm pack
+# the archive npm pack produces
 *.tgz

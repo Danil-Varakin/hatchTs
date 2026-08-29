@@ -1,18 +1,10 @@
 import type { HunkLink } from '../core/resolve.ts';
 import type { PartialLimits } from '../generate/synth.ts';
+import type { GenerateSettings } from '../infra/config/index.ts';
 
-// Everything the wire format mentions is re-exported here, so a client can type its
-// whole side of the conversation against this one module and nothing else.
 export type { HunkLink, LinkFailure, LinkStatus, ResolveResult, Span } from '../core/resolve.ts';
 export type { PartialLimits, SynthLimits } from '../generate/synth.ts';
-
-// The contract between hatch and a long-lived client (an editor extension, a bot).
-// One JSON object per line, in both directions: stdout carries protocol only, stderr
-// carries logs. Payloads hold whole files, and JSON escapes newlines, so a line-
-// delimited stream is safe for them.
-//
-// Bump PROTOCOL_VERSION when an existing field changes meaning or goes away. A client
-// asks `version` first and refuses to talk to a number it does not know.
+export type { GenerateSettings } from '../infra/config/index.ts';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -26,7 +18,6 @@ export interface ServiceError {
   readonly kind: string;
   readonly message: string;
   readonly exitCode: number;
-  /** machine-readable extras: mdLine for a parse error, the grammar for a grammar one */
   readonly detail?: Readonly<Record<string, unknown>>;
 }
 
@@ -34,7 +25,6 @@ export type ResponseMessage =
   | { readonly id: number; readonly ok: true; readonly result: unknown }
   | { readonly id: number; readonly ok: false; readonly error: ServiceError };
 
-/** Sent while a request is still running. Never a reply — it carries no `ok`. */
 export interface ProgressMessage {
   readonly method: 'progress';
   readonly params: { readonly id: number; readonly done: number; readonly total: number };
@@ -42,24 +32,20 @@ export interface ProgressMessage {
 
 // ── params ───────────────────────────────────────────────────────────────────────
 
-/** Common to every method that has to parse source: how the language is decided. */
 export interface LanguageParams {
-  /** language name; when absent, taken from `path`, or from the `# match` heading */
   readonly language?: string;
-  /** a file name — only its extension is read, the file is never opened */
   readonly path?: string;
-  /** allow fetching a missing grammar (off by default, as in the CLI) */
   readonly allowDownload?: boolean;
 }
 
 export interface GenerateParams extends LanguageParams {
-  /** the version being patched */
   readonly baseText: string;
-  /** the version the user has now, buffer included — no file is read */
   readonly newText: string;
   readonly exact?: boolean;
   readonly bridgeGap?: number;
   readonly limits?: PartialLimits;
+  readonly out?: string;
+  readonly mirror?: boolean;
 }
 
 export interface ResolveParams extends LanguageParams {
@@ -78,13 +64,20 @@ export interface VersionResult {
   readonly languages: readonly string[];
 }
 
+export interface AppliedConfig {
+  readonly file: string | null;
+  readonly settings: GenerateSettings;
+  readonly origins: Readonly<Record<string, string>>;
+}
+
 export interface GenerateResult {
   readonly md: string;
   readonly language: string | undefined;
   readonly warnings: readonly string[];
   readonly hunks: readonly HunkLink[];
-  /** false means the .md does not reproduce newText — report it, do not hide it */
   readonly reproducesNew: boolean;
+  readonly outPath: string | null;
+  readonly config: AppliedConfig;
 }
 
 export interface ResolveResultMessage {

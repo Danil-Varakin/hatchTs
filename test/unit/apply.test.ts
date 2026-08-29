@@ -11,9 +11,9 @@ import { cppAdapter } from '../../src/lang/cpp/index.ts';
 import { applyAll } from '../../src/core/apply.ts';
 import { hatchMd } from '../helpers.ts';
 
-// ── applyAll: чистое ядро (без файлов) ────────────────────────────────────────
+// ── applyAll: the pure core, no files ─────────────────────────────────────────
 
-test('applyAll: один ханк-вставка меняет текст', async () => {
+test('applyAll: a single insertion hunk changes the text', async () => {
   await cppAdapter.init();
   const file = parseHatchFile(hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
   const { source, edits } = applyAll('void f(){ a(); b(); }', file, cppAdapter);
@@ -21,7 +21,7 @@ test('applyAll: один ханк-вставка меняет текст', async
   assert.ok(source.includes('a();X(); b();'), source);
 });
 
-test('applyAll: второй ханк цепляется за вставку первого (последовательность)', async () => {
+test('applyAll: the second hunk leans on what the first inserted, in order', async () => {
   await cppAdapter.init();
   const file = parseHatchFile(
     hatchMd([
@@ -35,7 +35,7 @@ test('applyAll: второй ханк цепляется за вставку п�
   assert.ok(source.indexOf('int a;') < source.indexOf('int b;'), source);
 });
 
-// ── CLI end-to-end: коды выхода и запись файла ────────────────────────────────
+// ── CLI end-to-end ────────────────────────────────
 
 const CLI = fileURLToPath(new URL('../../src/cli/apply.ts', import.meta.url));
 
@@ -52,7 +52,7 @@ function runCli(args: string[]): { status: number; stdout: string; stderr: strin
   }
 }
 
-test('CLI apply: успех (exit 0) и файл записан', () => {
+test('CLI apply: success is exit 0 and a written file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
@@ -69,7 +69,7 @@ test('CLI apply: успех (exit 0) и файл записан', () => {
   }
 });
 
-test('CLI apply --verify: патч ложится чисто → exit 0, файл не пишется', () => {
+test('CLI apply --verify: a clean fit is exit 0 and nothing written', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
@@ -85,7 +85,7 @@ test('CLI apply --verify: патч ложится чисто → exit 0, фай�
   }
 });
 
-test('CLI apply: нет совпадения → exit 3 (MatchError)', () => {
+test('CLI apply: no match is exit 3 (MatchError)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
@@ -96,6 +96,27 @@ test('CLI apply: нет совпадения → exit 3 (MatchError)', () => {
     const r = runCli(['--match', md, '--in', src, '--out', join(dir, 'o.cc')]);
     assert.equal(r.status, 3, r.stderr);
     assert.match(r.stderr, /MatchError/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI apply: --out as a directory keeps the name, and directories are created', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-out-'));
+  try {
+    const src = join(dir, 'in.cc');
+    const md = join(dir, 'p.md');
+    writeFileSync(src, 'void f() {\n  a();\n}\n');
+    writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
+
+    const intoDir = runCli([...['--match', md, '--in', src], '--out', `${dir}/built/`]);
+    assert.equal(intoDir.status, 0, intoDir.stderr);
+    assert.match(readFileSync(join(dir, 'built', 'in.cc'), 'utf8'), /X\(\);/);
+
+    const named = join(dir, 'deep', 'result.cc');
+    const intoFile = runCli([...['--match', md, '--in', src], '--out', named]);
+    assert.equal(intoFile.status, 0, intoFile.stderr);
+    assert.match(readFileSync(named, 'utf8'), /X\(\);/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

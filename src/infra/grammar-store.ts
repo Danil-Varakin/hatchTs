@@ -17,7 +17,7 @@ export async function resolveGrammar(
   source: GrammarSource,
   policy: InitOptions = {},
   language?: string,
-): Promise<GrammarInput> {
+): Promise<Uint8Array> {
   validate(source);
 
   if (source.path !== undefined) {
@@ -68,7 +68,7 @@ export function downloadAllowedByEnv(): boolean {
 export interface GrammarStatus {
   readonly source: GrammarSource;
   readonly where: 'local' | 'cache' | 'downloaded';
-  readonly path: string | undefined; 
+  readonly path: string | undefined;
   readonly bytes: number;
 }
 
@@ -85,7 +85,7 @@ export async function ensureGrammars(
       source,
       where: before === null ? 'downloaded' : before === cacheEntry(source) ? 'cache' : 'local',
       path: after ?? undefined,
-      bytes: typeof input === 'string' ? 0 : input.byteLength,
+      bytes: input.byteLength,
     });
   }
   return out;
@@ -130,7 +130,7 @@ export function formatPin(source: GrammarSource): string {
 export function grammarUrls(source: GrammarSource): string[] {
   if (source.url !== undefined) return [source.url];
   const spec = `${source.package!}@${source.version!}/${source.file}`;
-  
+
   return [`https://cdn.jsdelivr.net/npm/${spec}`, `https://unpkg.com/${spec}`];
 }
 
@@ -182,7 +182,7 @@ async function download(source: GrammarSource, policy: InitOptions): Promise<Uin
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
       const got = digest(bytes);
-  
+
       if (got !== source.sha256) {
         throw new GrammarError(
           `checksum mismatch for ${source.file}\n  expected ${source.sha256}\n  received ${got}\n  from ${url}`,

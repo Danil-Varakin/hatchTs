@@ -12,6 +12,8 @@ import { reviewHunks } from '../../src/generate/agreement.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { applyAll } from '../../src/core/apply.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
+import { buildRepo, version } from '../git-repo.ts';
+import type { Repo } from '../git-repo.ts';
 
 // ── the round trip THROUGH .md: synth → print → parse → apply == new ──────────
 
@@ -70,7 +72,13 @@ test('reviewHunks keeps only what was confirmed', async () => {
 const GEN_CLI = fileURLToPath(new URL('../../src/cli/generate.ts', import.meta.url));
 const APPLY_CLI = fileURLToPath(new URL('../../src/cli/apply.ts', import.meta.url));
 
-function runCli(cli: string, args: string[], cwd?: string): { status: number; stdout: string; stderr: string } {
+interface CliRun {
+  status: number;
+  stdout: string;
+  stderr: string;
+}
+
+function runCli(cli: string, args: string[], cwd?: string): CliRun {
   try {
     const stdout = execFileSync('node', ['--experimental-strip-types', cli, ...args], {
       encoding: 'utf8',
@@ -183,62 +191,179 @@ test('CLI generate --branch takes the old version from a git branch', () => {
   }
 });
 
-function branchRepo(): { dir: string; branch: string; oldStr: string; newStr: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'hatch-git-sub-'));
-  const git = (args: string[]) =>
-    execFileSync('git', args, { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  git(['init', '-q']);
-  git(['config', 'user.email', 'a@b.c']);
-  git(['config', 'user.name', 'test']);
-  mkdirSync(join(dir, 'src', 'core'), { recursive: true });
-  const oldStr = 'void f() {\n  int a = 1;\n}\n';
-  const newStr = 'void f() {\n  int a = 2;\n}\n';
-  writeFileSync(join(dir, 'src', 'core', 'f.cc'), oldStr);
-  git(['add', '-A']);
-  git(['commit', '-q', '-m', 'old']);
-  writeFileSync(join(dir, 'src', 'core', 'f.cc'), newStr);
-  return { dir, branch: git(['rev-parse', '--abbrev-ref', 'HEAD']).trim(), oldStr, newStr };
+// ── the old version from git ─────────────────────────────────────────────────
+//
+// WHICH version each coordinate names is settled in test/unit/git-source.test.ts,
+// against the resolver itself. What is left for the CLI is its own business: that
+// every flag reaches the coordinate it belongs to, that the two sources cannot be
+// asked for at once, and that a refusal comes out named.
+
+function generateIn(repo: Repo, args: readonly string[], from = join(repo.dir, 'src', 'core')): CliRun {
+  return runCli(GEN_CLI, ['--in', 'f.cc', ...args, '--out', '-', '--language', 'cpp'], from);
+}
+
+function assertReplaces(md: string, removed: string, added: string): void {
+  assert.match(md, new RegExp(`>>>\\n\\s+${removed}\\n\\s+<<<`), md);
+  assert.match(md, new RegExp(`# patch\\n\\s+${added}`), md);
 }
 
 test('CLI generate --branch works from a SUBDIRECTORY, not only from the repository root', () => {
-  const { dir, branch, oldStr, newStr } = branchRepo();
+  const repo = buildRepo('hatch-git-sub-');
   try {
-    const gen = runCli(GEN_CLI, ['--in', 'f.cc', '--branch', branch, '--out', '-', '--language', 'cpp'],
-      join(dir, 'src', 'core'));
+    const gen = generateIn(repo, ['--branch', repo.branch]);
     assert.equal(gen.status, 0, gen.stderr);
 
-    const md = join(dir, 'patch.md');
+    const md = join(repo.dir, 'patch.md');
     writeFileSync(md, gen.stdout);
-    const src = join(dir, 'copy.cc');
-    const out = join(dir, 'result.cc');
-    writeFileSync(src, oldStr);
+    const src = join(repo.dir, 'copy.cc');
+    const out = join(repo.dir, 'result.cc');
+    writeFileSync(src, version(2));
     const ap = runCli(APPLY_CLI, ['--match', md, '--in', src, '--out', out]);
     assert.equal(ap.status, 0, ap.stderr);
-    assert.equal(readFileSync(out, 'utf8'), newStr);
+    assert.equal(readFileSync(out, 'utf8'), version(4));
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(repo.dir, { recursive: true, force: true });
   }
 });
 
 test('CLI generate --branch takes an ABSOLUTE --in as well', () => {
-  const { dir, branch } = branchRepo();
+  const repo = buildRepo('hatch-git-abs-');
   try {
     const gen = runCli(GEN_CLI, [
-      '--in', join(dir, 'src', 'core', 'f.cc'), '--branch', branch, '--out', '-', '--language', 'cpp',
+      '--in', repo.inPath, '--branch', repo.branch, '--out', '-', '--language', 'cpp',
     ]);
     assert.equal(gen.status, 0, gen.stderr);
     assert.match(gen.stdout, /^# match cpp/);
-    assert.ok(gen.stdout.includes('int a = 2;'), gen.stdout);
+    assertReplaces(gen.stdout, 'int a = 2;', 'int a = 4;');
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(repo.dir, { recursive: true, force: true });
   }
 });
 
-test('CLI generate --branch outside a repository fails with a named error, not a raw git message', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hatch-git-none-'));
+test('CLI generate --head: the old version is the last commit of the current branch', () => {
+  const repo = buildRepo('hatch-git-head-');
   try {
-    writeFileSync(join(dir, 'f.cc'), 'void f() {\n  int a = 2;\n}\n');
-    const gen = runCli(GEN_CLI, ['--in', 'f.cc', '--branch', 'main', '--out', '-', '--language', 'cpp'], dir);
+    const gen = generateIn(repo, ['--head']);
+    assert.equal(gen.status, 0, gen.stderr);
+    assertReplaces(gen.stdout, 'int a = 2;', 'int a = 4;');
+    assert.equal(generateIn(repo, ['-H']).stdout, gen.stdout, '-H is the same flag');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: each coordinate flag reaches the coordinate it belongs to', () => {
+  const repo = buildRepo('hatch-git-coords-');
+  try {
+    // All three at once, each naming something only IT can reach: the branch and the
+    // commit are `side`, the path is a file no other commit holds. A flag wired to the
+    // wrong coordinate cannot produce this answer.
+    const all = generateIn(repo, [
+      '--branch', 'side', '--commit', repo.s, '--repo-path', 'src/core/side-only.cc',
+    ]);
+    assert.equal(all.status, 0, all.stderr);
+    assert.ok(all.stdout.includes('int side = 1;'), all.stdout);
+
+    const short = generateIn(repo, ['-b', 'side', '-c', repo.s, '--repo-path', 'src/core/side-only.cc']);
+    assert.equal(short.stdout, all.stdout, '-b and -c are the same flags');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: a git refusal comes out named, with a non-zero exit code', () => {
+  const repo = buildRepo('hatch-git-refusal-');
+  try {
+    const off = generateIn(repo, ['--branch', repo.branch, '--commit', repo.s]);
+    assert.notEqual(off.status, 0);
+    assert.match(off.stderr, /GitError/);
+    assert.match(off.stderr, /is not on branch/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: --in-old and a git coordinate together are refused, and so is neither', () => {
+  const repo = buildRepo('hatch-git-both-');
+  try {
+    for (const args of [['--in-old', 'other.cc', '--head'], ['--in-old', 'other.cc', '-b', 'side'], []]) {
+      const r = generateIn(repo, args);
+      assert.notEqual(r.status, 0, `expected a refusal for ${args.join(' ')}`);
+      assert.match(r.stderr, /exactly one source of the OLD version/);
+    }
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: a source asked for twice, or not at all, is answered by naming both', () => {
+  const repo = buildRepo('hatch-cli-source-');
+  const old = ['--in-old', join(repo.dir, 'src', 'core', 'other.cc')];
+  const cases: readonly (readonly [readonly string[], RegExp])[] = [
+    [[...old, '--head'], /exactly one source of the OLD version[\s\S]*not both/],
+    [[...old, '-b', 'side'], /not both/],
+    [[...old, '-c', repo.a], /not both/],
+    [[...old, '--repo-path', 'src/core/other.cc'], /not both/],
+    [[...old, '--head', '-b', 'side', '-c', repo.a], /not both/],
+    [[], /exactly one source of the OLD version/],
+  ];
+  try {
+    for (const [args, expected] of cases) {
+      const r = generateIn(repo, args);
+      assert.notEqual(r.status, 0, `expected a refusal for: ${args.join(' ')}`);
+      assert.match(r.stderr, expected, `for: ${args.join(' ')}`);
+      // The message names every flag involved, so the whole usage is not dumped on top
+      // of it — that is kept for a slip of the FINGERS, where the list is the answer.
+      assert.doesNotMatch(r.stderr, /hatch generate —/, `for: ${args.join(' ')}`);
+    }
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate: a misspelt or valueless option is answered with the option and the usage', () => {
+  const repo = buildRepo('hatch-cli-spelling-');
+  // generateIn appends `--out - --language cpp`, so an option left without a value here
+  // runs into --out — which is exactly the slip being tested.
+  const cases: readonly (readonly [readonly string[], RegExp])[] = [
+    [['--brnach', 'side'], /unknown argument: --brnach[\s\S]*did you mean --branch\?/],
+    [['--repo_path', 'src/core/other.cc'], /did you mean --repo-path\?/],
+    [['--heat'], /did you mean --head\?/],
+    [['--comit', 'x'], /did you mean --commit\?/],
+    [['--head', 'stray'], /unknown argument: stray[\s\S]*a value goes after its option/],
+    [['-b'], /option -b needs a value, and --out is another option/],
+    [['--commit'], /option --commit needs a value, and --out is another option/],
+    [['--repo-path'], /option --repo-path needs a value, and --out is another option/],
+  ];
+  try {
+    for (const [args, expected] of cases) {
+      const r = generateIn(repo, args);
+      assert.notEqual(r.status, 0, `expected a refusal for: ${args.join(' ')}`);
+      assert.match(r.stderr, expected, `for: ${args.join(' ')}`);
+      assert.match(r.stderr, /hatch generate —/, `the usage follows a slip: ${args.join(' ')}`);
+    }
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate --head sits beside the coordinates rather than fighting them', () => {
+  const repo = buildRepo('hatch-cli-head-with-');
+  try {
+    const withHead = generateIn(repo, ['--head', '--repo-path', 'src/core/side-only.cc', '--branch', 'side']);
+    const without = generateIn(repo, ['--repo-path', 'src/core/side-only.cc', '--branch', 'side']);
+    assert.equal(withHead.status, 0, withHead.stderr);
+    assert.equal(withHead.stdout, without.stdout, '--head asks for git, the coordinates say which version');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate --head outside a repository fails with a named error', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-git-nohead-'));
+  try {
+    writeFileSync(join(dir, 'f.cc'), version(4));
+    const gen = runCli(GEN_CLI, ['--in', 'f.cc', '--head', '--out', '-', '--language', 'cpp'], dir);
     assert.notEqual(gen.status, 0);
     assert.match(gen.stderr, /GitError/);
     assert.match(gen.stderr, /needs a git repository/);

@@ -34,7 +34,25 @@ test('a flag sets true, a negated flag sets false, and defaults stay put', () =>
 test('a value option takes the next argument, aliases included', () => {
   assert.equal(parse(['--in', 'a.cc']).in, 'a.cc');
   assert.equal(parse(['-i', 'a.cc']).in, 'a.cc');
-  assert.equal(parse(['-i', '-v']).in, '-v', 'the value is taken as is, even if it looks like a flag');
+  assert.equal(parse(['-i', '-x']).in, '-x', 'a value that only LOOKS like a flag is taken as is');
+  assert.equal(parse(['-i', '-']).in, '-', 'and so is a bare dash, which several options mean');
+});
+
+test('a value that IS another option of the same command is a lost value, not a value', () => {
+  assert.throws(() => parse(['-i', '-v']), /option -i needs a value, and -v is another option/);
+  assert.throws(() => parse(['--in', '--no-config']), /--no-config is another option/);
+  assert.throws(() => parse(['--parents', '--in']), /option --parents needs a value/);
+});
+
+test('a misspelt option is met with the option it is one slip away from', () => {
+  assert.throws(() => parse(['--verbse']), /unknown argument: --verbse\n  did you mean --verbose\?/);
+  assert.throws(() => parse(['--no-cnofig']), /did you mean --no-config\?/);
+  assert.throws(() => parse(['--nosuch']), /unknown argument: --nosuch$/);
+  assert.throws(() => parse(['-q']), /unknown argument: -q$/, 'two-character names are all one edit apart');
+});
+
+test('a bare value with no option in front of it says where it belongs', () => {
+  assert.throws(() => parse(['a.cc']), /unknown argument: a\.cc\n  a value goes after its option/);
 });
 
 test('a value option with nothing after it is an error that names the option', () => {

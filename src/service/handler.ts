@@ -6,6 +6,7 @@ import type {
   ApplyResultMessage,
   GenerateParams,
   GenerateResult,
+  GitSourceParams,
   LanguageParams,
   ProgressMessage,
   RequestMessage,
@@ -21,6 +22,7 @@ import { resolveHunks } from '../core/resolve.ts';
 import {
   AmbiguityError,
   ConfigError,
+  GitError,
   GrammarError,
   HatchError,
   LanguageError,
@@ -31,6 +33,8 @@ import {
 import { generatePatch } from '../generate/pipeline.ts';
 import { adapterForFile, adapterForLanguage, supportedLanguages } from '../lang/adapter.ts';
 import { checkParent } from '../infra/fs.ts';
+import { fileFromGit } from '../infra/git.ts';
+import type { GitSource } from '../infra/git.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { CONFIG_VERSION, loadConfig, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings } from '../infra/config/index.ts';
@@ -75,9 +79,9 @@ function version(): VersionResult {
 }
 
 async function generate(p: GenerateParams, id: number, emit: Emit | undefined): Promise<GenerateResult> {
-  text(p.baseText, 'baseText');
   text(p.newText, 'newText');
   absolutePath(p);
+  const base = await baseOf(p);
 
   const anchor = p.path !== undefined ? dirname(p.path) : undefined;
   const config = loadConfig({
@@ -88,7 +92,7 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
   const settings = config.generate;
 
   const outcome = await generatePatch({
-    oldText: p.baseText,
+    oldText: base.text,
     newText: p.newText,
     language: settings.language ?? undefined,
     path: p.path,
@@ -110,6 +114,7 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
 
   return {
     md: outcome.md,
+    baseSpec: base.spec,
     language: outcome.language,
     warnings: outcome.warnings,
     hunks: outcome.links ?? [],
@@ -117,6 +122,55 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
     outPath: out,
     config: { file: config.file ?? null, settings, origins: config.origins },
   };
+}
+
+/** The old version, sent as text or named in git — exactly one of the two. The service
+ *  opens no files of its own (the new version is an unsaved buffer, and stays one), but
+ *  a base the client does not have cannot be sent: only git holds it. */
+async function baseOf(p: GenerateParams): Promise<{ text: string; spec: string | null }> {
+  if ((p.baseText === undefined) === (p.baseGit === undefined)) {
+    throw new BadRequest(
+      'send exactly one base: params.baseText (the old version as text), or params.baseGit ' +
+        '(the old version out of git — {} for the last commit of the branch you are on)',
+    );
+  }
+  if (p.baseText !== undefined) {
+    text(p.baseText, 'baseText');
+    return { text: p.baseText, spec: null };
+  }
+
+  const source = gitSource(p.baseGit);
+  if (p.path === undefined) {
+    throw new BadRequest(
+      'params.baseGit needs params.path: the repository is found from it, and it names the ' +
+        'file to read inside that repository unless baseGit.repoPath says otherwise',
+    );
+  }
+  const version = await fileFromGit(source, p.path);
+  return { text: version.text, spec: version.spec };
+}
+
+const GIT_COORDINATES = new Set(['branch', 'commit', 'repoPath']);
+
+/** The ONE place the wire names become the resolver's names — `repoPath` is `path`
+ *  there, and both types have nothing but optional fields, so a field left behind
+ *  would be no type error at all, just a coordinate that quietly does nothing.
+ *
+ *  A coordinate misspelt over the wire is refused by name for the same reason: a client
+ *  sending `branch` as `ref` would otherwise get the default and never learn why. */
+function gitSource(value: unknown): GitSource {
+  if (value === null || typeof value !== 'object') throw new BadRequest('params.baseGit must be an object');
+  const wire = value as Record<string, unknown>;
+  for (const [key, coordinate] of Object.entries(wire)) {
+    if (!GIT_COORDINATES.has(key)) {
+      throw new BadRequest(`params.baseGit has no field '${key}'; known: ${[...GIT_COORDINATES].join(', ')}`);
+    }
+    if (typeof coordinate !== 'string' || coordinate === '') {
+      throw new BadRequest(`params.baseGit.${key} must be a non-empty string`);
+    }
+  }
+  const named = wire as GitSourceParams;
+  return { branch: named.branch, commit: named.commit, path: named.repoPath };
 }
 
 function paramOverrides(p: GenerateParams): FlagOverride[] {
@@ -237,6 +291,7 @@ function detailOf(e: HatchError): Record<string, unknown> | undefined {
       ...(e.extension !== undefined ? { extension: e.extension } : {}),
     };
   }
+  if (e instanceof GitError) return e.revision !== undefined ? { revision: e.revision } : undefined;
   if (e instanceof GrammarError) return e.grammar !== undefined ? { grammar: e.grammar } : undefined;
   if (e instanceof ConfigError) return e.file !== undefined ? { file: e.file } : undefined;
   return undefined;

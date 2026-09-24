@@ -164,8 +164,14 @@ hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
 # generate
 hatch generate --in new.cpp --in-old old.cpp --out changes.md   # a file: it has an extension
 
-# ...or take the old version from a git branch
+# ...or take the old version from git: the same file, as of the last commit here
+hatch generate --in src/main.cpp --head --out changes.md
+
+# a branch (its last commit), a single commit, another path inside the repository
 hatch generate --in src/main.cpp --branch master --out changes.md
+hatch generate --in src/main.cpp --commit 1f3ac9d --out changes.md
+hatch generate --in src/main.cpp --branch master --commit 1f3ac9d \
+               --repo-path src/legacy/main.cpp --out changes.md
 ```
 
 `hatch` with no arguments lists the commands, `hatch <command> --help` shows its
@@ -199,8 +205,22 @@ Exit codes, for scripts to rely on:
 ### `generate` options
 ```
 --in,     -i <file>     new version of the file                    [required]
---in-old     <file>     old version (from a file)      [one of --in-old/--branch]
---branch, -b <branch>   old version = <branch>:<--in path> (git)
+--in-old     <file>     old version, read from this path
+--head,   -H            old version from git, every coordinate defaulted:
+                        current branch, its last commit, the path of --in
+--branch, -b <branch>   which branch (default: the one we are on). Alone it
+                        means the last commit of that branch. A BRANCH, local
+                        or remote-tracking: a tag or a raw sha is refused,
+                        those are --commit
+--commit, -c <commit>   which commit (default: the last one of that branch).
+                        Any revision git understands: a sha, a tag, HEAD~3.
+                        Alone it is taken as given; together with --branch it
+                        must be a commit that branch holds, or the run stops
+--repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the
+                        path of --in). Unlike --in-old, which is a path on
+                        disk, this is a path git knows: a relative one is
+                        measured from the repository root, never from the
+                        current directory
 --out,    -o <path>     where to write the .md. A path with no extension (or one
                         ending with a slash, or an existing directory) is a
                         DIRECTORY and gets <name of --in>.md inside it; a path with
@@ -228,6 +248,41 @@ Exit codes, for scripts to rely on:
                         omitted means ./hatch-logs/
 --help,   -h            this help
 ```
+
+#### Where the old version comes from
+
+Exactly one source, and the choice is not a list of modes — it is one file on disk
+(`--in-old`) or git. From git the version is named by three **independent
+coordinates**, and every one of them may be left out; what is missing takes its
+default:
+
+| coordinate | flag | left out means |
+|---|---|---|
+| branch | `--branch` | the branch we are on |
+| commit | `--commit` | the last commit of that branch |
+| path   | `--repo-path` | the path of `--in` inside the repository |
+
+So all three omitted is "this same file, as of the last commit here" — and since
+that names no coordinate at all, it needs a flag of its own to ask for git:
+`--head`. Every other combination follows from the table: `--branch master` is the
+last commit of `master`, `--commit 1f3ac9d` is that commit of this same file,
+`--repo-path` swaps the file without touching which commit it is read from.
+
+A commit names a version on its own, so `--commit 1f3ac9d` is taken as given, wherever
+that commit lives. The branch beside it is a **claim about** it — and a claim is worth
+checking, which makes `--branch` with `--commit` the one combination that can be
+refused: a commit the branch never held stops the run instead of quietly handing back a
+version out of another history.
+
+Each coordinate is also held to its own kind. `--branch` takes a **branch** (local or
+remote-tracking); a tag or a raw sha is refused with a pointer to `--commit`, which
+takes any revision git understands. `--repo-path` takes a **file**: a directory is
+refused rather than handed back as a printed tree listing.
+
+`--in-old` is untouched by all of this — an old version that lives in no repository
+is still a path on disk, and always will be. That is also the difference to keep in
+mind between the two path flags: `--in-old` is a path your shell can complete,
+`--repo-path` is a path git can look up.
 
 #### Anchoring options (how much context a hunk carries)
 ```

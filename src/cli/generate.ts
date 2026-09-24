@@ -6,7 +6,7 @@ import type { GenerateOutcome } from '../generate/pipeline.ts';
 import { printPattern } from '../core/hatch-printer.ts';
 import { reviewHunks } from '../generate/agreement.ts';
 import type { Confirm } from '../generate/agreement.ts';
-import { fileFromBranch } from '../infra/git.ts';
+import { fileFromGit } from '../infra/git.ts';
 import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
@@ -22,6 +22,8 @@ interface Options {
   in?: string;
   inOld?: string;
   branch?: string;
+  commit?: string;
+  repoPath?: string;
   out?: string;
   language?: string;
   config?: string;
@@ -33,6 +35,7 @@ interface Options {
   minSiblings?: unknown;
   siblingDetailBase?: unknown;
   bridgeGap?: unknown;
+  head: boolean;
   requireParents: boolean;
   mirror: boolean;
   downloadGrammars: boolean;
@@ -47,8 +50,32 @@ interface Options {
 const USAGE = `hatch generate — synthesize .md instructions from two versions of a file
 
   --in,     -i <file>     new version of the file                    [required]
-  --in-old     <file>     old version (from a file)      [one of --in-old/--branch]
-  --branch, -b <branch>   old version = <branch>:<--in path> (git)
+
+The OLD version — exactly one source, either a file on disk or git.
+
+  --in-old     <file>     old version, read from this path
+
+From git it is named by three independent coordinates, and every one of them may be
+left out: what is missing takes its default, so --head alone means "this same file,
+as of the last commit here". Naming any coordinate is itself the ask for git.
+
+  --head,   -H            take the old version from git. On its own that is every
+                          coordinate defaulted: current branch, its last commit, the
+                          path of --in; beside the others it is simply the ask for git
+  --branch, -b <branch>   which branch (default: the one we are on). Alone it means
+                          the last commit of that branch. A BRANCH, local or remote-
+                          tracking: a tag or a raw sha is refused, they are --commit
+  --commit, -c <commit>   which commit (default: the last one of that branch). Any
+                          revision git understands: a sha, a tag, HEAD~3. A commit
+                          names a version on its own and is taken as given; named
+                          TOGETHER with --branch it must be one that branch holds, or
+                          the run stops instead of reading another history
+  --repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the path
+                          of --in — the same file, an older version of it). Unlike
+                          --in-old, which is a path on disk, this one is a path git
+                          knows: a relative one is measured from the repository root,
+                          never from the current directory
+
   --out,    -o <path>     where to write the .md. A directory (existing, or ending
                           with a slash) gets <name of --in>.md inside it; any other
                           path is written as is and overwritten. Missing directories
@@ -120,6 +147,7 @@ const SPEC: ArgSpec<Options> = {
     '--exact': 'exact', '-e': 'exact',
     '--debug': 'debug', '-v': 'debug',
     '--help': 'help', '-h': 'help',
+    '--head': 'head', '-H': 'head',
     '--require-parents': 'requireParents',
     '--mirror': 'mirror',
     '--download-grammars': 'downloadGrammars',
@@ -130,6 +158,8 @@ const SPEC: ArgSpec<Options> = {
     '--in': 'in', '-i': 'in',
     '--in-old': 'inOld',
     '--branch': 'branch', '-b': 'branch',
+    '--commit': 'commit', '-c': 'commit',
+    '--repo-path': 'repoPath',
     '--out': 'out', '-o': 'out',
     '--language': 'language', '-l': 'language',
     '--config': 'config',
@@ -147,6 +177,7 @@ const SPEC: ArgSpec<Options> = {
 };
 
 const INITIAL: Options = {
+  head: false,
   requireParents: false,
   mirror: false,
   downloadGrammars: false,
@@ -216,22 +247,48 @@ function makeTracer(log: Logger): Tracer {
   };
 }
 
-async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<void> {
+/** What the OLD version was read from, kept for the error report: an error deep in
+ *  synthesis points into this text, and the reader has to be told which text it is. */
+interface OldVersion {
+  readonly text: string;
+  readonly spec: string;
+}
+
+const GIT_FLAGS = '--head / --branch / --commit / --repo-path';
+
+function asksGit(opts: Options): boolean {
+  return opts.head || opts.branch !== undefined || opts.commit !== undefined || opts.repoPath !== undefined;
+}
+
+/** A usage question, answered before a single file is opened: a wrong invocation has
+ *  to be told apart from a file that is not there. */
+function requireOneOldSource(opts: Options): void {
+  const one = `exactly one source of the OLD version: --in-old <file>, or git (${GIT_FLAGS})`;
+  if (opts.inOld !== undefined && asksGit(opts)) throw new Error(`provide ${one} — not both`);
+  if (opts.inOld === undefined && !asksGit(opts)) throw new Error(`provide ${one}`);
+}
+
+async function oldVersion(opts: Options, inPath: string): Promise<OldVersion> {
+  return opts.inOld !== undefined
+    ? { text: readInputFile(opts.inOld, '--in-old'), spec: opts.inOld }
+    : fileFromGit({ branch: opts.branch, commit: opts.commit, path: opts.repoPath }, inPath);
+}
+
+async function run(opts: Options, config: ResolvedConfig, log: Logger, seen: Seen): Promise<void> {
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
-  if ((opts.inOld === undefined) === (opts.branch === undefined)) {
-    throw new Error('provide exactly one source of the OLD version: --in-old <file> OR --branch <branch>');
-  }
+  requireOneOldSource(opts);
 
   const newStr = readInputFile(opts.in, '--in');
-  const oldStr =
-    opts.inOld !== undefined ? readInputFile(opts.inOld, '--in-old') : await fileFromBranch(opts.branch!, opts.in);
+  const old = await oldVersion(opts, opts.in);
+  seen.old = old;
+  log.trace(`old version: ${old.spec} (${old.text.length} bytes)`);
 
   const settings = config.generate;
   const review = opts.agreement ? makeStdinConfirm() : null;
   let outcome: GenerateOutcome;
   try {
     outcome = await generatePatch({
-      oldText: oldStr,
+      oldText: old.text,
       newText: newStr,
       language: settings.language ?? undefined,
       path: opts.in,
@@ -260,6 +317,10 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger): Promise<
   log.note(`generated ${outcome.hunkCount} hunk(s) → ${outPath}`);
 }
 
+interface Seen {
+  old?: OldVersion;
+}
+
 export async function main(argv: readonly string[]): Promise<void> {
   let opts: Options;
   try {
@@ -280,6 +341,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     header: logHeader('generate', argv),
   });
 
+  const seen: Seen = {};
   try {
     const config = loadConfig({
       explicitPath: opts.config,
@@ -292,22 +354,18 @@ export async function main(argv: readonly string[]): Promise<void> {
       return;
     }
     if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
-    await run(opts, config, log);
+    await run(opts, config, log, seen);
     if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
   } catch (e) {
-    process.exitCode = log.fail(e, errorContext(opts));
+    process.exitCode = log.fail(e, errorContext(opts, seen));
   } finally {
     log.close();
   }
 }
 
-function errorContext(opts: Options): { source?: string; sourcePath?: string } {
-  if (opts.inOld === undefined) return {};
-  try {
-    return { source: readInputFile(opts.inOld, '--in-old'), sourcePath: opts.inOld };
-  } catch {
-    return { sourcePath: opts.inOld };
-  }
+function errorContext(opts: Options, seen: Seen): { source?: string; sourcePath?: string } {
+  if (seen.old !== undefined) return { source: seen.old.text, sourcePath: seen.old.spec };
+  return opts.inOld !== undefined ? { sourcePath: opts.inOld } : {};
 }
 
 if (invokedDirectly(import.meta.url)) {

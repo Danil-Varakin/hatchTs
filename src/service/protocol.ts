@@ -6,7 +6,7 @@ export type { HunkLink, LinkFailure, LinkStatus, ResolveResult, Span } from '../
 export type { PartialLimits, SynthLimits } from '../generate/synth.ts';
 export type { GenerateSettings } from '../infra/config/index.ts';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface RequestMessage {
   readonly id: number;
@@ -38,8 +38,23 @@ export interface LanguageParams {
   readonly allowDownload?: boolean;
 }
 
+/** The OLD version NAMED instead of sent: the same three coordinates the CLI takes,
+ *  each one optional, what is missing taking its default — the branch we are on, its
+ *  last commit, the path of `params.path` inside the repository. All three left out
+ *  (`baseGit: {}`) is "this same file, as of the last commit here".
+ *
+ *  Needs `params.path`: the repository is found from it, and it supplies the default
+ *  path inside that repository. */
+export interface GitSourceParams {
+  readonly branch?: string;
+  readonly commit?: string;
+  readonly repoPath?: string;
+}
+
 export interface GenerateParams extends LanguageParams {
-  readonly baseText: string;
+  /** The old version as text. Exactly one of `baseText` and `baseGit`. */
+  readonly baseText?: string;
+  readonly baseGit?: GitSourceParams;
   readonly newText: string;
   readonly exact?: boolean;
   readonly bridgeGap?: number;
@@ -72,6 +87,8 @@ export interface AppliedConfig {
 
 export interface GenerateResult {
   readonly md: string;
+  /** `<revision>:<path>` when the base came out of git, null when it was sent as text. */
+  readonly baseSpec: string | null;
   readonly language: string | undefined;
   readonly warnings: readonly string[];
   readonly hunks: readonly HunkLink[];

@@ -13,6 +13,8 @@ import { PROTOCOL_VERSION } from '../../src/service/protocol.ts';
 import type { ProgressMessage, ResponseMessage, ServiceError } from '../../src/service/protocol.ts';
 import type { HunkLink } from '../../src/core/resolve.ts';
 import { hatchMd } from '../helpers.ts';
+import { buildRepo, version } from '../git-repo.ts';
+import type { Repo } from '../git-repo.ts';
 
 const BASE = ['namespace f {', 'void a() {', '  one();', '}', '}', ''].join('\n');
 const NEW = ['namespace f {', 'void a() {', '  one();', '  two();', '}', '}', ''].join('\n');
@@ -84,6 +86,118 @@ test('service generate: the language comes from path when none is given', async 
     }),
   );
   assert.match(String(result['md']), /^# match cpp$/m);
+});
+
+// ── generate: the base named in git instead of sent ──────────────────────────
+
+async function generateGit(
+  repo: Repo,
+  params: Record<string, unknown>,
+  id = 30,
+): Promise<ResponseMessage> {
+  return handle({
+    id,
+    method: 'generate',
+    params: { newText: version(4), language: 'cpp', path: repo.inPath, ...params },
+  });
+}
+
+test('service generate: baseGit {} is the last commit of the branch we are on', async () => {
+  const repo = buildRepo('hatch-svc-git-');
+  try {
+    const result = ok(await generateGit(repo, { baseGit: {} }));
+    assert.equal(result['baseSpec'], 'HEAD:src/core/f.cc');
+    assert.equal(result['reproducesNew'], true);
+    assert.match(String(result['md']), /int a = 4;/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service generate: every coordinate travels, and the reply says what was read', async () => {
+  const repo = buildRepo('hatch-svc-coords-');
+  try {
+    const byCommit = ok(await generateGit(repo, { baseGit: { commit: repo.a } }));
+    assert.equal(byCommit['baseSpec'], `${repo.a}:src/core/f.cc`);
+
+    const byBranch = ok(await generateGit(repo, { baseGit: { branch: 'side' } }));
+    assert.equal(byBranch['baseSpec'], 'side:src/core/f.cc');
+
+    const byPath = ok(await generateGit(repo, { baseGit: { repoPath: 'src/core/other.cc' } }));
+    assert.equal(byPath['baseSpec'], 'HEAD:src/core/other.cc');
+
+    const all = ok(await generateGit(repo, {
+      baseGit: { branch: 'side', commit: repo.s, repoPath: 'src/core/side-only.cc' },
+    }));
+    assert.equal(all['baseSpec'], `${repo.s}:src/core/side-only.cc`);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service generate: a base sent as text still reports no git spec', async () => {
+  const result = ok(
+    await handle({ id: 31, method: 'generate', params: { baseText: BASE, newText: NEW, language: 'cpp' } }),
+  );
+  assert.equal(result['baseSpec'], null);
+});
+
+test('service generate: exactly one base — neither and both are refused', async () => {
+  const repo = buildRepo('hatch-svc-one-');
+  try {
+    const both = failed(await generateGit(repo, { baseText: BASE, baseGit: {} }));
+    assert.equal(both.kind, 'BadRequest');
+    assert.match(both.message, /exactly one base/);
+
+    const neither = failed(await generateGit(repo, {}));
+    assert.equal(neither.kind, 'BadRequest');
+    assert.match(neither.message, /exactly one base/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service generate: baseGit without a path cannot know which repository, and says so', async () => {
+  const error = failed(
+    await handle({ id: 32, method: 'generate', params: { newText: NEW, language: 'cpp', baseGit: {} } }),
+  );
+  assert.equal(error.kind, 'BadRequest');
+  assert.match(error.message, /params\.baseGit needs params\.path/);
+});
+
+test('service generate: a baseGit that is not a coordinate object is refused by name', async () => {
+  const repo = buildRepo('hatch-svc-shape-');
+  try {
+    for (const [baseGit, expected] of [
+      ['side', /must be an object/],
+      [{ ref: 'side' }, /has no field 'ref'; known: branch, commit, repoPath/],
+      [{ branch: 5 }, /params\.baseGit\.branch must be a non-empty string/],
+      [{ commit: '' }, /params\.baseGit\.commit must be a non-empty string/],
+    ] as const) {
+      const error = failed(await generateGit(repo, { baseGit }));
+      assert.equal(error.kind, 'BadRequest', JSON.stringify(baseGit));
+      assert.match(error.message, expected);
+    }
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service generate: a git refusal crosses the wire as GitError, with the revision', async () => {
+  const repo = buildRepo('hatch-svc-refuse-');
+  try {
+    const error = failed(await generateGit(repo, { baseGit: { branch: 'nope' } }));
+    assert.equal(error.kind, 'GitError');
+    assert.equal(error.exitCode, 1);
+    assert.match(error.message, /--branch nope: no such branch/);
+    assert.equal(error.detail?.['revision'], 'nope');
+
+    const off = failed(await generateGit(repo, { baseGit: { branch: repo.branch, commit: repo.s } }));
+    assert.equal(off.kind, 'GitError');
+    assert.match(off.message, /is not on branch/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
 });
 
 test('service generate: progress arrives as its own messages, never as the reply', async () => {

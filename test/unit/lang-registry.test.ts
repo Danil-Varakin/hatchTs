@@ -7,6 +7,13 @@ import { synthesize } from '../../src/generate/synth.ts';
 import { printHatchFile } from '../../src/generate/printer.ts';
 import { adapterForLanguage, adapterForFile } from '../../src/lang/adapter.ts';
 import { hatchMd } from '../helpers.ts';
+import type { SourceMap } from '../../src/lang/source-map.ts';
+
+// depthAt / enclosingEnd жили в SourceMap, но в src/ их не звал никто — только тесты.
+// Оба выводятся из enclosing(), который возвращает спаны от самого внутреннего.
+const depthAt = (map: SourceMap, pos: number): number => map.enclosing(pos).length;
+const enclosingEnd = (map: SourceMap, pos: number): number => map.enclosing(pos)[0]?.close ?? map.eof;
+
 
 interface Case {
   lang: string;
@@ -104,12 +111,12 @@ for (const c of CASES) {
     const canon = adapter.normalize(c.source);
     const inBody = canon.indexOf(adapter.normalize(c.body));
     assert.notEqual(inBody, -1);
-    assert.ok(map.depthAt(inBody) >= 1, `depth ${map.depthAt(inBody)}`);
+    assert.ok(depthAt(map, inBody) >= 1, `depth ${depthAt(map, inBody)}`);
     const spans = map.enclosing(inBody);
-    assert.ok(spans.length >= 1, 'тело функции — блок');
+    assert.ok(spans.length >= 1, 'the body of a function is a block');
     const withHeader = spans.filter((s) => s.headerStart !== undefined);
-    assert.ok(withHeader.length >= 1, 'у блока есть заголовок');
-    assert.ok(withHeader.every((s) => s.headerStart! < s.open), 'заголовок непуст');
+    assert.ok(withHeader.length >= 1, 'the block has a header');
+    assert.ok(withHeader.every((s) => s.headerStart! < s.open), 'the header is not empty');
 
     const md = hatchMd(
       [{ match: `...\n${c.header}\n...\n${c.body}\n>>>\n...`, patch: '\n  c();' }],
@@ -118,8 +125,8 @@ for (const c of CASES) {
     const { source, edits } = applyAll(c.source, parseHatchFile(md), adapter);
     assert.equal(edits.length, 1);
     const at = source.indexOf('c();');
-    assert.ok(at > source.indexOf(c.body), 'правка после якоря тела');
-    assert.ok(at > source.indexOf('first'), 'правка во ВТОРОЙ функции');
+    assert.ok(at > source.indexOf(c.body), 'the edit lands after the body anchor');
+    assert.ok(at > source.indexOf('first'), 'the edit lands in the SECOND function');
   });
 
   test(`${c.lang}: generate round-trip (synth → .md → apply == new version)`, async () => {

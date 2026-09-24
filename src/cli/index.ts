@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-import { readFileSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { HatchError } from '../core/errors.ts';
 import { renderError } from '../infra/log.ts';
-import { CONFIG_VERSION } from '../infra/config/schema.ts';
+import { CONFIG_VERSION } from '../infra/config/index.ts';
+import { packageIdentity } from '../infra/version.ts';
+import { invokedDirectly } from '../infra/entry.ts';
 
 interface Command {
   readonly summary: string;
@@ -79,27 +78,10 @@ export async function main(argv: readonly string[]): Promise<void> {
 }
 
 function version(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(import.meta.dirname, '..', '..', 'package.json'), 'utf8')) as {
-      version?: string;
-      name?: string;
-    };
-    return `${pkg.name ?? 'hatch'} ${pkg.version ?? '0.0.0'} (config schema v${CONFIG_VERSION})`;
-  } catch {
-    return `hatch (version unknown; config schema v${CONFIG_VERSION})`;
-  }
+  const pkg = packageIdentity();
+  return `${pkg.name} ${pkg.version} (config schema v${CONFIG_VERSION})`;
 }
 
-function invokedDirectly(): boolean {
-  const argv1 = process.argv[1];
-  if (argv1 === undefined) return false;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false; 
-  }
-}
-
-if (invokedDirectly()) {
+if (invokedDirectly(import.meta.url)) {
   await main(process.argv.slice(2));
 }

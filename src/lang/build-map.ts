@@ -18,12 +18,6 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);}
   const inside = (s: BlockSpan, pos: number): boolean => s.open < pos && pos <= s.close;
 
-  const depthOf = (pos: number): number => {
-    let d = 0;
-    for (const s of spans) if (inside(s, pos)) d++;
-    return d;
-  };
-
   return {
     eof,
 
@@ -33,34 +27,24 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
       return text.startsWith(norm, pos) && boundaryOk(text, norm, pos);
     },
 
-    occurrences(norm: string, from: number, to: number): number[] {
+    occurrences(norm: string, from: number, to: number): Iterable<number> {
       assertNorm(norm);
       assertPos(from, 'from');
       assertPos(to, 'to');
       assertFromTo(from, to);
-      const out: number[] = [];
+      return scan(text, norm, from, to);
+    },
+
+    countOccurrences(norm: string, from: number, to: number): number {
+      assertNorm(norm);
+      assertPos(from, 'from');
+      assertPos(to, 'to');
+      assertFromTo(from, to);
+      let n = 0;
       for (let p = text.indexOf(norm, from); p !== -1 && p <= to; p = text.indexOf(norm, p + 1)) {
-        if (boundaryOk(text, norm, p)) out.push(p);
+        if (boundaryOk(text, norm, p)) n++;
       }
-      return out;
-    },
-
-    enclosingEnd(pos: number): number {
-      assertPos(pos, 'pos');
-      let bestOpen = -1;
-      let end = eof;
-      for (const s of spans) {
-        if (inside(s, pos) && s.open > bestOpen) {
-          bestOpen = s.open;
-          end = s.close;
-        }
-      }
-      return end;
-    },
-
-    depthAt(pos: number): number {
-      assertPos(pos, 'pos');
-      return depthOf(pos);
+      return n;
     },
 
     enclosing(pos: number): BlockSpan[] {
@@ -88,9 +72,15 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     },
 
     toCanonPos(origPos: number): number {
-      return canon.toCanonPos(origPos); 
+      return canon.toCanonPos(origPos);
     },
   };
+}
+
+function* scan(text: string, norm: string, from: number, to: number): Generator<number> {
+  for (let p = text.indexOf(norm, from); p !== -1 && p <= to; p = text.indexOf(norm, p + 1)) {
+    if (boundaryOk(text, norm, p)) yield p;
+  }
 }
 
 function cloneSpan(s: BlockSpan): BlockSpan {

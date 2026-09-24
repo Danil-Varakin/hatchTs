@@ -1,10 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createLogger, renderError, resolveLogPath, logHeader, DEFAULT_LOG_DIR } from '../../src/infra/log.ts';
+import {
+  createLogger,
+  createLoggerOrWarn,
+  renderError,
+  resolveLogPath,
+  logHeader,
+  DEFAULT_LOG_DIR,
+} from '../../src/infra/log.ts';
 import { MatchError, AmbiguityError, ParseError, ConfigError } from '../../src/core/errors.ts';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'hatch-log-'));
@@ -64,9 +71,33 @@ test('trace reaches the file even when the terminal is quiet', () => {
 });
 
 test('a log target that cannot be opened is loud, not silently skipped', () => {
-  const taken = join(tmp(), 'run.log');
-  createLogger({ logPath: taken }).close();
-  assert.throws(() => createLogger({ logPath: taken }), ConfigError);
+  const blocker = join(tmp(), 'blocker');
+  writeFileSync(blocker, 'x');
+  assert.throws(() => createLogger({ logPath: join(blocker, 'deep', 'run.log') }), ConfigError);
+});
+
+test('the same log name can be reused: the file is overwritten, not refused', () => {
+  const path = join(tmp(), 'run.log');
+  const first = createLogger({ logPath: path, header: ['# first'] });
+  first.info('one');
+  first.close();
+
+  const second = createLogger({ logPath: path, header: ['# second'] });
+  second.info('two');
+  second.close();
+
+  const text = readFileSync(path, 'utf8');
+  assert.ok(text.includes('# second') && text.includes('two'), text);
+  assert.ok(!text.includes('# first'), 'the earlier run must be overwritten, not appended to');
+});
+
+test('createLoggerOrWarn: a log that cannot be opened does not take the command down', () => {
+  const blocker = join(tmp(), 'blocker');
+  writeFileSync(blocker, 'x');
+  const log = createLoggerOrWarn({ logPath: join(blocker, 'deep', 'run.log'), header: ['# head'] });
+  assert.equal(log.logPath, undefined, 'no file, and logPath must say so');
+  log.trace('the command carries on');
+  log.close();
 });
 
 test('missing directories are created for the user', () => {
@@ -86,7 +117,7 @@ test('no log path → no file anywhere, and no complaint', () => {
   assert.deepEqual(readdirSync(dir), ['sub']);
 });
 
-// ── rendering (Г4) ───────────────────────────────────────────────────────────────
+// ── rendering ─────────────────────────────────────────────────────────────────
 
 const SOURCE = 'void f() {\n  a();\n  b();\n}\n';
 

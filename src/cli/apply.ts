@@ -1,15 +1,16 @@
-import { readFileSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { applyAll } from '../core/apply.ts';
 import type { AppliedEdit } from '../core/apply.ts';
-import { writeFileAtomic } from '../infra/fs.ts';
+import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
+import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
-import { HatchError } from '../core/errors.ts';
-import { createLogger, resolveLogPath, logHeader } from '../infra/log.ts';
+import { createLoggerOrWarn, resolveLogPath, logHeader } from '../infra/log.ts';
 import type { Logger } from '../infra/log.ts';
+import { invokedDirectly } from '../infra/entry.ts';
+import { parseArgs } from './args.ts';
+import type { ArgSpec } from './args.ts';
 
 interface Options {
   match?: string;
@@ -27,47 +28,41 @@ const USAGE = `hatch apply — apply .md instructions to a source file
 
   --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
   --in,    -i <file>      source file to patch                     [required]
-  --out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
+  --out,   -o <path>      where to write the result   [required unless --dry-run/--verify]
+                          a directory (existing, or ending with a slash) gets
+                          <name of --in> inside it; any other path is written as is
+                          and overwritten. Missing directories are created, and a
+                          relative path is measured from the repository root.
+                          \`-\` writes to stdout
   --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
                           the file extension)
   --dry-run               show planned edits, write nothing
   --verify                exit code only (0 = applies cleanly), write nothing
   --download-grammars     allow fetching the language's grammar if it is missing
                           (off by default; npm run grammars fetches them once)
-  --log [place]           also write a full log; every run gets its own file. A place
-                          that is a directory (or ends in /) receives a generated name,
-                          otherwise it IS the name; omitted → ./hatch-logs/
+  --log [place]           also write a full log. A place that is a directory (or ends
+                          in /) receives a generated name, so every run gets its own
+                          file; any other place IS the name and is overwritten.
+                          Omitted → ./hatch-logs/. A log that cannot be opened is a
+                          warning, not a failure: the run goes on without it
   --help,  -h             this help`;
 
-function parseArgs(argv: readonly string[]): Options {
-  const opts: Options = { dryRun: false, verify: false, downloadGrammars: false, help: false };
-  const takesValue: Record<string, 'match' | 'in' | 'out' | 'language'> = {
+const SPEC: ArgSpec<Options> = {
+  flags: {
+    '--dry-run': 'dryRun',
+    '--verify': 'verify',
+    '--download-grammars': 'downloadGrammars',
+    '--help': 'help',
+    '-h': 'help',
+  },
+  values: {
     '--match': 'match', '-m': 'match',
     '--in': 'in', '-i': 'in',
     '--out': 'out', '-o': 'out',
     '--language': 'language', '-l': 'language',
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === '--log') {
-      const next = argv[i + 1];
-      opts.log = next !== undefined && !next.startsWith('-') ? argv[++i]! : '';
-      continue;
-    }
-    if (a === '--dry-run') opts.dryRun = true;
-    else if (a === '--verify') opts.verify = true;
-    else if (a === '--download-grammars') opts.downloadGrammars = true;
-    else if (a === '--help' || a === '-h') opts.help = true;
-    else {
-      const key = takesValue[a];
-      if (key === undefined) throw new Error(`unknown argument: ${a}`);
-      const val = argv[++i];
-      if (val === undefined) throw new Error(`option ${a} needs a value`);
-      opts[key] = val;
-    }
-  }
-  return opts;
-}
+  },
+  optional: { '--log': 'log' },
+};
 
 function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
   if (opts.language !== undefined) return adapterForLanguage(opts.language);
@@ -91,11 +86,11 @@ async function run(opts: Options, log: Logger): Promise<void> {
     throw new Error('missing --out <file> (or use --dry-run / --verify)');
   }
 
-  const file = parseHatchFile(readFileSync(opts.match, 'utf8'));
+  const file = parseHatchFile(readInputFile(opts.match, '--match'));
   const adapter = resolveAdapter(opts, file.language);
   await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
-  const source = readFileSync(opts.in, 'utf8');
+  const source = readInputFile(opts.in, '--in');
   log.trace(`source: ${opts.in} (${source.length} bytes), ${file.hunks.length} hunk(s)`);
   const { source: result, edits } = applyAll(source, file, adapter);
 
@@ -108,14 +103,21 @@ async function run(opts: Options, log: Logger): Promise<void> {
     log.info(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
     return;
   }
-  writeFileAtomic(opts.out!, result);
-  log.info(`applied ${edits.length} hunk(s) → ${opts.out}`);
+  const target = resolveOutPath({ inPath: opts.in, out: opts.out!, suffix: '' }).path;
+  if (target === undefined) {
+    process.stdout.write(result);
+    log.note(`applied ${edits.length} hunk(s) → stdout`);
+    return;
+  }
+  ensureParent(target);
+  writeFileAtomic(target, result);
+  log.info(`applied ${edits.length} hunk(s) → ${target}`);
 }
 
 export async function main(argv: readonly string[]): Promise<void> {
   let opts: Options;
   try {
-    opts = parseArgs(argv);
+    opts = parseArgs(argv, SPEC, { dryRun: false, verify: false, downloadGrammars: false, help: false });
   } catch (e) {
     process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
     process.exitCode = 1;
@@ -126,17 +128,10 @@ export async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  let log: Logger;
-  try {
-    log = createLogger({
-      ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'apply') } : {}),
-      header: logHeader('apply', argv),
-    });
-  } catch (e) {
-    process.stderr.write(`${(e as Error).message}\n`);
-    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
-    return;
-  }
+  const log = createLoggerOrWarn({
+    ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'apply') } : {}),
+    header: logHeader('apply', argv),
+  });
 
   try {
     await run(opts, log);
@@ -153,7 +148,7 @@ function errorContext(opts: Options): { source?: string; sourcePath?: string; md
   if (opts.in !== undefined) {
     ctx.sourcePath = opts.in;
     try {
-      ctx.source = readFileSync(opts.in, 'utf8');
+      ctx.source = readInputFile(opts.in, '--in');
     } catch {
     }
   }
@@ -161,6 +156,6 @@ function errorContext(opts: Options): { source?: string; sourcePath?: string; md
   return ctx;
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (invokedDirectly(import.meta.url)) {
   await main(process.argv.slice(2));
 }

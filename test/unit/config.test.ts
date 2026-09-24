@@ -33,6 +33,20 @@ function withTempDir(body: (dir: string) => void | Promise<void>): () => Promise
   };
 }
 
+function withHome(dir: string, body: () => void): void {
+  const keys = ['HOME', 'USERPROFILE'] as const;
+  const saved = keys.map((k) => [k, process.env[k]] as const);
+  try {
+    for (const k of keys) process.env[k] = dir;
+    body();
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
 function writeConfig(dir: string, body: unknown): string {
   const file = join(dir, CONFIG_FILE_NAME);
   writeFileSync(file, typeof body === 'string' ? body : JSON.stringify(body));
@@ -166,6 +180,45 @@ test('the config is searched for UPWARDS from the input file', withTempDir((dir)
   const config = loadConfig({ startDir: deep, useFile: true });
   assert.equal(config.generate.maxSiblings, 1);
   assert.equal(config.file, file);
+}));
+
+test('the search STOPS at the repository root', withTempDir((dir) => {
+  const above = writeConfig(dir, { version: 1, generate: { siblings: { max: 1 } } });
+  const repo = join(dir, 'repo');
+  const deep = join(repo, 'src', 'net');
+  mkdirSync(join(repo, '.git'), { recursive: true });
+  mkdirSync(deep, { recursive: true });
+
+  assert.equal(findConfigFile(deep), undefined);
+  const bounded = loadConfig({ startDir: deep, useFile: true });
+  assert.equal(bounded.generate.maxSiblings, DEFAULT_SETTINGS.maxSiblings);
+  assert.equal(bounded.file, undefined);
+
+  const own = writeConfig(repo, { version: 1, generate: { siblings: { max: 2 } } });
+  assert.equal(findConfigFile(deep), own);
+
+  assert.equal(loadConfig({ startDir: deep, useFile: true, explicitPath: above }).generate.maxSiblings, 1);
+}));
+
+test('a .git FILE ends the project too (worktree, submodule)', withTempDir((dir) => {
+  writeConfig(dir, { version: 1, generate: { siblings: { max: 1 } } });
+  const repo = join(dir, 'linked');
+  const deep = join(repo, 'src');
+  mkdirSync(deep, { recursive: true });
+  writeFileSync(join(repo, '.git'), 'gitdir: /elsewhere/.git/worktrees/linked\n');
+
+  assert.equal(findConfigFile(deep), undefined);
+}));
+
+test('a config in the HOME directory is not inherited by projects below it', withTempDir((dir) => {
+  const forgotten = writeConfig(dir, { version: 1, generate: { siblings: { max: 1 } } });
+  const deep = join(dir, 'projects', 'app');
+  mkdirSync(deep, { recursive: true });
+
+  withHome(dir, () => {
+    assert.equal(findConfigFile(deep), undefined);
+    assert.equal(findConfigFile(dir), forgotten);
+  });
 }));
 
 test('--no-config ignores the file, --config demands an existing one', withTempDir((dir) => {

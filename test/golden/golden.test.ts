@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { synthesize } from '../../src/generate/synth.ts';
@@ -82,10 +82,15 @@ for (const language of languages) {
         const applied = applyAll(oldStr, parseHatchFile(md), adapter).source;
         assert.equal(applied, newStr, 'applying the generated .md did not reproduce the new file');
 
-        if (UPDATE || !existsSync(goldenPath)) {
+        if (UPDATE) {
           writeFileSync(goldenPath, md);
           return;
         }
+        assert.ok(
+          existsSync(goldenPath),
+          `no golden for ${language}/generate/${n}: run \`UPDATE_GOLDEN=1 npm test\`, ` +
+            'read the produced .md, and commit it only if it is what you meant',
+        );
         assert.equal(
           md,
           readFileSync(goldenPath, 'utf8'),
@@ -104,10 +109,14 @@ for (const language of languages) {
       .sort((a, b) => a - b);
 
     for (const n of numbers) {
-      const sourceFile = files.find((f) => f.startsWith(`test${n}.`) && !f.endsWith('.md'));
+      const sourceFile = files.find(
+        (f) => f.startsWith(`test${n}.`) && !f.endsWith('.md') && !f.startsWith(`test${n}.expected.`),
+      );
       if (sourceFile === undefined) continue;
       const source = readFileSync(join(applyDir, sourceFile), 'utf8');
       const md = readFileSync(join(applyDir, `test${n}.md`), 'utf8');
+
+      const expectedPath = join(applyDir, `test${n}.expected${extname(sourceFile)}`);
 
       test(`golden ${language}/apply/${n}${describe(source)}`, async () => {
         const adapter = await adapterFor(language);
@@ -119,6 +128,21 @@ for (const language of languages) {
         }
         const result = run();
         assert.notEqual(result, source, 'the patch applied but changed nothing');
+
+        if (UPDATE) {
+          writeFileSync(expectedPath, result);
+          return;
+        }
+        assert.ok(
+          existsSync(expectedPath),
+          `no expected result for ${language}/apply/${n}: run \`UPDATE_GOLDEN=1 npm test\`, ` +
+            'read the produced file, and commit it only if it is what you meant',
+        );
+        assert.equal(
+          result,
+          readFileSync(expectedPath, 'utf8'),
+          'applying these instructions no longer produces the recorded result',
+        );
       });
     }
   }

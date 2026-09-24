@@ -1,5 +1,5 @@
 import { mkdirSync, openSync, writeSync, closeSync, statSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { HatchError, MatchError, AmbiguityError, ParseError, ConfigError } from '../core/errors.ts';
 
 // ── where a log file goes ────────────────────────────────────────────────────────
@@ -15,7 +15,7 @@ export function resolveLogPath(
   const name = `${stamp(now)}-${command}-${pid}.log`;
   if (place === undefined || place === '') return resolve(join(DEFAULT_LOG_DIR, name));
   const looksLikeDir = place.endsWith('/') || place.endsWith('\\') || isDirectory(place);
-  const full = isAbsolute(place) ? place : resolve(place);
+  const full = resolve(place);
   return looksLikeDir ? join(full, name) : full;
 }
 
@@ -56,7 +56,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   if (path !== undefined) {
     try {
       mkdirSync(dirOf(path), { recursive: true });
-      fd = openSync(path, 'ax', 0o600);
+      fd = openSync(path, 'w', 0o600);
     } catch (e) {
       throw new ConfigError(`cannot open log file '${path}': ${(e as Error).message}`);
     }
@@ -97,6 +97,17 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       }
     },
   };
+}
+
+export function createLoggerOrWarn(options: LoggerOptions = {}): Logger {
+  if (options.logPath === undefined) return createLogger(options);
+  try {
+    return createLogger(options);
+  } catch (e) {
+    process.stderr.write(`warning: ${(e as Error).message}; continuing without a log file\n`);
+    const { logPath: _unused, ...rest } = options;
+    return createLogger(rest);
+  }
 }
 
 function dirOf(path: string): string {

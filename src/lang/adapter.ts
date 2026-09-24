@@ -1,4 +1,5 @@
 import type { LanguageAdapter } from './source-map.ts';
+import { LanguageError } from '../core/errors.ts';
 import { cppAdapter } from './cpp/index.ts';
 import { cAdapter } from './c/index.ts';
 import { objcAdapter } from './objc/index.ts';
@@ -11,20 +12,6 @@ import { javaAdapter } from './java/index.ts';
 import { kotlinAdapter } from './kotlin/index.ts';
 import { goAdapter } from './go/index.ts';
 
-const REGISTRY: readonly LanguageAdapter[] = [
-  cppAdapter,
-  cAdapter,
-  objcAdapter,
-  pythonAdapter,
-  javascriptAdapter,
-  typescriptAdapter,
-  tsxAdapter,
-  rustAdapter,
-  javaAdapter,
-  kotlinAdapter,
-  goAdapter,
-];
-
 const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['cpp', cppAdapter],
   ['c++', cppAdapter],
@@ -36,18 +23,18 @@ const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['objc', objcAdapter],
   ['objective-c', objcAdapter],
   ['objectivec', objcAdapter],
-  ['objcpp', objcAdapter], 
+  ['objcpp', objcAdapter],
   ['objective-c++', objcAdapter],
   ['python', pythonAdapter],
   ['py', pythonAdapter],
   ['javascript', javascriptAdapter],
   ['js', javascriptAdapter],
-  ['jsx', javascriptAdapter], 
+  ['jsx', javascriptAdapter],
   ['mjs', javascriptAdapter],
   ['cjs', javascriptAdapter],
   ['typescript', typescriptAdapter],
   ['ts', typescriptAdapter],
-  ['tsx', tsxAdapter], 
+  ['tsx', tsxAdapter],
   ['rust', rustAdapter],
   ['rs', rustAdapter],
   ['java', javaAdapter],
@@ -59,22 +46,24 @@ const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
 
 export const supportedLanguages: readonly string[] = [...ALIASES.keys()];
 
+const REGISTRY: readonly LanguageAdapter[] = [...new Set(ALIASES.values())];
+
 export function adaptersByName(): ReadonlyMap<string, LanguageAdapter> {
   return ALIASES;
 }
 
 export function adapterForLanguage(name: string | undefined): LanguageAdapter {
   if (name === undefined || name.trim() === '') {
-    throw new Error(
+    throw new LanguageError(
       `language is not specified: put it in the heading (# match cpp) or pass --language; ` +
         `supported: ${supportedLanguages.join(', ')}`,
     );
   }
   const adapter = ALIASES.get(name.trim().toLowerCase());
   if (adapter === undefined) {
-    throw new Error(
-      `unsupported language '${name}'; supported: ${supportedLanguages.join(', ')}`,
-    );
+    throw new LanguageError(`unsupported language '${name}'; supported: ${supportedLanguages.join(', ')}`, {
+      language: name,
+    });
   }
   return adapter;
 }
@@ -86,5 +75,7 @@ export function adapterForFile(path: string): LanguageAdapter {
     if (adapter.extensions.includes(ext)) return adapter;
   }
   const known = REGISTRY.flatMap((a) => a.extensions).join(', ');
-  throw new Error(`no adapter for file extension '${ext || '(none)'}'; known: ${known}`);
+  throw new LanguageError(`no adapter for file extension '${ext || '(none)'}'; known: ${known}`, {
+    extension: ext,
+  });
 }

@@ -17,7 +17,7 @@ function blockSpans(src: string, tree: ReturnType<typeof parse>): [number, numbe
   return spans;
 }
 
-test('parse + walk: вложенные блоки C++ по правилу первый{/последний}', async () => {
+test('parse + walk: nested C++ blocks by the first-{ / last-} rule', async () => {
   const g = await cpp();
   const src = 'namespace a { class B { void f(){ x(); } }; }';
   const tree = parse(g, src);
@@ -31,7 +31,7 @@ test('parse + walk: вложенные блоки C++ по правилу пер
   }
 });
 
-test('строки/char/комментарии не дают ложных блоков', async () => {
+test('strings, chars and comments raise no false blocks', async () => {
   const g = await cpp();
   const src = 'void g() { auto s = "{"; char c = \'}\'; /* } */ }';
   const tree = parse(g, src);
@@ -42,6 +42,6 @@ test('строки/char/комментарии не дают ложных бло
   }
 });
 
-test('loadGrammar кеширует грамматику', async () => {
+test('loadGrammar caches the grammar', async () => {
   assert.equal(await cpp(), await cpp());
 });

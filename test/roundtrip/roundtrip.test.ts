@@ -29,7 +29,7 @@ for (const [name, body, lang] of CASES) {
   });
 }
 
-test('round-trip стабилен при двойном прогоне', () => {
+test('the round trip is stable when run twice', () => {
   const original = firstMatch(wrapMatch('namespace N {\n...\n>>>\n}'));
   const once = roundtrip(original);
   const twice = roundtrip(once);

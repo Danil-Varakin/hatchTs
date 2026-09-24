@@ -3,10 +3,10 @@ import type { Tree, Node } from './treesitter.ts';
 import type { BlockSpan } from './source-map.ts';
 
 export interface OrigSpan {
-  open: number; 
-  close: number; 
-  headerStart?: number; 
-  closeEnd?: number; 
+  open: number;
+  close: number;
+  headerStart?: number;
+  closeEnd?: number;
 }
 
 export type BlockOf = (node: Node) => OrigSpan | null;

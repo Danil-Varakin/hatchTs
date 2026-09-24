@@ -32,7 +32,7 @@ export function firstMatch(md: string): MatchPattern {
   return parseHatchFile(md).hunks[0]!.match;
 }
 
-// ── сборка .md текущего формата: жёлоб в четыре пробела + '# end' ─────────────
+// ── building a .md in the current format: a four-space gutter and '# end' ─────
 
 export function gutter(line: string): string {
   return line === '' ? '' : '    ' + line;

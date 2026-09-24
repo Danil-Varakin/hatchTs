@@ -162,10 +162,16 @@ From a clone it also works without installing: `npm run hatch -- <command>`.
 hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
 
 # generate
-hatch generate --in new.cpp --in-old old.cpp --out changes.md
+hatch generate --in new.cpp --in-old old.cpp --out changes.md   # a file: it has an extension
 
-# ...or take the old version from a git branch
+# ...or take the old version from git: the same file, as of the last commit here
+hatch generate --in src/main.cpp --head --out changes.md
+
+# a branch (its last commit), a single commit, another path inside the repository
 hatch generate --in src/main.cpp --branch master --out changes.md
+hatch generate --in src/main.cpp --commit 1f3ac9d --out changes.md
+hatch generate --in src/main.cpp --branch master --commit 1f3ac9d \
+               --repo-path src/legacy/main.cpp --out changes.md
 ```
 
 `hatch` with no arguments lists the commands, `hatch <command> --help` shows its
@@ -179,7 +185,10 @@ Exit codes, for scripts to rely on:
 ```
 --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
 --in,    -i <file>      source file to patch                     [required]
---out,   -o <file>      where to write the result   [required unless --dry-run/--verify]
+--out,   -o <path>      where to write the result   [required unless --dry-run/--verify]
+                        same placement rules as `generate --out`, minus `-` and
+                        mirroring: a directory gets <name of --in> inside it, any
+                        other path is written as is, directories are created
 --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
                         the file extension)
 --dry-run               show planned edits, write nothing
@@ -196,12 +205,34 @@ Exit codes, for scripts to rely on:
 ### `generate` options
 ```
 --in,     -i <file>     new version of the file                    [required]
---in-old     <file>     old version (from a file)      [one of --in-old/--branch]
---branch, -b <branch>   old version = <branch>:<--in path> (git)
---out,    -o <path>     where to write the .md. A file path is taken as is; a
-                        directory (existing, or ending with a slash) gets
-                        <name of --in>.md inside it; omitted means next to
-                        --in. `-` writes to stdout
+--in-old     <file>     old version, read from this path
+--head,   -H            old version from git, every coordinate defaulted:
+                        current branch, its last commit, the path of --in
+--branch, -b <branch>   which branch (default: the one we are on). Alone it
+                        means the last commit of that branch. A BRANCH, local
+                        or remote-tracking: a tag or a raw sha is refused,
+                        those are --commit
+--commit, -c <commit>   which commit (default: the last one of that branch).
+                        Any revision git understands: a sha, a tag, HEAD~3.
+                        Alone it is taken as given; together with --branch it
+                        must be a commit that branch holds, or the run stops
+--repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the
+                        path of --in). Unlike --in-old, which is a path on
+                        disk, this is a path git knows: a relative one is
+                        measured from the repository root, never from the
+                        current directory
+--out,    -o <path>     where to write the .md. A path with no extension (or one
+                        ending with a slash, or an existing directory) is a
+                        DIRECTORY and gets <name of --in>.md inside it; a path with
+                        an extension is the file itself, overwritten. Missing
+                        directories are created. A relative path is measured from the
+                        repository root, not from the current directory. Omitted
+                        means next to --in; `-` writes to stdout
+--mirror                keep patches in a tree of their own: the .md goes to
+                        <--out>/<path of --in inside the repository>.md, and
+                        missing directories are created. Requires --out, which is
+                        then always a directory; a relative one is taken from the
+                        repository root, never from the current directory
 --language,-l <lang>    force language (else: extension of --in)
 --agreement,-a          confirm each hunk before writing
 --exact,  -e            reproduce the new file byte for byte; without it every
@@ -217,6 +248,41 @@ Exit codes, for scripts to rely on:
                         omitted means ./hatch-logs/
 --help,   -h            this help
 ```
+
+#### Where the old version comes from
+
+Exactly one source, and the choice is not a list of modes — it is one file on disk
+(`--in-old`) or git. From git the version is named by three **independent
+coordinates**, and every one of them may be left out; what is missing takes its
+default:
+
+| coordinate | flag | left out means |
+|---|---|---|
+| branch | `--branch` | the branch we are on |
+| commit | `--commit` | the last commit of that branch |
+| path   | `--repo-path` | the path of `--in` inside the repository |
+
+So all three omitted is "this same file, as of the last commit here" — and since
+that names no coordinate at all, it needs a flag of its own to ask for git:
+`--head`. Every other combination follows from the table: `--branch master` is the
+last commit of `master`, `--commit 1f3ac9d` is that commit of this same file,
+`--repo-path` swaps the file without touching which commit it is read from.
+
+A commit names a version on its own, so `--commit 1f3ac9d` is taken as given, wherever
+that commit lives. The branch beside it is a **claim about** it — and a claim is worth
+checking, which makes `--branch` with `--commit` the one combination that can be
+refused: a commit the branch never held stops the run instead of quietly handing back a
+version out of another history.
+
+Each coordinate is also held to its own kind. `--branch` takes a **branch** (local or
+remote-tracking); a tag or a raw sha is refused with a pointer to `--commit`, which
+takes any revision git understands. `--repo-path` takes a **file**: a directory is
+refused rather than handed back as a printed tree listing.
+
+`--in-old` is untouched by all of this — an old version that lives in no repository
+is still a path on disk, and always will be. That is also the difference to keep in
+mind between the two path flags: `--in-old` is a path your shell can complete,
+`--repo-path` is a path git can look up.
 
 #### Anchoring options (how much context a hunk carries)
 ```
@@ -254,7 +320,10 @@ one pair of file versions, which is why it is policy rather than automatic.
 ### Configuration
 
 Anything above can be pinned as project policy in `hatch.config.json`, searched
-for **upwards from `--in`** (like eslint/prettier). Layers, weakest first:
+for **upwards from `--in`** — but only within the project: the walk stops at the
+repository root (the directory holding `.git`) and never climbs into your home
+directory. A config one level above the repo is not policy you agreed to, and
+nothing in the output would tell you it applied. Layers, weakest first:
 
 ```
 built-in defaults  <  hatch.config.json  <  CLI flags
@@ -275,18 +344,41 @@ built-in defaults  <  hatch.config.json  <  CLI flags
       "detail": { "base": 0 },
       "required": false
     },
-    "siblings": { "min": 1, "max": 8, "detail": { "base": 0 } }
+    "siblings": { "min": 1, "max": 8, "detail": { "base": 0 } },
+    "out": "patches",
+    "mirror": true
   }
 }
 ```
 
-`generate.out` is a *place*, not necessarily a name: a directory there gets
-`<name of --in>.md` written inside it.
+`generate.out` is a *place*, not necessarily a name. A value with **no extension** — or
+one ending with a slash, or naming a directory that is already there — is a directory, and
+`<name of --in>.md` is written inside it; a value with an extension is the file itself.
+Missing directories are created, and a file sitting where one of them has to go is
+reported by name rather than as `EEXIST … mkdir`. A relative value is measured from the **repository root**, never
+from the current directory — the same settings must mean the same place in a terminal, in
+an editor whose working directory is nobody's business, and in CI. Outside a repository
+the fallback is the directory of the file being patched. `apply --out` follows the same
+rules.
+
+`generate.mirror` changes that place into a tree. With it on, the patch for
+`chromium_src/browser/core/apdate.cc` goes to
+`<out>/chromium_src/browser/core/apdate.cc.md`, missing directories are created, and
+`out` is required and always read as a directory.
+
+Paths are measured from the **repository root** — the nearest ancestor holding `.git`,
+the same boundary the config search stops at. A file outside any repository is an error,
+not a guess, so mirrored patches can never land somewhere unrelated. A relative `out` is
+taken from that root as well, so running `hatch generate` from different directories
+writes to the same place.
 
 ```
---config <file>         use this config instead of searching upwards
+--config <file>         use this config instead of searching upwards; an
+                        explicit path is bounded by nothing, so this is how one
+                        config is shared by several repositories
 --no-config             ignore config files (built-in defaults + flags only)
---print-config          print the effective settings and where each came from
+--print-config          print the effective settings, the file they came from,
+                        and the origin of each value
 ```
 
 Only the **generate** side is configurable. A `.md` patch is a public contract

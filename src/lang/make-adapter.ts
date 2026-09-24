@@ -9,11 +9,11 @@ import { resolveGrammar } from '../infra/grammar-store.ts';
 import type { GrammarSource } from '../infra/grammar-store.ts';
 
 export interface LanguageRules {
-  name: string; 
-  grammar: GrammarSource; 
-  extensions: readonly string[]; 
-  normalize: (raw: string) => string; 
-  blockOf: BlockOf; 
+  name: string;
+  grammar: GrammarSource;
+  extensions: readonly string[];
+  normalize: (raw: string) => string;
+  blockOf: BlockOf;
 }
 
 export function makeAdapter(rules: LanguageRules): LanguageAdapter {

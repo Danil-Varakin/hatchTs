@@ -1,10 +1,10 @@
-# Нормализация окончаний строк: в репозитории всегда LF, независимо от ОС/редактора.
+# Line endings: LF in the repository, whatever the operating system or editor.
 * text=auto eol=lf
 
-# Грамматики tree-sitter — бинарные, никакой нормализации.
+# tree-sitter grammars are binary: never normalized.
 *.wasm binary
 
-# Фикстуры golden — это ДАННЫЕ, их байты и есть предмет теста: CRLF, BOM,
-# отсутствие хвостового перевода строки. Нормализация их уничтожает (cpp/74 —
-# «весь файл переведён с CRLF на LF» — после неё old и new становятся одинаковыми).
+# Golden fixtures are DATA: their bytes are what the tests are about — CRLF, a BOM,
+# a missing trailing newline. Normalizing them destroys the case (cpp/74, "the whole
+# file was converted from CRLF to LF", would leave old and new identical).
 test/golden/** -text

@@ -6,6 +6,8 @@ import type { Node } from '../treesitter.ts';
 import type { BlockOf, OrigSpan } from '../block-spans.ts';
 
 const STRINGS: readonly StringRule[] = [
+  { open: '//', close: '\n', opaque: false },
+  { open: '/*', close: '*/', multiline: true, opaque: false },
   { open: '\`', close: '\`', escape: '\\', multiline: true },
   { open: '"', close: '"', escape: '\\' },
   { open: "'", close: "'", escape: '\\' },
@@ -41,7 +43,7 @@ const javascriptBlockOf: BlockOf = (node: Node): OrigSpan | null => {
   if (pair === null) return null;
   const { first, last } = pair;
   const span: OrigSpan = { open: first.startIndex, close: last.startIndex, closeEnd: last.endIndex };
-  
+
   const parent = node.parent;
   if (parent !== null && bracketPair(parent) === null && parent.startIndex < node.startIndex) {
     span.headerStart = parent.startIndex;

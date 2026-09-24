@@ -2,9 +2,9 @@ import type { SourceMap } from '../lang/source-map.ts';
 import type { MatchMarks } from './matcher.ts';
 
 export interface Edit {
-  start: number; 
-  end: number; 
-  text: string; 
+  start: number;
+  end: number;
+  text: string;
 }
 
 export function planEdit(marks: MatchMarks, map: SourceMap, patch: string): Edit {

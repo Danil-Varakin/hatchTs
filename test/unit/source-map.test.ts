@@ -5,23 +5,30 @@ import { cppAdapter } from '../../src/lang/cpp/index.ts';
 import { makeSourceMap } from '../../src/lang/build-map.ts';
 import { buildCanon } from '../../src/lang/canon.ts';
 import { normalize } from '../../src/lang/cpp/index.ts';
+import type { SourceMap } from '../../src/lang/source-map.ts';
+
+// depthAt / enclosingEnd жили в SourceMap, но в src/ их не звал никто — только тесты.
+// Оба выводятся из enclosing(), который возвращает спаны от самого внутреннего.
+const depthAt = (map: SourceMap, pos: number): number => map.enclosing(pos).length;
+const enclosingEnd = (map: SourceMap, pos: number): number => map.enclosing(pos)[0]?.close ?? map.eof;
+
 
 function cursorAfter(map: ReturnType<typeof cppAdapter.buildMap>, anchor: string): number {
   for (let p = 0; p + anchor.length <= map.eof; p++) {
     if (map.matchesAt(anchor, p)) return p + anchor.length;
   }
-  throw new Error(`не найдено вхождение "${anchor}"`);
+  throw new Error(`no occurrence of "${anchor}"`);
 }
 
-test('вложенность: enclosingEnd прыгает на "}" своего уровня, depthAt считает', async () => {
+test('nesting: enclosingEnd jumps to the "}" of its own level, depthAt counts', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('namespace a { class B { void f(){ g(); } }; }');
   const cur = cursorAfter(map, 'g();');
-  assert.equal(map.depthAt(cur), 3);
-  assert.ok(map.matchesAt('}', map.enclosingEnd(cur)));
+  assert.equal(depthAt(map, cur), 3);
+  assert.ok(map.matchesAt('}', enclosingEnd(map, cur)));
 });
 
-test('enclosing отдаёт пролёты ЦЕЛИКОМ ({open, close}), внутрь→наружу', async () => {
+test('enclosing returns WHOLE spans ({open, close}), innermost first', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('namespace a { class B { void f(){ g(); } }; }');
   const cur = cursorAfter(map, 'g();');
@@ -33,115 +40,116 @@ test('enclosing отдаёт пролёты ЦЕЛИКОМ ({open, close}), вн
     assert.ok(s.open < cur && cur <= s.close);
   }
   for (let i = 1; i < spans.length; i++) assert.ok(spans[i]!.open < spans[i - 1]!.open);
-  assert.equal(spans[0]!.close, map.enclosingEnd(cur));
+  assert.equal(spans[0]!.close, enclosingEnd(map, cur));
 });
 
-test('скобки в строке/char/комментарии не создают блоков', async () => {
+test('brackets inside a string, a char or a comment open no blocks', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void g() { auto s = "{"; char c = \'}\'; /* } */ }');
   const cur = cursorAfter(map, 'auto s');
-  assert.equal(map.depthAt(cur), 1);
-  assert.ok(map.matchesAt('}', map.enclosingEnd(cur)));
+  assert.equal(depthAt(map, cur), 1);
+  assert.ok(map.matchesAt('}', enclosingEnd(map, cur)));
 });
 
-test('препроцессор: обе ветки #if/#else в дереве, баланс ок', async () => {
+test('the preprocessor: both #if/#else branches are in the tree and stay balanced', async () => {
   await cppAdapter.init();
   const src = ['#if A', 'void Foo() {', '#else', 'void Foo(int x) {', '#endif', '  body();', '}'].join('\n');
   const map = cppAdapter.buildMap(src);
   const cur = cursorAfter(map, 'body();');
-  assert.ok(map.depthAt(cur) >= 1);
-  assert.ok(map.matchesAt('}', map.enclosingEnd(cur)));
+  assert.ok(depthAt(map, cur) >= 1);
+  assert.ok(map.matchesAt('}', enclosingEnd(map, cur)));
 });
 
-test('верхний уровень: enclosingEnd == eof', async () => {
+test('at the top level enclosingEnd is eof', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('int x = 1;\nint y = 2;\n');
-  assert.equal(map.enclosingEnd(0), map.eof);
-  assert.equal(map.depthAt(0), 0);
+  assert.equal(enclosingEnd(map, 0), map.eof);
+  assert.equal(depthAt(map, 0), 0);
 });
 
-// ── matchesAt / occurrences: границы токенов (чистая функция, без tree-sitter) ──
+// ── matchesAt / occurrences: token boundaries, pure and without tree-sitter ────
 
-test('matchesAt уважает границы токенов: Foo не совпадает в FooBar', () => {
+test('matchesAt honours token boundaries: Foo does not match inside FooBar', () => {
   const map = makeSourceMap(buildCanon('FooBar Foo', normalize), []);
   assert.equal(map.matchesAt('Foo', 0), false);
   assert.equal(map.matchesAt('Foo', 7), true);
 });
 
-test('occurrences находит только целые токены в окне', () => {
+test('occurrences finds whole tokens only, within the window', () => {
   const canon = buildCanon('x = f(x) + xy;', normalize);
   const map = makeSourceMap(canon, []);
-  const occ = map.occurrences('x', 0, map.eof);
+  const occ = [...map.occurrences('x', 0, map.eof)];
   for (const p of occ) assert.equal(map.matchesAt('x', p), true);
   assert.equal(occ.length, 2);
+  assert.equal(map.countOccurrences('x', 0, map.eof), 2, 'the count must agree with the walk');
 });
 
-test('matchesAt на "}" не требует границы (пунктуация)', () => {
+test('matchesAt on "}" needs no boundary, punctuation being punctuation', () => {
   const map = makeSourceMap(buildCanon('a{}', normalize), []);
   assert.equal(map.matchesAt('{', 1), true);
   assert.equal(map.matchesAt('}', 2), true);
 });
 
-// ── обобщённые скобки: () [] <> тоже блоки, 'a < b' — нет ──────────────────────
+// ── brackets in general: () [] <> are blocks too, while 'a < b' is not ─────────
 
-test('вложенные () дают разные уровни и enclosingEnd', async () => {
+test('nested () give different levels and their own enclosingEnd', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void h(){ func(a, d(a, c)); }');
   const outer = cursorAfter(map, 'func(');
   const inner = cursorAfter(map, 'd(');
-  assert.equal(map.depthAt(inner) - map.depthAt(outer), 1);
-  assert.ok(map.matchesAt(')', map.enclosingEnd(outer)));
-  assert.ok(map.matchesAt(')', map.enclosingEnd(inner)));
-  assert.notEqual(map.enclosingEnd(outer), map.enclosingEnd(inner));
+  assert.equal(depthAt(map, inner) - depthAt(map, outer), 1);
+  assert.ok(map.matchesAt(')', enclosingEnd(map, outer)));
+  assert.ok(map.matchesAt(')', enclosingEnd(map, inner)));
+  assert.notEqual(enclosingEnd(map, outer), enclosingEnd(map, inner));
 });
 
-test('occurrences отдаёт ВСЕ текстовые вхождения; enclosingEnd различает уровень', async () => {
+test('occurrences returns EVERY textual hit; enclosingEnd tells the levels apart', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void h(){ f(a, g(b, c)); }');
   const cur = cursorAfter(map, 'f(');
-  const outerClose = map.enclosingEnd(cur);
-  const commas = map.occurrences(',', cur, map.eof);
+  const outerClose = enclosingEnd(map, cur);
+  const commas = [...map.occurrences(',', cur, map.eof)];
   assert.equal(commas.length, 2);
-  const atOuterLevel = commas.filter((p) => map.enclosingEnd(p) === outerClose);
+  assert.equal(map.countOccurrences(',', cur, map.eof), 2);
+  const atOuterLevel = commas.filter((p) => enclosingEnd(map, p) === outerClose);
   assert.equal(atOuterLevel.length, 1);
 });
 
-test('occurrences: старт на границе to (включительно), хвост может за to', async () => {
+test('occurrences: a hit may start on the to boundary and run past it', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void f(){ if(x){ a(); } else { b(); } }');
   const cur = cursorAfter(map, 'a();');
-  const closeIf = map.enclosingEnd(cur);
-  const occ = map.occurrences(normalize('} else {'), cur, closeIf);
-  assert.deepEqual(occ, [closeIf]);
-  assert.deepEqual(map.occurrences(normalize('b();'), cur, closeIf), []);
+  const closeIf = enclosingEnd(map, cur);
+  assert.deepEqual([...map.occurrences(normalize('} else {'), cur, closeIf)], [closeIf]);
+  assert.deepEqual([...map.occurrences(normalize('b();'), cur, closeIf)], []);
 });
 
-test('[] и <> — блоки, а бинарный < — нет', async () => {
+test('[] and <> are blocks, a binary < is not', async () => {
   await cppAdapter.init();
   const sub = cppAdapter.buildMap('arr[i];');
-  assert.equal(sub.depthAt(cursorAfter(sub, 'arr[')), 1);
+  assert.equal(depthAt(sub, cursorAfter(sub, 'arr[')), 1);
   const tpl = cppAdapter.buildMap('Foo<int> x;');
-  assert.equal(tpl.depthAt(cursorAfter(tpl, 'Foo<')), 1);
+  assert.equal(depthAt(tpl, cursorAfter(tpl, 'Foo<')), 1);
   const lt = cppAdapter.buildMap('bool f(){ return a < b; }');
-  assert.equal(lt.depthAt(cursorAfter(lt, 'return')), 1);
+  assert.equal(depthAt(lt, cursorAfter(lt, 'return')), 1);
 });
 
-test('соседние блоки: enclosingEnd различает своих родителей (индекс по лесу)', async () => {
+test('sibling blocks: enclosingEnd tells their parents apart', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('namespace n { void a(){ x(); } void b(){ y(); } }');
   const inA = cursorAfter(map, 'x();');
   const inB = cursorAfter(map, 'y();');
-  assert.equal(map.depthAt(inA), 2);
-  assert.equal(map.depthAt(inB), 2);
-  assert.notEqual(map.enclosingEnd(inA), map.enclosingEnd(inB));
+  assert.equal(depthAt(map, inA), 2);
+  assert.equal(depthAt(map, inB), 2);
+  assert.notEqual(enclosingEnd(map, inA), enclosingEnd(map, inB));
   const betweenFns = cursorAfter(map, 'void b');
-  assert.equal(map.depthAt(betweenFns), 1);
-  assert.ok(map.matchesAt('}', map.enclosingEnd(betweenFns)));
+  assert.equal(depthAt(map, betweenFns), 1);
+  assert.ok(map.matchesAt('}', enclosingEnd(map, betweenFns)));
 });
 
-// ── заголовок узла (headerStart) и обобщение скобок (blocksWithin) ─────────────
+// ── the header of a node (headerStart) and blocksWithin ───────────────────────
 
-test('headerStart: пролёт тела несёт начало ЗАГОЛОВКА узла, не строку с "{"', async () => {
+test('headerStart: a body span carries the start of the HEADER, not the line with "{"', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void foo(int a)\n{\n  g();\n}\n');
   const s = map.enclosing(cursorAfter(map, 'g();'))[0]!;
@@ -150,7 +158,7 @@ test('headerStart: пролёт тела несёт начало ЗАГОЛОВ�
   assert.ok(s.headerStart! < s.open);
 });
 
-test('blocksWithin: отдаёт скобочные пролёты ЦЕЛИКОМ внутри диапазона (для обобщения)', async () => {
+test('blocksWithin: returns bracket spans lying WHOLLY inside the range', async () => {
   await cppAdapter.init();
   const map = cppAdapter.buildMap('void foo(int a, int b) {\n  g();\n}\n');
   const s = map.enclosing(cursorAfter(map, 'g();'))[0]!;
@@ -162,27 +170,28 @@ test('blocksWithin: отдаёт скобочные пролёты ЦЕЛИКО�
   assert.throws(() => map.blocksWithin(2, 1));
 });
 
-// ── границы токенов юникод-осознанные ─────────────────────────────────────────
+// ── token boundaries are unicode-aware ────────────────────────────────────────
 
-test('границы токенов работают для не-ASCII (кириллица)', () => {
+test('token boundaries work for non-ASCII text', () => {
   const map = makeSourceMap(buildCanon('Фу,Фубар', normalize), []);
   assert.equal(map.matchesAt('Фу', 0), true);
   assert.equal(map.matchesAt('Фу', 3), false);
 });
 
-// ── валидация входов: бросаем на мусоре ───────────────────────────────────────
+// ── validating inputs: junk throws ────────────────────────────────────────────
 
-test('методы карты бросают на некорректном входе', () => {
+test('the map methods throw on an invalid input', () => {
   const map = makeSourceMap(buildCanon('abc', normalize), []);
   assert.throws(() => map.matchesAt('a', 99));
   assert.throws(() => map.matchesAt('', 0));
   assert.throws(() => map.occurrences('a', 2, 1));
-  assert.throws(() => map.enclosingEnd(-1));
+  assert.throws(() => map.countOccurrences('a', 2, 1));
+  assert.throws(() => enclosingEnd(map, -1));
   // @ts-expect-error
   assert.throws(() => map.toOriginalPos(0, 'up'));
 });
 
-test('canon.toCanonPos/toOriginalPos бросают вне диапазона', () => {
+test('canon.toCanonPos/toOriginalPos throw outside the range', () => {
   const c = buildCanon('abc', normalize);
   assert.throws(() => c.toCanonPos(99));
   assert.throws(() => c.toOriginalPos(99, 'left'));

@@ -59,6 +59,18 @@ export class MatchError extends HatchError {
   }
 }
 
+export class PathError extends HatchError {
+  readonly exitCode = 1;
+  readonly path: string;
+  readonly blocker: string;
+
+  constructor(message: string, path: string, blocker: string) {
+    super(message);
+    this.path = path;
+    this.blocker = blocker;
+  }
+}
+
 export class ConfigError extends HatchError {
   readonly exitCode = 5;
   readonly file: string | undefined;
@@ -76,6 +88,28 @@ export class GrammarError extends HatchError {
   constructor(message: string, grammar?: string) {
     super(grammar !== undefined ? `${grammar}: ${message}` : message);
     this.grammar = grammar;
+  }
+}
+
+export class LanguageError extends HatchError {
+  readonly exitCode = 1;
+  readonly language: string | undefined;
+  readonly extension: string | undefined;
+
+  constructor(message: string, detail: { language?: string; extension?: string } = {}) {
+    super(message);
+    this.language = detail.language;
+    this.extension = detail.extension;
+  }
+}
+
+export class GitError extends HatchError {
+  readonly exitCode = 1;
+  readonly revision: string | undefined;
+
+  constructor(message: string, revision?: string) {
+    super(message);
+    this.revision = revision;
   }
 }
 

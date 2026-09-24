@@ -37,8 +37,8 @@ export function matchPattern(
 
   const edits = new Map<string, MatchMarks>();
   const spans = new Map<string, LocatedMark | undefined>();
-  let stop = false; 
-  let deepestPos = -1; 
+  let stop = false;
+  let deepestPos = -1;
   let deepestStep = 0;
   let deepestAnchor: string | undefined;
   let deepestMatched: Matched | null = null;
@@ -56,7 +56,7 @@ export function matchPattern(
     const s = stack.slice();
     while (s.length > 0 && s[s.length - 1]! >= A && s[s.length - 1]! < B) s.pop();
     const entered = map.enclosing(B).filter((sp) => sp.open >= A);
-    for (let k = entered.length - 1; k >= 0; k--) s.push(entered[k]!.close); 
+    for (let k = entered.length - 1; k >= 0; k--) s.push(entered[k]!.close);
     return { pos: B, stack: s };
   };
 
@@ -76,7 +76,7 @@ export function matchPattern(
   const recordFull = (m: Marks): void => {
     const sig = signature(m);
     if (!edits.has(sig)) {
-      edits.set(sig, m as MatchMarks); 
+      edits.set(sig, m as MatchMarks);
       spans.set(sig, m.replaceEnd);
       if (edits.size >= 2) stop = true;
     }
@@ -95,14 +95,14 @@ export function matchPattern(
     }
 
     const { gap, anchor } = steps[i]!;
-    const mL = applySide(marks, gap, 'left', pos); 
+    const mL = applySide(marks, gap, 'left', pos);
 
     if (anchor.target === 'eof') {
       if (gap.mode.op === 'skipAny') {
         const mR = applySide(mL, gap, 'right', eof);
         return walk(i + 1, eof, stack, mR, last);
       }
-      return walk(i + 1, pos, stack, mL, last); 
+      return walk(i + 1, pos, stack, mL, last);
     }
 
     const norm = normOf(anchor.literal);
@@ -113,7 +113,7 @@ export function matchPattern(
         return false;
       }
       const adv = advance(norm, pos, stack);
-      return walk(i + 1, adv.pos, adv.stack, mL, { text: anchor.literal.raw, pos }); 
+      return walk(i + 1, adv.pos, adv.stack, mL, { text: anchor.literal.raw, pos });
     }
 
     const W = stack.length > 0 ? stack[stack.length - 1]! : -1;
@@ -128,7 +128,7 @@ export function matchPattern(
     let found = false;
     let sawCandidate = false;
     for (const p of map.occurrences(norm, pos, eof)) {
-      if (obligation && p === W) continue; 
+      if (obligation && p === W) continue;
       if (isCloser(p, norm.length) && stack.some((c) => c < p)) continue;
       sawCandidate = true;
       const mR = applySide(mL, gap, 'right', p);

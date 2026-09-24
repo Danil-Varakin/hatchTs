@@ -19,55 +19,55 @@ async function roundtrip(oldStr: string, newStr: string, bridgeGap = 0): Promise
   assert.equal(source, newStr);
 }
 
-test('замена одной строки в теле функции', async () => {
+test('replacing one line inside a function body', async () => {
   const oldStr = 'void f() {\n  int a = 1;\n  return a;\n}\n';
   const newStr = 'void f() {\n  int a = 2;\n  return a;\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('вставка строки в тело функции', async () => {
+test('inserting a line into a function body', async () => {
   const oldStr = 'void f() {\n  int a = 1;\n  return a;\n}\n';
   const newStr = 'void f() {\n  int a = 1;\n  a += 5;\n  return a;\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('удаление строки', async () => {
+test('deleting a line', async () => {
   const oldStr = 'void f() {\n  int a = 1;\n  int b = 2;\n  return a;\n}\n';
   const newStr = 'void f() {\n  int a = 1;\n  return a;\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('замена со СМЕНОЙ отступа первой строки', async () => {
+test('a replacement that CHANGES the indent of the first line', async () => {
   const oldStr = 'void f() {\n  g();\n}\n';
   const newStr = 'void f() {\n  if (x) {\n      g();\n  }\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('многострочная замена блока', async () => {
+test('replacing a block across several lines', async () => {
   const oldStr = 'void f() {\n  a();\n  b();\n  c();\n}\n';
   const newStr = 'void f() {\n  x();\n  y();\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('две раздельные правки в одном файле (последовательность)', async () => {
+test('two separate edits in one file, applied in order', async () => {
   const oldStr = 'int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n';
   const newStr = 'int a = 10;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 50;\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('две БЛИЗКИЕ правки в одном блоке (уникальность через контекст)', async () => {
+test('two CLOSE edits in one block, told apart by context', async () => {
   const oldStr = 'void f() {\n  x = 1;\n  y = 2;\n  z = 3;\n}\n';
   const newStr = 'void f() {\n  x = 11;\n  y = 2;\n  z = 33;\n}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('правка у начала файла (BOF)', async () => {
+test('an edit at the start of the file (BOF)', async () => {
   const oldStr = '#include <a>\nvoid f() {}\n';
   const newStr = '#include <b>\nvoid f() {}\n';
   await roundtrip(oldStr, newStr);
 });
 
-test('привязка СТРУКТУРНАЯ: неуникальный код добирается РОДИТЕЛЕМ, не соседом', async () => {
+test('anchoring is STRUCTURAL: non-unique code is pinned by a PARENT, not a neighbour', async () => {
   await cppAdapter.init();
   const oldStr = 'void a() {\n  int x = 1;\n}\nvoid b() {\n  int x = 1;\n}\n';
   const newStr = 'void a() {\n  int x = 1;\n}\nvoid b() {\n  int x = 99;\n}\n';
@@ -76,7 +76,7 @@ test('привязка СТРУКТУРНАЯ: неуникальный код �
   assert.match(printPattern(hunks[0]!.match), /void b\(\)/);
 });
 
-test('интерференция ханков: ханк меняет привязку другого — synth строит против уже-применённого', async () => {
+test('hunks interfere: synthesis builds against the text earlier hunks already wrote', async () => {
   await cppAdapter.init();
   const oldStr = 'int g() { return a; }\nvoid f(int a) {\n  helper();\n  return a;\n}\n';
   const newStr = 'int g() { return a; }\nvoid f(int b) {\n  helper();\n  return b;\n}\n';
@@ -86,12 +86,12 @@ test('интерференция ханков: ханк меняет привя�
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('замена со СМЕНОЙ отступа первой строки: дедент и углубление (round-trip)', async () => {
+test('a replacement changing the first indent: dedent and deepen, both round-tripping', async () => {
   await roundtrip('void f() {\n      target();\n  keep();\n}\n', 'void f() {\n  target2();\n  keep();\n}\n');
   await roundtrip('void f() {\n  x();\n}\n', 'void f() {\n      x2();\n}\n');
 });
 
-test('вставка в КОНЕЦ блока привязывается к "}" (структурно), не к последней строке', async () => {
+test('an insertion at the END of a block anchors on "}", not on the last line', async () => {
   await cppAdapter.init();
   const oldStr = 'void f() {\n  a();\n}\nvoid g() {\n  a();\n}\n';
   const newStr = 'void f() {\n  a();\n}\nvoid g() {\n  a();\n  NEW();\n}\n';
@@ -104,7 +104,7 @@ test('вставка в КОНЕЦ блока привязывается к "}" 
   assert.ok(source.includes('NEW();') && source.includes('a(x)'), source);
 });
 
-test('спец-случаи: BOF-вставка `>>> ...`, EOF-дозапись `... >>>`, замена всего файла', async () => {
+test('special cases: a BOF insertion, an EOF append, and replacing the whole file', async () => {
   await cppAdapter.init();
   const bof = synthesize('int b = 2;\n', 'int a = 1;\nint b = 2;\n', cppAdapter);
   assert.match(printPattern(bof[0]!.match), /^>>>/);
@@ -119,14 +119,14 @@ test('спец-случаи: BOF-вставка `>>> ...`, EOF-дозапись 
   await roundtrip('int old = 1;\n', 'int a = 2;\nint b = 3;\n');
 });
 
-test('вставка в конец блока — форма `>>> }` БЕЗ <<< (чистая точка)', async () => {
+test('an insertion at the end of a block is `>>> }` with no <<<, a pure point', async () => {
   await cppAdapter.init();
   const hunks = synthesize('void f() {\n  a();\n}\n', 'void f() {\n  a();\n  b();\n}\n', cppAdapter);
   assert.doesNotMatch(printPattern(hunks[0]!.match), /<<</);
   await roundtrip('void f() {\n  a();\n}\n', 'void f() {\n  a();\n  b();\n}\n');
 });
 
-test('верификация: synthesize сам гарантирует applyAll==new (замена + вставка в конец тела)', async () => {
+test('verification: synthesize guarantees applyAll == new by construction', async () => {
   await cppAdapter.init();
   const oldStr = 'namespace n {\nvoid f() {\n  int x = 1;\n  g(x);\n}\nvoid h() {\n  int y = 1;\n}\n}\n';
   const newStr = 'namespace n {\nvoid f() {\n  int x = 2;\n  g(x);\n  extra();\n}\nvoid h() {\n  int y = 1;\n}\n}\n';
@@ -134,7 +134,7 @@ test('верификация: synthesize сам гарантирует applyAll=
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('удаление блока с ПУСТОЙ строкой над ним: якорь уползает к непустой, НЕ ищет с BOF', async () => {
+test('deleting a block under a BLANK line: the anchor moves to a non-blank, not to BOF', async () => {
   await cppAdapter.init();
   const oldStr = 'void Test() {\n  int a = 1;\n\n  for (int i = 0; i < 3; i++) {\n    doit(i);\n  }\n}\n';
   const newStr = 'void Test() {\n  int a = 1;\n\n}\n';
@@ -143,7 +143,7 @@ test('удаление блока с ПУСТОЙ строкой над ним: 
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('удаление строки с ПУСТОЙ строкой под ней: рез не уезжает в EOF (патч мал)', async () => {
+test('deleting a line above a BLANK one: the cut does not run to EOF', async () => {
   await cppAdapter.init();
   const oldStr = 'namespace n {\nvoid f() {\n  keep1();\n  DELME();\n\n  keep2();\n}\n}\n';
   const newStr = 'namespace n {\nvoid f() {\n  keep1();\n\n  keep2();\n}\n}\n';
@@ -152,7 +152,7 @@ test('удаление строки с ПУСТОЙ строкой под ней
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('трейсер (--debug): видны сегмент, пробная НЕуникальная и итоговая уникальная привязка', async () => {
+test('the tracer (--debug) shows the segment, an ambiguous probe and the chosen anchor', async () => {
   await cppAdapter.init();
   const oldStr = 'void f() {\n  int x = 1;\n  int y = 2;\n  int x = 1;\n}\n';
   const newStr = 'void f() {\n  int x = 99;\n  int y = 2;\n  int x = 1;\n}\n';
@@ -160,12 +160,12 @@ test('трейсер (--debug): видны сегмент, пробная НЕу
   synthesize(oldStr, newStr, cppAdapter, { trace: (e) => events.push(e) });
   assert.ok(events.some((e) => e.kind === 'segment'));
   const attempts = events.filter((e) => e.kind === 'attempt');
-  assert.ok(attempts.some((e) => e.result === 'ambiguous'), 'должна быть неуникальная проба');
-  assert.ok(attempts.some((e) => e.result === 'unique'), 'и итоговая уникальная');
+  assert.ok(attempts.some((e) => e.result === 'ambiguous'), 'there has to be an ambiguous probe');
+  assert.ok(attempts.some((e) => e.result === 'unique'), 'and a unique one at the end');
   assert.ok(events.some((e) => e.kind === 'hunk'));
 });
 
-test('8b: заголовок узла — Allman-стиль ({ на своей строке) привязывается к сигнатуре', async () => {
+test('8b: an Allman-style header ({ on its own line) anchors on the signature', async () => {
   await cppAdapter.init();
   const oldStr = 'void a()\n{\n  int x = 1;\n}\nvoid b()\n{\n  int x = 1;\n}\n';
   const newStr = 'void a()\n{\n  int x = 1;\n}\nvoid b()\n{\n  int x = 99;\n}\n';
@@ -176,7 +176,7 @@ test('8b: заголовок узла — Allman-стиль ({ на своей �
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('9: обобщение скобок — сигнатура с параметрами → `void render( ... )`, переживает дрейф', async () => {
+test('9: brackets generalise — a signature becomes `void render( ... )` and survives drift', async () => {
   await cppAdapter.init();
   const oldStr =
     'void handle(int code, bool flag) {\n  process();\n}\nvoid render(int code, bool flag) {\n  process();\n}\n';
@@ -192,7 +192,7 @@ test('9: обобщение скобок — сигнатура с параме�
   assert.ok(source.includes('process(2);') && source.includes('void render(int code) {'), source);
 });
 
-test('8a: двусторонний добор — различитель СНИЗУ (соседа сверху и родителя мало)', async () => {
+test('8a: context taken from both sides — the discriminator lies BELOW', async () => {
   await cppAdapter.init();
   const oldStr = 'void f() {\n  a();\n  val = 1;\n  b();\n  a();\n  val = 1;\n  c();\n}\n';
   const newStr = 'void f() {\n  a();\n  val = 9;\n  b();\n  a();\n  val = 1;\n  c();\n}\n';
@@ -202,7 +202,7 @@ test('8a: двусторонний добор — различитель СНИ�
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('робастность: правка ложится даже при ДРЕЙФЕ соседей (как в Chromium)', async () => {
+test('robustness: the edit still fits when its neighbours DRIFT, as they do upstream', async () => {
   await cppAdapter.init();
   const oldStr = 'void a() {\n  int x = 1;\n}\nvoid b() {\n  int x = 1;\n}\n';
   const newStr = 'void a() {\n  int x = 1;\n}\nvoid b() {\n  int x = 99;\n}\n';
@@ -210,19 +210,19 @@ test('робастность: правка ложится даже при ДРЕ
   const drifted = 'void a() {\n  int x = 1;\n}\nvoid b() {\n  int x = 1;\n  LOG(hi);\n}\n';
   const { source } = applyAll(drifted, hatchFile(hunks), cppAdapter);
   assert.ok(source.includes('int x = 99;'), source);
-  assert.ok(source.includes('LOG(hi);'), 'сосед сохранился');
+  assert.ok(source.includes('LOG(hi);'), 'the neighbour survived');
 });
 
-// ── края файла и блока: границы берутся из ПОЗИЦИИ, а не из номера строки ────────
+// ── edges of file and block: bounds come from POSITION, not from a line number ─
 
-test('край файла: пустые строки сверху/снизу не мешают привязке (номер строки ≠ край)', async () => {
+test('the edge of a file: blank lines above and below do not disturb anchoring', async () => {
   await roundtrip('\nvoid f() {}\n', '\nint g = 0;\nvoid f() {}\n');
   await roundtrip('void f() {}\n\n', 'void f() {}\nint g = 0;\n\n');
   await roundtrip('void f() {}\n\n', 'void f() {}\n\nint g = 0;\n');
   await roundtrip('int old = 1;\n\n\n', 'int a = 2;\n\n\n');
 });
 
-test('удаление ПЕРВОЙ строки файла держится за СОДЕРЖИМОЕ, а не за начало файла', async () => {
+test('deleting the FIRST line holds on to CONTENT, not to the start of the file', async () => {
   await cppAdapter.init();
   const oldStr = 'int a = 1;\nint b = 2;\n';
   const newStr = 'int b = 2;\n';
@@ -233,7 +233,7 @@ test('удаление ПЕРВОЙ строки файла держится з�
   assert.equal(applyAll(drifted, hatchFile(hunks), cppAdapter).source, '#include <a>\nint b = 2;\n');
 });
 
-test('удаление ПОСЛЕДНЕЙ строки файла держится за СОДЕРЖИМОЕ, а не за EOF', async () => {
+test('deleting the LAST line holds on to CONTENT, not to EOF', async () => {
   await cppAdapter.init();
   const oldStr = 'int a = 1;\nint b = 2;\n';
   const newStr = 'int a = 1;\n';
@@ -243,18 +243,18 @@ test('удаление ПОСЛЕДНЕЙ строки файла держитс
   assert.equal(applyAll(drifted, hatchFile(hunks), cppAdapter).source, 'int a = 1;\nint c = 3;\n');
 });
 
-test('удаление ПУСТОЙ строки: рез по зазору соседей, без литерала-пустышки', async () => {
+test('deleting a BLANK line: the cut runs through the gap, with no empty literal', async () => {
   await roundtrip('void f() {\n  a();\n\n  b();\n}\n', 'void f() {\n  a();\n  b();\n}\n');
 });
 
-test('файл без хвостового перевода строки не отращивает лишний \\n', async () => {
+test('a file with no trailing newline does not grow one', async () => {
   await roundtrip('int a = 1;\nint b = 2;', 'int a = 1;\nint c = 3;');
   await roundtrip('int a = 1;\n', 'int a = 1;\nint b = 2;');
 });
 
-// ── закрывашка родителя: незакрытая `{` упорядочивает, но не запирает ────────────
+// ── the closer of a parent: an unclosed `{` orders the search without locking it ─
 
-test('родитель ЗАКРЫВАЕТСЯ в шаблоне: иначе якорь ловит и соседний блок', async () => {
+test('the parent is CLOSED in the pattern, or the anchor catches a sibling block too', async () => {
   await cppAdapter.init();
   const oldStr =
     'void f() {\n  for (auto& b : first(a)) {\n    use(b);\n  }\n  for (auto& b : second(c)) {\n    use(b);\n  }\n}\n';
@@ -266,7 +266,7 @@ test('родитель ЗАКРЫВАЕТСЯ в шаблоне: иначе як
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('вставка ПЕРВОЙ строкой блока: якорь — заголовок родителя, без дубля `{`', async () => {
+test('inserting as the FIRST line of a block anchors on the parent header, no double `{`', async () => {
   await cppAdapter.init();
   const oldStr = 'void a()\n{\n  b();\n}\nvoid c()\n{\n  b();\n}\n';
   const newStr = 'void a()\n{\n  b();\n}\nvoid c()\n{\n  z();\n  b();\n}\n';
@@ -277,18 +277,18 @@ test('вставка ПЕРВОЙ строкой блока: якорь — за
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
 });
 
-test('правка съедает `}` родителя: такой блок не идёт ни в якоря, ни в закрывашки', async () => {
+test('when an edit eats the parent `}` that block serves neither as anchor nor as closer', async () => {
   await roundtrip(
     'namespace n {\nclass W {\n  int id_;\n};\n\n}  // namespace n\n',
     'namespace n {\nclass W {\n  int id_;\n\n}  // namespace n\n',
   );
 });
 
-test('вставка со СВОИМ отступом (таб рядом с пробелами) воспроизводится дословно', async () => {
+test('an insertion with its OWN indent, a tab among spaces, is reproduced verbatim', async () => {
   await roundtrip('void f() {\n  a();\n\n  b();\n}\n', 'void f() {\n  a();\n\n\tint tabbed = 1;\n  b();\n}\n');
 });
 
-test('флаг exact: строгий режим — дословно, нестрогий — по нормализации', async () => {
+test('the exact flag: strict reproduces verbatim, loose matches after normalization', async () => {
   await cppAdapter.init();
   const oldStr = 'void f() {\n      deep();\n\n  b();\n}\n';
   const newStr = 'void f() {\n  deep();\n\n\tint tabbed = 1;\n  b();\n}\n';
@@ -302,7 +302,7 @@ test('флаг exact: строгий режим — дословно, нестр
   assert.equal(looseOut, newStr);
 });
 
-test('нестрогий режим НЕ имеет права съесть строку: сверка построчная, не по всему тексту', async () => {
+test('loose mode may NOT swallow a line: the check is per line, not over the whole text', async () => {
   await cppAdapter.init();
   const oldStr =
     '#include <vector>\n#include <string_view>\n\n\n#include "a.h"\n#include "to_vector.h"\n#include "b.h"\n';
@@ -313,12 +313,12 @@ test('нестрогий режим НЕ имеет права съесть ст
     assert.equal(
       applyAll(oldStr, hatchFile(hunks), cppAdapter).source,
       newStr,
-      `режим exact=${exact} обязан воспроизвести состав строк`,
+      `exact=${exact} has to reproduce the set of lines`,
     );
   }
 });
 
-test('структура с НУЛЕВОЙ ступени: уникальная сама по себе правка всё равно несёт родителя', async () => {
+test('structure from rung zero: even a self-unique edit still carries a parent', async () => {
   await cppAdapter.init();
   const oldStr = 'void a() {\n  keep();\n}\nvoid b() {\n  keep();\n  target = 1;\n}\n';
   const newStr = 'void a() {\n  keep();\n}\nvoid b() {\n  keep();\n  target = 2;\n}\n';

@@ -37,9 +37,9 @@ export function changeSegments(oldStr: string, newStr: string, bridgeGap = 0): C
   let merged = base[0]!;
   for (let i = 1; i < base.length; i++) {
     const next = base[i]!;
-    const gapStart = merged.oldStart + merged.removed.length; 
-    const gap = oldLines.slice(gapStart - 1, next.oldStart - 1); 
-    const nonBlank = gap.filter((line) => line.trim() !== '').length; 
+    const gapStart = merged.oldStart + merged.removed.length;
+    const gap = oldLines.slice(gapStart - 1, next.oldStart - 1);
+    const nonBlank = gap.filter((line) => line.trim() !== '').length;
     if (nonBlank <= bridgeGap) {
       merged = {
         oldStart: merged.oldStart,
@@ -71,9 +71,9 @@ function baseSegments(oldStr: string, newStr: string): ChangeSegment[] {
     for (const line of h.lines) {
       switch (lineKind(line)) {
         case 'eofnl':
-          break; 
+          break;
         case 'context':
-          flush(); 
+          flush();
           oldLine++;
           newLine++;
           break;
@@ -105,7 +105,7 @@ export function lineKind(line: string): LineKind {
     case ' ':
       return 'context';
     default:
-      return 'context'; 
+      return 'context';
   }
 }
 

@@ -6,6 +6,7 @@ export const CONFIG_VERSION = 1;
 
 export interface GenerateSettings extends SynthLimits {
   readonly out: string | null;
+  readonly mirror: boolean;
   readonly language: string | null;
   readonly exact: boolean;
   readonly bridgeGap: number;
@@ -24,6 +25,7 @@ export interface FieldSpec {
 
 export const FIELDS: readonly FieldSpec[] = [
   { path: 'generate.out', key: 'out', kind: 'stringOrNull', flag: '--out' },
+  { path: 'generate.mirror', key: 'mirror', kind: 'boolean', flag: '--mirror' },
   { path: 'generate.language', key: 'language', kind: 'stringOrNull', flag: '--language' },
   { path: 'generate.exact', key: 'exact', kind: 'boolean', flag: '--exact' },
   { path: 'generate.bridgeGap', key: 'bridgeGap', kind: 'count', flag: '--bridge-gap' },
@@ -39,6 +41,7 @@ export const FIELDS: readonly FieldSpec[] = [
 export const DEFAULT_SETTINGS: GenerateSettings = Object.freeze({
   ...DEFAULT_SYNTH_LIMITS,
   out: null,
+  mirror: false,
   language: null,
   exact: false,
   bridgeGap: 0,
@@ -79,5 +82,16 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 1000;
 }
 
-export function checkPairs(_settings: GenerateSettings, _origins: Record<string, string>): void {
+export function checkPairs(settings: GenerateSettings, origins: Record<string, string>): void {
+  if (!settings.mirror) return;
+
+  const where = (path: string): string => `${path} (${origins[path] ?? 'default'})`;
+  if (settings.out === null) {
+    throw new ConfigError(
+      `${where('generate.mirror')} needs an output root: set ${where('generate.out')} to a directory`,
+    );
+  }
+  if (settings.out === '-') {
+    throw new ConfigError(`${where('generate.mirror')} writes a tree of files, so ${where('generate.out')} cannot be "-"`);
+  }
 }

@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     void a() {
     ...
@@ -11,7 +11,7 @@
 
 # end
 
-# match cc
+# match cpp
     ...
     void b() {
     >>>

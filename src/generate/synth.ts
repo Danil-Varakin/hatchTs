@@ -2,7 +2,7 @@ import type { MatchPattern, Step, Gap, Anchor, Hunk } from '../core/ast.ts';
 import type { LanguageAdapter, SourceMap, BlockSpan, MapCache } from '../lang/source-map.ts';
 import { mapFor } from '../lang/source-map.ts';
 import { matchPattern } from '../core/matcher.ts';
-import { patchHunk } from '../core/patcher.ts';
+import { cutOf, patchHunk } from '../core/patcher.ts';
 import { printPattern } from '../core/hatch-printer.ts';
 import { AmbiguityError, MatchError } from '../core/errors.ts';
 import { changeSegments } from './diff.ts';
@@ -109,15 +109,32 @@ export function synthesize(
     rowShift += segment.added.length - segment.removed.length;
   }
 
-  const reproduced = exact
-    ? currentSource === newSource
-    : sameByLines(normalizedLines(currentSource, adapter), normalizedLines(newSource, adapter));
+  const reproduced = exact ? currentSource === newSource : sameIgnoringSpace(currentSource, newSource, adapter);
   if (!reproduced) {
     throw new Error(
       `synth: result differs from new (${hunks.length} hunk(s), ${exact ? 'verbatim' : 'normalized'} check)`,
     );
   }
   return hunks;
+}
+
+/** One change against the text as it stands — the step `synthesize` repeats, for a
+ *  caller that decides between the steps (`generate/steer.ts`). `segment` is in lines of
+ *  `source`; `target` is the version the change leads towards. Throws what `synthesize`
+ *  throws when no pattern anchors the change. */
+export function synthesizeOne(
+  segment: ChangeSegment,
+  source: string,
+  target: string,
+  adapter: LanguageAdapter,
+  options: SynthOptions = {},
+): Hunk {
+  const { exact = false, trace, maps } = options;
+  const context = makeHunkContext(
+    segment, source, adapter, target.endsWith('\n'), exact, resolveLimits(options.limits), trace, maps,
+  );
+  const resolved = resolveHunk(context);
+  return { match: resolved.pattern, patch: resolved.patch };
 }
 
 function makeHunkContext(
@@ -256,16 +273,22 @@ function verifyPattern(context: HunkContext, pattern: MatchPattern): Attempt {
   }
   trace?.({ kind: 'attempt', pattern, result: 'unique', matches: 1 });
 
-  const cut = computeCutRange(marks, map);
-  const patch = extractReplacementText(context.intendedSource, source, cut.startOffset, cut.endOffset);
+  const cut = cutOf(map, marks);
+  const patch = extractReplacementText(context.intendedSource, source, cut.start, cut.end);
   const appliedSource = patchHunk(source, map, marks, patch).source;
   if (appliedSource === context.intendedSource) {
     return { hunk: { pattern, patch, appliedSource }, exact: true };
   }
   if (!sameByLines(normalizedLines(appliedSource, adapter), context.normalizedIntendedLines)) {
-    return { failure: new MatchError('anchor matched but did not reproduce the change', cut.startOffset, 0) };
+    return { failure: new MatchError('anchor matched but did not reproduce the change', cut.start, 0) };
   }
   return { hunk: { pattern, patch, appliedSource }, exact: false };
+}
+
+/** Whether two texts are the same line for line once the language's canon has had its
+ *  say — the check a non-exact synthesis is held to. */
+export function sameIgnoringSpace(a: string, b: string, adapter: LanguageAdapter): boolean {
+  return sameByLines(normalizedLines(a, adapter), normalizedLines(b, adapter));
 }
 
 function normalizedLines(text: string, adapter: LanguageAdapter): string[] {
@@ -274,12 +297,6 @@ function normalizedLines(text: string, adapter: LanguageAdapter): string[] {
 
 function sameByLines(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((line, i) => line === b[i]);
-}
-
-function computeCutRange(marks: MatchMarks, map: SourceMap): { startOffset: number; endOffset: number } {
-  const startOffset = map.toOriginalPos(marks.insert.pos, marks.insert.side);
-  const endOffset = marks.replaceEnd === undefined ? startOffset : map.toOriginalPos(marks.replaceEnd.pos, marks.replaceEnd.side);
-  return { startOffset, endOffset };
 }
 
 function extractReplacementText(intendedSource: string, source: string, startOffset: number, endOffset: number): string {
@@ -773,7 +790,8 @@ function literalAnchor(context: HunkContext, raw: string): Anchor | null {
 }
 
 // ── lines and whitespace ─────────────────────────────────────────────────────────
-function getLineStartOffsets(text: string): number[] {
+/** Where every line of `text` starts, and `text.length` last: `[k]` is line k (from 0). */
+export function getLineStartOffsets(text: string): number[] {
   const offsets = [0];
   for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) offsets.push(i + 1);
   if (offsets[offsets.length - 1] !== text.length) offsets.push(text.length);

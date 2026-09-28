@@ -1,4 +1,4 @@
-# match m
+# match objc
     ...
     >>>
     @property(nonatomic, assign) NSInteger count;

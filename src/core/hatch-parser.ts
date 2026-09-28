@@ -64,7 +64,7 @@ class PatternBuilder {
       throw new ParseError(
         `repeat insertion point >>> (the first one is on the line ${this.insertMark.mdLine})`,
         mdLine,
-        'you need two insertion points — make two match/patch hanks',
+        'you need two insertion points — make two match/patch hunks',
       );
     }
     const placed: PlacedMark = {

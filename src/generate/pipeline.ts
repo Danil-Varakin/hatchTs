@@ -1,12 +1,14 @@
 import type { Hunk } from '../core/ast.ts';
 import type { HunkLink } from '../core/resolve.ts';
-import type { InitOptions, LanguageAdapter, MapCache } from '../lang/source-map.ts';
+import type { InitOptions, MapCache } from '../lang/source-map.ts';
 import type { PartialLimits, Tracer } from './synth.ts';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { resolveHunks } from '../core/resolve.ts';
-import { adapterForFile, adapterForLanguage } from '../lang/adapter.ts';
+import { checkHeading, pickAdapter } from '../lang/adapter.ts';
 import { printHatchFile, trailingSpaceWarnings } from './printer.ts';
 import { synthesize } from './synth.ts';
+import { steerSynthesis } from './steer.ts';
+import type { Steering } from './steer.ts';
 
 export interface GenerateRequest {
   readonly oldText: string;
@@ -20,7 +22,12 @@ export interface GenerateRequest {
   readonly init?: InitOptions | undefined;
   readonly trace?: Tracer | undefined;
   readonly onProgress?: ((done: number, total: number) => void) | undefined;
+  /** After synthesis, the hunks to keep. Kept for API callers; `steering` is the way a
+   *  person takes part now — asked hunk by hunk, with an editor. */
   readonly review?: ((hunks: readonly Hunk[]) => Promise<Hunk[]>) | undefined;
+  /** Synthesis a person steers (`generate/steer.ts`): asked about each hunk as it is
+   *  made, and handed the editor when a change cannot be anchored. */
+  readonly steering?: Steering | undefined;
   readonly provenance?: boolean | undefined;
 }
 
@@ -34,25 +41,52 @@ export interface GenerateOutcome {
 }
 
 export async function generatePatch(request: GenerateRequest): Promise<GenerateOutcome> {
-  const adapter = pickAdapter(request);
+  const adapter = pickAdapter({ language: request.language, path: request.path });
+  // The heading names the language by its own name (`cpp`, `objc`, `python`), however it
+  // was picked — `--language c++`, a `.mm` file, a config: the same .md from the CLI and
+  // from the service. `label` overrides it for an API caller, and is held to the check.
+  const label = request.label ?? adapter.name;
+  checkHeading(label, adapter);
   await adapter.init(request.init ?? {});
 
   const bridgeGap = request.bridgeGap ?? 0;
   const trace = withProgress(request);
   const maps: MapCache = new Map();
 
-  let hunks: readonly Hunk[] = synthesize(request.oldText, request.newText, adapter, {
-    bridgeGap,
-    ...(request.exact !== undefined ? { exact: request.exact } : {}),
-    trace,
-    limits: request.limits,
-    maps,
-  });
-  if (request.review !== undefined) hunks = await request.review(hunks);
+  let hunks: readonly Hunk[];
+  const warnings: string[] = [];
+  if (request.steering !== undefined) {
+    const steered = await steerSynthesis(
+      {
+        oldText: request.oldText,
+        newText: request.newText,
+        adapter,
+        label,
+        bridgeGap,
+        exact: request.exact ?? false,
+        limits: request.limits,
+        trace,
+        maps,
+      },
+      request.steering,
+    );
+    hunks = steered.hunks;
+    if (!steered.reproducesNew) {
+      warnings.push('the .md does not give the new version: changes were left out, or hunks edited by hand make it differ');
+    }
+  } else {
+    hunks = synthesize(request.oldText, request.newText, adapter, {
+      bridgeGap,
+      ...(request.exact !== undefined ? { exact: request.exact } : {}),
+      trace,
+      limits: request.limits,
+      maps,
+    });
+    if (request.review !== undefined) hunks = await request.review(hunks);
+  }
 
-  const label = request.label ?? request.language ?? adapter.name;
   const md = printHatchFile(hunks, label);
-  const warnings = trailingSpaceWarnings(hunks);
+  warnings.push(...trailingSpaceWarnings(hunks));
 
   if (request.provenance !== true) return { md, language: label, hunkCount: hunks.length, warnings };
 
@@ -65,12 +99,6 @@ export async function generatePatch(request: GenerateRequest): Promise<GenerateO
     links: resolved.links,
     reproducesNew: resolved.applied === request.newText,
   };
-}
-
-function pickAdapter(request: GenerateRequest): LanguageAdapter {
-  if (request.language !== undefined && request.language !== '') return adapterForLanguage(request.language);
-  if (request.path !== undefined) return adapterForFile(request.path);
-  return adapterForLanguage(undefined); // throws, listing what is supported
 }
 
 function withProgress(request: GenerateRequest): Tracer | undefined {

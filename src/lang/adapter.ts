@@ -1,3 +1,4 @@
+import { extname } from 'node:path';
 import type { LanguageAdapter } from './source-map.ts';
 import { LanguageError } from '../core/errors.ts';
 import { cppAdapter } from './cpp/index.ts';
@@ -12,7 +13,8 @@ import { javaAdapter } from './java/index.ts';
 import { kotlinAdapter } from './kotlin/index.ts';
 import { goAdapter } from './go/index.ts';
 
-const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
+// Names a person writes: `# match c++`, `--language golang`.
+const NAMES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['cpp', cppAdapter],
   ['c++', cppAdapter],
   ['cc', cppAdapter],
@@ -44,9 +46,31 @@ const ALIASES: ReadonlyMap<string, LanguageAdapter> = new Map([
   ['golang', goAdapter],
 ]);
 
-export const supportedLanguages: readonly string[] = [...ALIASES.keys()];
+const REGISTRY: readonly LanguageAdapter[] = [...new Set(NAMES.values())];
 
-const REGISTRY: readonly LanguageAdapter[] = [...new Set(ALIASES.values())];
+// ...and every extension a language claims in its own folder, spelled without the dot:
+// hatch 0.2.0 and earlier wrote that word into `# match` (`in.mm` → `# match mm`), and
+// every such .md has to apply the same forever, so `apply` reads each one back as the
+// same language. Derived, not listed: a language that claims an extension gets its name
+// with it, and the two cannot drift apart. The map stays static — built from the
+// adapters imported above, never from a name that arrived in a .md.
+const ALIASES: ReadonlyMap<string, LanguageAdapter> = withExtensionWords(NAMES, REGISTRY);
+
+function withExtensionWords(
+  names: ReadonlyMap<string, LanguageAdapter>,
+  adapters: readonly LanguageAdapter[],
+): Map<string, LanguageAdapter> {
+  const out = new Map(names);
+  for (const adapter of adapters) {
+    for (const extension of adapter.extensions) {
+      const word = extension.slice(1);
+      if (!out.has(word)) out.set(word, adapter);
+    }
+  }
+  return out;
+}
+
+export const supportedLanguages: readonly string[] = [...ALIASES.keys()];
 
 export function adaptersByName(): ReadonlyMap<string, LanguageAdapter> {
   return ALIASES;
@@ -69,8 +93,7 @@ export function adapterForLanguage(name: string | undefined): LanguageAdapter {
 }
 
 export function adapterForFile(path: string): LanguageAdapter {
-  const dot = path.lastIndexOf('.');
-  const ext = dot === -1 ? '' : path.slice(dot).toLowerCase();
+  const ext = extensionOf(path);
   for (const adapter of REGISTRY) {
     if (adapter.extensions.includes(ext)) return adapter;
   }
@@ -78,4 +101,47 @@ export function adapterForFile(path: string): LanguageAdapter {
   throw new LanguageError(`no adapter for file extension '${ext || '(none)'}'; known: ${known}`, {
     extension: ext,
   });
+}
+
+/** The adapter for a job, from the most explicit source that names a language: the
+ *  one named outright (`--language`, `params.language`), else the `# match` heading of
+ *  the .md, else the extension of the file. The one order for apply, generate and the
+ *  service; an empty name counts as not named, wherever it comes from. */
+export function pickAdapter(from: {
+  readonly language?: string | undefined;
+  readonly heading?: string | undefined;
+  readonly path?: string | undefined;
+}): LanguageAdapter {
+  const named = namedLanguage(from.language) ?? namedLanguage(from.heading);
+  if (named !== undefined) return adapterForLanguage(named);
+  if (from.path !== undefined) return adapterForFile(from.path);
+  return adapterForLanguage(undefined); // throws, listing what is supported
+}
+
+/** A language name as given, or undefined when it is empty — the same as not given. */
+export function namedLanguage(name: string | undefined): string | undefined {
+  return name === undefined || name.trim() === '' ? undefined : name;
+}
+
+/** The extension of a file, lower-cased and with its dot; `''` when there is none. Read
+ *  from the file's NAME only — a dot in a directory (`my.proj/Makefile`) is not one. */
+export function extensionOf(path: string): string {
+  return extname(path).toLowerCase();
+}
+
+/** A heading is a promise about the file it will be applied to: `apply` reads
+ *  `# match <word>` back through this same registry. A word that leads to another
+ *  language — or to none — would make a .md that `apply` refuses or reads wrongly, so it
+ *  is refused while the .md is still being written. An empty word writes a bare
+ *  `# match`, and `apply` then goes by the extension of the file it is given. */
+export function checkHeading(word: string, adapter: LanguageAdapter): void {
+  if (word.trim() === '') return;
+  const readBack = ALIASES.get(word.trim().toLowerCase());
+  if (readBack === adapter) return;
+  const as = readBack === undefined ? 'no language at all' : `language '${readBack.name}'`;
+  throw new LanguageError(
+    `'# match ${word}' would be read back by apply as ${as}, not as '${adapter.name}'; ` +
+      `supported: ${supportedLanguages.join(', ')}`,
+    { language: word },
+  );
 }

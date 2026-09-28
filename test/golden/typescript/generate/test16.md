@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     export class Bag<T extends object = Record<string, never>> {

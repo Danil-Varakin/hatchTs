@@ -1,4 +1,4 @@
-# match js
+# match javascript
     ...
     >>>
     const toPoint = (x, y) => ({ x, y, kind: 'point' });

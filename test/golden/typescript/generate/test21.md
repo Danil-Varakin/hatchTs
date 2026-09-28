@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     export function load(input: Reader<Uint8Array>): void;

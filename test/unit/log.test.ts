@@ -12,7 +12,7 @@ import {
   logHeader,
   DEFAULT_LOG_DIR,
 } from '../../src/infra/log.ts';
-import { MatchError, AmbiguityError, ParseError, ConfigError } from '../../src/core/errors.ts';
+import { MatchError, AmbiguityError, ParseError } from '../../src/core/errors.ts';
 
 const tmp = (): string => mkdtempSync(join(tmpdir(), 'hatch-log-'));
 
@@ -73,7 +73,7 @@ test('trace reaches the file even when the terminal is quiet', () => {
 test('a log target that cannot be opened is loud, not silently skipped', () => {
   const blocker = join(tmp(), 'blocker');
   writeFileSync(blocker, 'x');
-  assert.throws(() => createLogger({ logPath: join(blocker, 'deep', 'run.log') }), ConfigError);
+  assert.throws(() => createLogger({ logPath: join(blocker, 'deep', 'run.log') }), /cannot open log file/);
 });
 
 test('the same log name can be reused: the file is overwritten, not refused', () => {

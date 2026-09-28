@@ -200,6 +200,44 @@ test('service generate: a git refusal crosses the wire as GitError, with the rev
   }
 });
 
+test('service resolve and apply: the base named in git, and the reply says what was read', async () => {
+  const repo = buildRepo('hatch-svc-apply-');
+  try {
+    const md = hatchMd([{ match: '... int a = 2; >>> ...', patch: 'X();' }]);
+    const params = { md, path: repo.inPath, language: 'cpp', baseGit: {} };
+
+    const applied = ok(await handle({ id: 40, method: 'apply', params }));
+    assert.equal(applied['baseSpec'], 'HEAD:src/core/f.cc');
+    assert.ok(String(applied['text']).includes('int a = 2;X();'));
+
+    const resolved = ok(await handle({ id: 41, method: 'resolve', params: { ...params, baseGit: { commit: repo.b } } }));
+    assert.equal(resolved['baseSpec'], `${repo.b}:src/core/f.cc`);
+    assert.equal((resolved['hunks'] as HunkLink[])[0]!.status, 'ok');
+
+    const sent = ok(await handle({ id: 42, method: 'apply', params: { md, baseText: version(2), language: 'cpp' } }));
+    assert.equal(sent['baseSpec'], null);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service apply: the same one-base rule, and a pipe has nobody to ask', async () => {
+  const repo = buildRepo('hatch-svc-apply-rules-');
+  try {
+    const md = hatchMd([{ match: '... int a = 2; >>> ...', patch: 'X();' }]);
+    const both = failed(await handle({ id: 43, method: 'apply',
+      params: { md, path: repo.inPath, language: 'cpp', baseText: 'x', baseGit: {} } }));
+    assert.match(both.message, /exactly one base/);
+
+    const off = failed(await handle({ id: 44, method: 'resolve',
+      params: { md, path: repo.inPath, language: 'cpp', baseGit: { branch: repo.branch, commit: repo.s } } }));
+    assert.equal(off.kind, 'GitError', 'refused: there is no terminal on a pipe to agree');
+    assert.match(off.message, /is not on branch/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
 test('service generate: progress arrives as its own messages, never as the reply', async () => {
   const progress: ProgressMessage[] = [];
   const response = await handle(
@@ -473,4 +511,21 @@ test('service generate: a file where a directory has to go is named, not left to
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('service: language "" is no language — generate and resolve alike go by the path', async () => {
+  const gen = await handle({
+    id: 1,
+    method: 'generate',
+    params: { newText: 'int a = 2;\n', baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
+  });
+  assert.ok(gen.ok, JSON.stringify(gen));
+  const md = (gen.result as { md: string }).md;
+  assert.match(md, /^# match cpp$/m);
+  const res = await handle({
+    id: 2,
+    method: 'resolve',
+    params: { md: md.replace('# match cpp', '# match'), baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
+  });
+  assert.ok(res.ok, JSON.stringify(res));
 });

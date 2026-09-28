@@ -1,6 +1,6 @@
 import { mkdirSync, openSync, writeSync, closeSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { HatchError, MatchError, AmbiguityError, ParseError, ConfigError } from '../core/errors.ts';
+import { dirname, join, resolve } from 'node:path';
+import { HatchError, MatchError, AmbiguityError, ParseError } from '../core/errors.ts';
 
 // ── where a log file goes ────────────────────────────────────────────────────────
 
@@ -55,10 +55,12 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   if (path !== undefined) {
     try {
-      mkdirSync(dirOf(path), { recursive: true });
+      mkdirSync(dirname(path), { recursive: true });
       fd = openSync(path, 'w', 0o600);
     } catch (e) {
-      throw new ConfigError(`cannot open log file '${path}': ${(e as Error).message}`);
+      // Not a ConfigError: nothing in any config named this path, and exit 5 would send
+      // the reader to hatch.config.json. The CLI turns it into a warning anyway.
+      throw new Error(`cannot open log file '${path}': ${(e as Error).message}`);
     }
     for (const line of options.header ?? []) writeLine(fd, line);
   }
@@ -108,11 +110,6 @@ export function createLoggerOrWarn(options: LoggerOptions = {}): Logger {
     const { logPath: _unused, ...rest } = options;
     return createLogger(rest);
   }
-}
-
-function dirOf(path: string): string {
-  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return cut <= 0 ? '.' : path.slice(0, cut);
 }
 
 function writeLine(fd: number, line: string): void {

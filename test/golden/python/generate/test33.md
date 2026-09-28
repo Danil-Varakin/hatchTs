@@ -1,4 +1,4 @@
-# match py
+# match python
     ...
     >>>
     PATTERN = r"\d+\.\d+"

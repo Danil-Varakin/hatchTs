@@ -310,13 +310,35 @@ line number against the progressively patched file — would then be built again
 the wrong text and fail far from the real mistake. `--exact` tightens acceptance
 and the final check to byte-for-byte.
 
+### steer: when a person decides
+
+`generate -a`, and any `generate` at a terminal whose synthesis cannot anchor a change,
+runs the same steps one at a time (`generate/steer.ts`). Its whole state is the list of
+hunks so far: each step replays them over the old version and takes the first change
+still between that text and the new one. A hunk offered is shown and kept, or the
+person is handed the editor with **every** hunk so far; what comes back must parse and
+land on the old version in order, or it goes back with the reason on top. Because the
+next step starts from what the hunks produce, a hunk written by hand — pattern and patch
+body alike — is simply the new state. Text a hunk wrote counts as settled and is not
+offered again, so a body edited on purpose stays edited, and the run ends warning that
+the `.md` does not give the new version. The person comes in from outside (`Steering`:
+review, offer the editor, edit), which keeps the loop testable without a terminal.
+
+### Line endings belong to the file
+
+A `.md` carries no line endings of its own: the parser reads `\r\n` and `\n` alike, and
+git or an editor may turn them either way. So the patcher lands a patch with the ending
+of the line the edit starts on — CRLF in a CRLF region, the bytes as they are in LF.
+The line, not the file: a file of mixed endings keeps what each place has.
+
 ## Diagnostics and invariants (green on every commit)
 
 - **Parser round-trip:** `parse(print(ast))` ≡ `ast` structurally, escaping
   included (the printer adds exactly the backslash the parser strips).
 - **Payload round-trip:** `parse(print(hunk)).patch` == `hunk.patch` byte for
-  byte — fences, Hatch headings and blank lines included. The patch body is
-  verbatim output, so corrupting it is invisible to every test further up.
+  byte — fences, Hatch headings and blank lines included — up to line endings,
+  which belong to the target file. The patch body is verbatim output, so
+  corrupting it is invisible to every test further up.
 - **System round-trip:** `apply(generate(old,new), old) == new`, verified inside
   `generate` itself and again in the test suite.
 - **Map in isolation:** spans correct on tricky C++ inputs.

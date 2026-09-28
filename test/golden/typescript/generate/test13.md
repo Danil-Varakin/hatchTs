@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     import type { Alpha, Beta, Gamma } from './types.ts';

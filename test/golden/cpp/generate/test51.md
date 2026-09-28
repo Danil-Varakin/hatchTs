@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
     #include "a.h"

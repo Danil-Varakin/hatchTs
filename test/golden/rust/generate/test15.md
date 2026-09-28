@@ -1,4 +1,4 @@
-# match rs
+# match rust
     ...
     >>>
     pub fn grid() -> Vec<Vec<Vec<u8>>> {

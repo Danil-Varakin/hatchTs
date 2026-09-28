@@ -4,10 +4,14 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { createHash } from 'node:crypto';
+
 import {
   cacheEntry,
+  ensureGrammars,
   grammarCacheDir,
   grammarUrls,
+  locate,
   resolveGrammar,
 } from '../../src/infra/grammar-store.ts';
 import { GrammarError } from '../../src/core/errors.ts';
@@ -132,4 +136,39 @@ test('a source with no pin is not accepted at all', async () => {
     /sha256/,
   );
   await assert.rejects(resolveGrammar({ file: 'x.wasm', path: 'relative/x.wasm' }), /absolute/);
+});
+
+test('ensureGrammars says where each grammar came from — a cache entry fetched again is downloaded', async () => {
+  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
+  const good = new Uint8Array([4, 5, 6]);
+  const source = { ...SOURCE, sha256: createHash('sha256').update(good).digest('hex') };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (() => Promise.resolve(new Response(good))) as typeof fetch;
+  try {
+    await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
+      const path = cacheEntry(source);
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, new Uint8Array([9, 9, 9]));
+      assert.equal(await locate(source), path, 'there IS a file in the cache — a broken one');
+
+      const [first] = await ensureGrammars([source], { allowDownload: true, log: () => {} });
+      assert.equal(first!.where, 'downloaded', 'the broken entry was replaced, not used');
+      assert.equal(first!.path, path);
+      assert.equal(first!.bytes, good.byteLength);
+
+      const [second] = await ensureGrammars([source], { allowDownload: false });
+      assert.equal(second!.where, 'cache');
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('locate: nothing there is null, and a directory by that name is not a grammar', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hatch-grammars-'));
+  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
+  await mkdir(join(dir, SOURCE.file));
+  await withEnv({ HATCH_GRAMMAR_DIR: dir, HATCH_GRAMMAR_CACHE: cache }, async () => {
+    assert.equal(await locate(SOURCE), null);
+  });
 });

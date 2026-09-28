@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, sep } from 'node:path';
 
@@ -18,31 +18,44 @@ export async function resolveGrammar(
   policy: InitOptions = {},
   language?: string,
 ): Promise<Uint8Array> {
+  return (await obtain(source, policy, language)).bytes;
+}
+
+/** The bytes, and where they came from — told by the one function that got them, so a
+ *  cache entry that failed its checksum and was fetched again reports `downloaded`. */
+interface Obtained {
+  readonly bytes: Uint8Array;
+  readonly where: 'local' | 'cache' | 'downloaded';
+  readonly path: string | undefined;
+}
+
+async function obtain(source: GrammarSource, policy: InitOptions, language?: string): Promise<Obtained> {
   validate(source);
 
   if (source.path !== undefined) {
     const bytes = await readIfExists(source.path);
     if (bytes === null) throw new GrammarError(`no grammar file at ${source.path}`, describe(source));
-    return bytes;
+    return { bytes, where: 'local', path: source.path };
   }
 
   for (const dir of localDirs()) {
     const candidate = join(dir, source.file);
     const bytes = await readIfExists(candidate);
-    if (bytes !== null) return bytes;
+    if (bytes !== null) return { bytes, where: 'local', path: candidate };
   }
 
-  const cached = await readIfExists(cacheEntry(source));
+  const entry = cacheEntry(source);
+  const cached = await readIfExists(entry);
   if (cached !== null) {
-    if (digest(cached) === source.sha256) return cached;
+    if (digest(cached) === source.sha256) return { bytes: cached, where: 'cache', path: entry };
     policy.log?.(`cached ${source.file} failed its checksum, refetching`);
   }
 
   if (policy.allowDownload !== true) throw refusal(source, language);
 
   const bytes = await download(source, policy);
-  await cache(source, bytes, policy);
-  return bytes;
+  const cachedAt = (await cache(source, bytes, policy)) ? entry : undefined;
+  return { bytes, where: 'downloaded', path: cachedAt };
 }
 
 export function cacheEntry(source: GrammarSource): string {
@@ -78,25 +91,28 @@ export async function ensureGrammars(
 ): Promise<GrammarStatus[]> {
   const out: GrammarStatus[] = [];
   for (const source of sources) {
-    const before = await locate(source);
-    const input = await resolveGrammar(source, policy);
-    const after = before ?? (await locate(source));
-    out.push({
-      source,
-      where: before === null ? 'downloaded' : before === cacheEntry(source) ? 'cache' : 'local',
-      path: after ?? undefined,
-      bytes: input.byteLength,
-    });
+    const got = await obtain(source, policy);
+    out.push({ source, where: got.where, path: got.path, bytes: got.bytes.byteLength });
   }
   return out;
 }
 
+/** Where a grammar sits now, or null — asked of the file system, not by reading a
+ *  grammar of several megabytes to learn that it is there. */
 export async function locate(source: GrammarSource): Promise<string | null> {
   if (source.path !== undefined) return source.path;
   for (const dir of localDirs()) {
-    if ((await readIfExists(join(dir, source.file))) !== null) return join(dir, source.file);
+    if (await isFileAt(join(dir, source.file))) return join(dir, source.file);
   }
-  return (await readIfExists(cacheEntry(source))) !== null ? cacheEntry(source) : null;
+  return (await isFileAt(cacheEntry(source))) ? cacheEntry(source) : null;
+}
+
+async function isFileAt(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export async function pinFor(spec: string, policy: InitOptions = {}): Promise<GrammarSource> {
@@ -202,7 +218,9 @@ async function download(source: GrammarSource, policy: InitOptions): Promise<Uin
   );
 }
 
-async function cache(source: GrammarSource, bytes: Uint8Array, policy: InitOptions): Promise<void> {
+/** Whether the bytes are now in the cache; a cache that cannot be written is not an
+ *  error — the run goes on from memory. */
+async function cache(source: GrammarSource, bytes: Uint8Array, policy: InitOptions): Promise<boolean> {
   const target = cacheEntry(source);
   const temp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
@@ -210,8 +228,10 @@ async function cache(source: GrammarSource, bytes: Uint8Array, policy: InitOptio
 
     await writeFile(temp, bytes);
     await rename(temp, target);
+    return true;
   } catch (e) {
     policy.log?.(`could not cache ${source.file} (${(e as Error).message}); continuing from memory`);
+    return false;
   }
 }
 

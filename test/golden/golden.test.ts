@@ -19,7 +19,7 @@ const mustRefuse = (text: string): boolean => (text.split('\n', 1)[0] ?? '').inc
 const knownGap = (text: string): boolean => text.slice(0, 400).includes('KNOWN-GAP');
 
 function describe(text: string): string {
-  const m = /^(?:\/\/|#)\s*(\[.*)$/.exec(text.split('\n', 1)[0] ?? '');
+  const m = /^(?:\/\/|#)\s*(\[.*)$/.exec((text.split('\n', 1)[0] ?? '').replace(/\r$/, ''));
   return m === null ? '' : ` ${m[1]!.trim()}`;
 }
 
@@ -74,10 +74,8 @@ for (const language of languages) {
           return;
         }
 
-        const md = printHatchFile(
-          synthesize(oldStr, newStr, adapter),
-          oldFile.slice(oldFile.lastIndexOf('.') + 1),
-        );
+        // the heading `generate` writes: the language's own name, not the extension
+        const md = printHatchFile(synthesize(oldStr, newStr, adapter), adapter.name);
 
         const applied = applyAll(oldStr, parseHatchFile(md), adapter).source;
         assert.equal(applied, newStr, 'applying the generated .md did not reproduce the new file');

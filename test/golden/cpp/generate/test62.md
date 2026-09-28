@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
     void a(){x();}void b(){y();}void c(){z();}void d(){w();}

@@ -1,4 +1,4 @@
-# match py
+# match python
     ...
     >>>
     def build(opts={"retry": 3, "delay": 5}):

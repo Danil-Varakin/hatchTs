@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
     int b = 2;

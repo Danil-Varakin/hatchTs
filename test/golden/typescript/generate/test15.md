@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
       timeout: 1000,

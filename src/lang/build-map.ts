@@ -15,8 +15,17 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     if (norm.length === 0) throw new Error('SourceMap: empty literal');
   };
   const assertFromTo = (from: number, to: number): void => {
-    if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);}
+    if (from > to) throw new RangeError(`SourceMap: from=${from} > to=${to}`);
+  };
   const inside = (s: BlockSpan, pos: number): boolean => s.open < pos && pos <= s.close;
+  // Checked when called, not when first iterated: a bad argument fails at the call.
+  const checkedScan = (norm: string, from: number, to: number): Iterable<number> => {
+    assertNorm(norm);
+    assertPos(from, 'from');
+    assertPos(to, 'to');
+    assertFromTo(from, to);
+    return scan(text, norm, from, to);
+  };
 
   return {
     eof,
@@ -28,22 +37,12 @@ export function makeSourceMap(canon: Canon, spans: readonly BlockSpan[]): Source
     },
 
     occurrences(norm: string, from: number, to: number): Iterable<number> {
-      assertNorm(norm);
-      assertPos(from, 'from');
-      assertPos(to, 'to');
-      assertFromTo(from, to);
-      return scan(text, norm, from, to);
+      return checkedScan(norm, from, to);
     },
 
     countOccurrences(norm: string, from: number, to: number): number {
-      assertNorm(norm);
-      assertPos(from, 'from');
-      assertPos(to, 'to');
-      assertFromTo(from, to);
       let n = 0;
-      for (let p = text.indexOf(norm, from); p !== -1 && p <= to; p = text.indexOf(norm, p + 1)) {
-        if (boundaryOk(text, norm, p)) n++;
-      }
+      for (const _ of checkedScan(norm, from, to)) n++;
       return n;
     },
 

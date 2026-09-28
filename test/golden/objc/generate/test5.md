@@ -1,4 +1,4 @@
-# match m
+# match objc
     ...
     // [SELECTOR] правка внутри @selector(a:b:) — двоеточия не блок
     - (void)wire {

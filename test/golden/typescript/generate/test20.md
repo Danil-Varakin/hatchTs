@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     export const bucket = (hash: number): number => hash \>>> 24;

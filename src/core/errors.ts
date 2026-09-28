@@ -6,6 +6,12 @@ export abstract class HatchError extends Error {
     this.name = new.target.name;
     Object.setPrototypeOf(this, new.target.prototype);
   }
+
+  /** The facts of this error as plain data — what the service sends as `detail`, part
+   *  of the protocol. A new error kind states its own here, and nothing else changes. */
+  detail(): Record<string, unknown> | undefined {
+    return undefined;
+  }
 }
 
 export class ParseError extends HatchError {
@@ -20,6 +26,10 @@ export class ParseError extends HatchError {
     );
     this.mdLine = mdLine;
     if (hint !== undefined) this.hint = hint;
+  }
+
+  override detail(): Record<string, unknown> {
+    return { mdLine: this.mdLine, ...(this.hint !== undefined ? { hint: this.hint } : {}) };
   }
 }
 
@@ -57,6 +67,15 @@ export class MatchError extends HatchError {
     this.matchedPos = detail.matchedPos;
     this.hint = detail.hint;
   }
+
+  override detail(): Record<string, unknown> {
+    return {
+      failedStepIndex: this.failedStepIndex,
+      ...(this.totalSteps !== undefined ? { totalSteps: this.totalSteps } : {}),
+      ...(this.origPos !== undefined ? { origPos: this.origPos } : {}),
+      ...(this.anchorText !== undefined ? { anchorText: this.anchorText } : {}),
+    };
+  }
 }
 
 export class PathError extends HatchError {
@@ -69,6 +88,10 @@ export class PathError extends HatchError {
     this.path = path;
     this.blocker = blocker;
   }
+
+  override detail(): Record<string, unknown> {
+    return { path: this.path, blocker: this.blocker };
+  }
 }
 
 export class ConfigError extends HatchError {
@@ -79,6 +102,10 @@ export class ConfigError extends HatchError {
     super(file !== undefined ? `${file}: ${message}` : message);
     this.file = file;
   }
+
+  override detail(): Record<string, unknown> | undefined {
+    return this.file !== undefined ? { file: this.file } : undefined;
+  }
 }
 
 export class GrammarError extends HatchError {
@@ -88,6 +115,10 @@ export class GrammarError extends HatchError {
   constructor(message: string, grammar?: string) {
     super(grammar !== undefined ? `${grammar}: ${message}` : message);
     this.grammar = grammar;
+  }
+
+  override detail(): Record<string, unknown> | undefined {
+    return this.grammar !== undefined ? { grammar: this.grammar } : undefined;
   }
 }
 
@@ -101,6 +132,13 @@ export class LanguageError extends HatchError {
     this.language = detail.language;
     this.extension = detail.extension;
   }
+
+  override detail(): Record<string, unknown> {
+    return {
+      ...(this.language !== undefined ? { language: this.language } : {}),
+      ...(this.extension !== undefined ? { extension: this.extension } : {}),
+    };
+  }
 }
 
 export class GitError extends HatchError {
@@ -110,6 +148,10 @@ export class GitError extends HatchError {
   constructor(message: string, revision?: string) {
     super(message);
     this.revision = revision;
+  }
+
+  override detail(): Record<string, unknown> | undefined {
+    return this.revision !== undefined ? { revision: this.revision } : undefined;
   }
 }
 
@@ -122,5 +164,9 @@ export class AmbiguityError extends HatchError {
     super(message);
     this.positions = positions;
     this.spanEnds = spanEnds;
+  }
+
+  override detail(): Record<string, unknown> {
+    return { positions: this.positions };
   }
 }

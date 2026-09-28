@@ -1,4 +1,4 @@
-# match kt
+# match kotlin
     ...
     >>>
     fun perimeter(w: Int, h: Int) = 2 * (w + h)

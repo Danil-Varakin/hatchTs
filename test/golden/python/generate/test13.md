@@ -1,4 +1,4 @@
-# match py
+# match python
     ...
     # [PYDUP] восемь одинаковых import подряд, правка СЕДЬМОГО (родителя нет вовсе)
     from pkg import mod
@@ -15,7 +15,7 @@
     from pkg import other
 # end
 
-# match py
+# match python
     ...
     from pkg import other
     from pkg import mod

@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     type Route = `/${string}/${'get' | 'put'}`;

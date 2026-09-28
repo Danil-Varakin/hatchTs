@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -13,7 +13,7 @@
     step_0(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -28,7 +28,7 @@
     step_2(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -43,7 +43,7 @@
     step_4(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -58,7 +58,7 @@
     step_6(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -73,7 +73,7 @@
     step_8(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -88,7 +88,7 @@
     step_10(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -103,7 +103,7 @@
     step_12(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -118,7 +118,7 @@
     step_14(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -133,7 +133,7 @@
     step_16(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -148,7 +148,7 @@
     step_18(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -163,7 +163,7 @@
     step_20(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -178,7 +178,7 @@
     step_22(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -193,7 +193,7 @@
     step_24(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -208,7 +208,7 @@
     step_26(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -223,7 +223,7 @@
     step_28(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -238,7 +238,7 @@
     step_30(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -253,7 +253,7 @@
     step_32(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -268,7 +268,7 @@
     step_34(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -283,7 +283,7 @@
     step_36(changed);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...

@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     void Test() {
     ...
@@ -28,7 +28,7 @@
       EXPECT_EQ(2, Get());
 # end
 
-# match cc
+# match cpp
     ...
     void Test() {
     ...

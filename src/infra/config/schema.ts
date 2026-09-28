@@ -2,7 +2,17 @@ import { ConfigError } from '../../core/errors.ts';
 import { DEFAULT_SYNTH_LIMITS } from '../../generate/synth.ts';
 import type { SynthLimits } from '../../generate/synth.ts';
 
+// A RANGE, not a number: this hatch reads every config schema from CONFIG_MIN to
+// CONFIG_VERSION, and writes CONFIG_VERSION. Adding an optional key raises only
+// CONFIG_VERSION, so every config already committed keeps loading; CONFIG_MIN moves
+// only when an old schema can no longer be read as it was meant. Rules: VERSIONING.md.
 export const CONFIG_VERSION = 1;
+export const CONFIG_MIN = 1;
+
+/** `v1`, or `v1–v3` once the range opens up. */
+export function configRange(): string {
+  return CONFIG_MIN === CONFIG_VERSION ? `v${CONFIG_VERSION}` : `v${CONFIG_MIN}–v${CONFIG_VERSION}`;
+}
 
 export interface GenerateSettings extends SynthLimits {
   readonly out: string | null;

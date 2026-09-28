@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 
 import { fileFromGit } from '../../src/infra/git.ts';
 import type { GitSource } from '../../src/infra/git.ts';
+import type { Ask } from '../../src/infra/ask.ts';
 import { GitError } from '../../src/core/errors.ts';
 import { buildRepo, version, OTHER, SIDE_ONLY } from '../git-repo.ts';
 
@@ -117,6 +118,66 @@ for (const c of CASES) {
   });
 }
 
+// ── asking: only a request git CAN carry out, but that may not mean what it says ──
+
+/** An Ask that records every question and answers them all the same way. */
+function answering(answer: boolean): { ask: Ask; asked: string[] } {
+  const asked: string[] = [];
+  return { ask: (q) => (asked.push(q), Promise.resolve(answer)), asked };
+}
+
+test('git source: answered yes, a commit off the named branch is read all the same', async () => {
+  const { ask, asked } = answering(true);
+  assert.equal((await fileFromGit({ branch: R.branch, commit: R.s }, R.inPath, ask)).text, version(3));
+  assert.equal(asked.length, 1);
+  assert.match(asked[0]!, new RegExp(`commit ${R.s} is not on branch ${R.branch} — going ahead reads`));
+});
+
+test('git source: answered yes, a tag or a sha given as --branch is read as a revision', async () => {
+  const { ask, asked } = answering(true);
+  assert.equal((await fileFromGit({ branch: 'v1.0' }, R.inPath, ask)).text, version(2));
+  assert.equal((await fileFromGit({ branch: R.a }, R.inPath, ask)).text, version(1));
+  assert.match(asked[0]!, /--branch v1\.0 is not a branch, it names refs\/tags\/v1\.0 — going ahead/);
+  assert.match(asked[1]!, /it names no ref at all/);
+});
+
+test('git source: a tag accepted as the branch still holds the commit named beside it', async () => {
+  const { ask, asked } = answering(true);
+  // v1.0 is B, which holds A: one question (the tag), and none about containment
+  assert.equal((await fileFromGit({ branch: 'v1.0', commit: R.a }, R.inPath, ask)).text, version(1));
+  assert.equal(asked.length, 1);
+});
+
+test('git source: answered no, the refusal is the one nobody-to-ask gets', async () => {
+  const { ask } = answering(false);
+  for (const source of [{ branch: R.branch, commit: R.s }, { branch: 'v1.0' }] as GitSource[]) {
+    const quiet = await fileFromGit(source, R.inPath).catch((e: Error) => e.message);
+    const declined = await fileFromGit(source, R.inPath, ask).catch((e: Error) => e.message);
+    assert.equal(declined, quiet, JSON.stringify(source));
+  }
+});
+
+test('git source: nothing to read is never a question — unknown names stay refusals', async () => {
+  const { ask, asked } = answering(true);
+  const sources: GitSource[] = [
+    { branch: 'nope' }, { commit: 'nope' }, { path: 'nope.cc' }, { path: 'src/core' },
+    { path: '../../etc/passwd' }, { branch: R.branch, commit: 'nope' },
+  ];
+  for (const source of sources) {
+    await assert.rejects(() => fileFromGit(source, R.inPath, ask), GitError, JSON.stringify(source));
+  }
+  assert.deepEqual(asked, []);
+});
+
+test('git source: a request that says what it means asks nothing', async () => {
+  const { ask, asked } = answering(false);
+  const sources: GitSource[] = [
+    {}, { branch: 'side' }, { commit: R.s }, { branch: 'side', commit: R.a }, { path: 'src/core/other.cc' },
+  ];
+  for (const source of sources) await fileFromGit(source, R.inPath, ask);
+  assert.deepEqual(asked, []);
+});
+
 test('git source: the spec says exactly what was read', async () => {
   assert.equal((await fileFromGit({}, R.inPath)).spec, 'HEAD:src/core/f.cc');
   assert.equal((await fileFromGit({ branch: 'side' }, R.inPath)).spec, 'side:src/core/f.cc');
@@ -168,5 +229,39 @@ test('git source: a repository with no commits yet says so, and does not blame t
     });
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('git source: a branch that shares its name with a tag is read as the BRANCH, unasked', async () => {
+  // Its own repository: a tag `side` on B (version 2), beside the branch `side` on S
+  // (version 3). Git calls the short name ambiguous and, left to itself, reads the tag.
+  const repo = buildRepo('hatch-git-same-name-');
+  try {
+    execFileSync('git', ['tag', 'side', repo.b], { cwd: repo.dir, stdio: 'ignore' });
+    const { ask, asked } = answering(false);
+
+    const alone = await fileFromGit({ branch: 'side' }, repo.inPath, ask);
+    assert.equal(alone.text, version(3));
+    assert.equal(alone.spec, 'refs/heads/side:src/core/f.cc', 'the spec names what was read, unambiguously');
+
+    assert.equal((await fileFromGit({ branch: 'side', commit: repo.a }, repo.inPath, ask)).text, version(1));
+    await assert.rejects(() => fileFromGit({ branch: 'side', commit: repo.b }, repo.inPath, ask), /is not on branch side/);
+    assert.equal(asked.length, 1, 'only the commit off the branch is asked about, never the name');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('git source: a coordinate that starts with - is refused before git reads it as an option', async () => {
+  for (const [source, said] of [
+    [{ branch: '--all' }, /--branch --all: a branch name never starts with '-'/],
+    [{ branch: '-x' }, /--branch -x: a branch name never starts with '-'/],
+    [{ commit: '--output=/tmp/x' }, /--commit --output=\/tmp\/x: a revision never starts with '-'/],
+  ] as const) {
+    await assert.rejects(() => fileFromGit(source, R.inPath), (e: unknown) => {
+      assert.ok(e instanceof GitError, JSON.stringify(source));
+      assert.match(e.message, said);
+      return true;
+    });
   }
 });

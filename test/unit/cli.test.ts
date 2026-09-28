@@ -48,6 +48,17 @@ test('an unknown command names the known ones and exits 1', () => {
   assert.match(r.stderr, /known commands: apply, generate, grammars/);
 });
 
+test('a name every object inherits is an unknown command, not a crash', () => {
+  for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+    const r = run([name]);
+    assert.equal(r.status, 1, name);
+    assert.match(r.stderr, new RegExp(`unknown command '${name}'`), name);
+    const help = run(['help', name]);
+    assert.equal(help.status, 0, `help ${name}: ${help.stderr}`);
+    assert.match(help.stdout, /hatch <command>/, `help ${name}`);
+  }
+});
+
 test('a flag in the command slot gets its own sentence, not the list', () => {
   const r = run(['--in', 'x.cc']);
   assert.equal(r.status, 1);

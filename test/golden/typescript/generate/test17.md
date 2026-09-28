@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     type Span = [start: number, end: number, label?: string];

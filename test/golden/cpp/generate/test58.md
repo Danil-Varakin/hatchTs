@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
     int value = 1;

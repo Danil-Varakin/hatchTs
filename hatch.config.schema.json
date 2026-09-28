@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/hatch/hatch.config.schema.json",
+  "$id": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/hatch.config.schema.json",
   "title": "Hatch configuration",
   "description": "Project policy for `hatch generate`. Only the generate side is configurable: a .md patch is a public contract and must mean the same thing on every machine, so nothing here changes how `apply` reads an existing patch.",
   "type": "object",
@@ -10,7 +10,10 @@
       "type": "string"
     },
     "version": {
-      "const": 1
+      "description": "Config schema version: a whole number from minimum to maximum below, the range this hatch reads (CONFIG_MIN..CONFIG_VERSION in the code). Newer than maximum: update hatch; older than minimum: move the file to the current schema. See VERSIONING.md.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1
     },
     "generate": {
       "type": "object",

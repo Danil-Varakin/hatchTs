@@ -4,8 +4,13 @@ import assert from 'node:assert/strict';
 import {
   adapterForLanguage,
   adapterForFile,
+  adaptersByName,
+  checkHeading,
+  extensionOf,
+  pickAdapter,
   supportedLanguages,
 } from '../../src/lang/adapter.ts';
+import { LanguageError } from '../../src/core/errors.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 import { cAdapter } from '../../src/lang/c/index.ts';
 import { objcAdapter } from '../../src/lang/objc/index.ts';
@@ -71,4 +76,66 @@ test('extensions of the Chromium set do not overlap and hit the right adapter', 
 
 test('unknown extension → error', () => {
   assert.throws(() => adapterForFile('notes.txt'), /no adapter for file extension/);
+});
+
+test('the extension is read from the file name, never from a directory', () => {
+  assert.equal(extensionOf('/my.proj/Makefile'), '');
+  assert.equal(extensionOf('C:/x/Bar.HPP'), '.hpp');
+  assert.throws(() => adapterForFile('/my.proj/Makefile'), /file extension '\(none\)'/);
+});
+
+// ── generate writes `# match <word>`, apply reads it back: the two must agree ──
+
+const ADAPTERS = [...new Set(adaptersByName().values())];
+
+test('every extension a language claims is also a name that leads back to it', () => {
+  for (const adapter of ADAPTERS) {
+    for (const ext of adapter.extensions) {
+      const word = ext.slice(1);
+      assert.equal(adapterForFile(`f${ext}`), adapter, `${ext} by file`);
+      assert.equal(adapterForLanguage(word), adapter, `'# match ${word}' by name`);
+      assert.ok(supportedLanguages.includes(word), `${word} is listed`);
+    }
+  }
+});
+
+test('a name written by hand never contradicts the extension of the same spelling', () => {
+  for (const [word, adapter] of adaptersByName()) {
+    const owner = ADAPTERS.find((a) => a.extensions.includes(`.${word}`));
+    if (owner !== undefined) assert.equal(adapter, owner, `'${word}' names ${adapter.name}, .${word} is ${owner.name}`);
+  }
+});
+
+test('every adapter is found again by its own name', () => {
+  for (const adapter of ADAPTERS) assert.equal(adapterForLanguage(adapter.name), adapter, adapter.name);
+});
+
+test('checkHeading: a heading apply reads back as the same language passes', () => {
+  checkHeading('m', objcAdapter);
+  checkHeading('PYI', pythonAdapter);
+  checkHeading('C++', cppAdapter);
+  checkHeading('', cppAdapter);
+});
+
+test('checkHeading: a heading apply would read as another language, or none, is refused', () => {
+  assert.throws(() => checkHeading('c', cppAdapter), (e: unknown) => {
+    assert.ok(e instanceof LanguageError);
+    assert.match(e.message, /'# match c' would be read back by apply as language 'c', not as 'cpp'/);
+    return true;
+  });
+  assert.throws(() => checkHeading('cobol', cppAdapter), /as no language at all/);
+});
+
+test('pickAdapter: named outright, else the heading, else the extension — one order for all', () => {
+  assert.equal(pickAdapter({ language: 'c', heading: 'python', path: 'x.go' }), cAdapter);
+  assert.equal(pickAdapter({ heading: 'python', path: 'x.go' }), pythonAdapter);
+  assert.equal(pickAdapter({ path: 'x.go' }), goAdapter);
+  assert.throws(() => pickAdapter({}), /language is not specified/);
+});
+
+test('pickAdapter: an empty name is no name, wherever it comes from', () => {
+  assert.equal(pickAdapter({ language: '', heading: 'python', path: 'x.go' }), pythonAdapter);
+  assert.equal(pickAdapter({ language: '  ', heading: '', path: 'x.go' }), goAdapter);
+  assert.throws(() => pickAdapter({ language: '' }), /language is not specified/);
+  assert.throws(() => pickAdapter({ language: 'cobol', path: 'x.go' }), /unsupported language 'cobol'/);
 });

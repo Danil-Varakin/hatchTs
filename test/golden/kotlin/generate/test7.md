@@ -1,4 +1,4 @@
-# match kt
+# match kotlin
     ...
     >>>
     fun describe(u: User) = "user $u.id: ${u.name.uppercase()} (${u.roles.size})"

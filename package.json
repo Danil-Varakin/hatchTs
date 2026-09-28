@@ -6,6 +6,7 @@
     "dist",
     "README.md",
     "README.ru.md",
+    "PROTOCOL.md",
     "LICENSE",
     "hatch.config.schema.json"
   ],

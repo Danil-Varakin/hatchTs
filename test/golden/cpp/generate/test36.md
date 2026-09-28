@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
     int sample = 1;

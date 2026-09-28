@@ -1,29 +1,35 @@
-import { dirname, basename, resolve } from 'node:path';
-import { createInterface } from 'node:readline';
+import { dirname, resolve } from 'node:path';
 import type { Tracer, SynthEvent } from '../generate/synth.ts';
 import { generatePatch } from '../generate/pipeline.ts';
-import type { GenerateOutcome } from '../generate/pipeline.ts';
 import { printPattern } from '../core/hatch-printer.ts';
-import { reviewHunks } from '../generate/agreement.ts';
-import type { Confirm } from '../generate/agreement.ts';
-import { fileFromGit } from '../infra/git.ts';
+import { describeHunk } from '../generate/agreement.ts';
+import type { GenerateOutcome, GenerateRequest } from '../generate/pipeline.ts';
+import type { Steering } from '../generate/steer.ts';
+import { AmbiguityError, MatchError } from '../core/errors.ts';
+import { editorCommand, editSession } from './editor.ts';
+import type { EditSession } from './editor.ts';
+import { InputClosed } from '../infra/ask.ts';
+import type { Ask } from '../infra/ask.ts';
 import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 import { CONFIG_FILE_NAME, formatConfig, loadConfig, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings, ResolvedConfig } from '../infra/config/index.ts';
-import { createLoggerOrWarn, resolveLogPath, logHeader } from '../infra/log.ts';
-import type { Logger } from '../infra/log.ts';
+import type { ErrorContext, Logger } from '../infra/log.ts';
 import { invokedDirectly } from '../infra/entry.ts';
-import { parseArgs } from './args.ts';
 import type { ArgSpec } from './args.ts';
+import { runCommand } from './command.ts';
+import { GIT_ARGS, GIT_FLAG_NAMES, GIT_USAGE, asksGit, readFromGit } from './git-source.ts';
+import type { FileVersion, GitOptions } from './git-source.ts';
+import { CONFIRM_ARGS, CONFIRM_USAGE, terminalAsker } from './confirm.ts';
+import type { ConfirmOptions } from './confirm.ts';
+import { answersFrom } from './prompt.ts';
+import { namedLanguage } from '../lang/adapter.ts';
+import type { Answers } from './prompt.ts';
 
-interface Options {
+interface Options extends GitOptions, ConfirmOptions {
   in?: string;
   inOld?: string;
-  branch?: string;
-  commit?: string;
-  repoPath?: string;
   out?: string;
   language?: string;
   config?: string;
@@ -35,7 +41,6 @@ interface Options {
   minSiblings?: unknown;
   siblingDetailBase?: unknown;
   bridgeGap?: unknown;
-  head: boolean;
   requireParents: boolean;
   mirror: boolean;
   downloadGrammars: boolean;
@@ -55,26 +60,9 @@ The OLD version — exactly one source, either a file on disk or git.
 
   --in-old     <file>     old version, read from this path
 
-From git it is named by three independent coordinates, and every one of them may be
-left out: what is missing takes its default, so --head alone means "this same file,
-as of the last commit here". Naming any coordinate is itself the ask for git.
+${GIT_USAGE}
 
-  --head,   -H            take the old version from git. On its own that is every
-                          coordinate defaulted: current branch, its last commit, the
-                          path of --in; beside the others it is simply the ask for git
-  --branch, -b <branch>   which branch (default: the one we are on). Alone it means
-                          the last commit of that branch. A BRANCH, local or remote-
-                          tracking: a tag or a raw sha is refused, they are --commit
-  --commit, -c <commit>   which commit (default: the last one of that branch). Any
-                          revision git understands: a sha, a tag, HEAD~3. A commit
-                          names a version on its own and is taken as given; named
-                          TOGETHER with --branch it must be one that branch holds, or
-                          the run stops instead of reading another history
-  --repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the path
-                          of --in — the same file, an older version of it). Unlike
-                          --in-old, which is a path on disk, this one is a path git
-                          knows: a relative one is measured from the repository root,
-                          never from the current directory
+${CONFIRM_USAGE}
 
   --out,    -o <path>     where to write the .md. A directory (existing, or ending
                           with a slash) gets <name of --in>.md inside it; any other
@@ -143,11 +131,12 @@ Configuration
 
 const SPEC: ArgSpec<Options> = {
   flags: {
+    ...GIT_ARGS.flags,
+    ...CONFIRM_ARGS.flags,
     '--agreement': 'agreement', '-a': 'agreement',
     '--exact': 'exact', '-e': 'exact',
     '--debug': 'debug', '-v': 'debug',
     '--help': 'help', '-h': 'help',
-    '--head': 'head', '-H': 'head',
     '--require-parents': 'requireParents',
     '--mirror': 'mirror',
     '--download-grammars': 'downloadGrammars',
@@ -155,11 +144,9 @@ const SPEC: ArgSpec<Options> = {
   },
   negated: { '--no-config': 'useConfig' },
   values: {
+    ...GIT_ARGS.values,
     '--in': 'in', '-i': 'in',
     '--in-old': 'inOld',
-    '--branch': 'branch', '-b': 'branch',
-    '--commit': 'commit', '-c': 'commit',
-    '--repo-path': 'repoPath',
     '--out': 'out', '-o': 'out',
     '--language': 'language', '-l': 'language',
     '--config': 'config',
@@ -178,6 +165,7 @@ const SPEC: ArgSpec<Options> = {
 
 const INITIAL: Options = {
   head: false,
+  yes: false,
   requireParents: false,
   mirror: false,
   downloadGrammars: false,
@@ -193,7 +181,7 @@ function flagOverrides(opts: Options): FlagOverride[] {
   const values: PartialSettings = {
     out: opts.out,
     mirror: opts.mirror ? true : undefined,
-    language: opts.language,
+    language: namedLanguage(opts.language),
     exact: opts.exact ? true : undefined,
     bridgeGap: opts.bridgeGap as PartialSettings['bridgeGap'],
     minParents: opts.minParents as PartialSettings['minParents'],
@@ -207,20 +195,39 @@ function flagOverrides(opts: Options): FlagOverride[] {
   return overridesFrom(values, (spec) => spec.flag);
 }
 
-function langLabel(language: string | null, inPath: string): string | undefined {
-  if (language !== null) return language;
-  const dot = inPath.lastIndexOf('.');
-  return dot === -1 ? undefined : inPath.slice(dot + 1);
+/** `-a`: each hunk is shown as it is made, and kept unless the answer is no — Enter
+ *  keeps it. The answers may come from a terminal or be piped in, one line per hunk; an
+ *  input that closes before every hunk is answered stops the run. No offers to write the
+ *  hunks by hand; refused, the run stops without a .md. */
+function hunkReviewer(answers: Answers): Steering['review'] {
+  return async (hunk, number, total) => {
+    const answer = await answers.next(`\n${describeHunk(hunk, number - 1, total)}\nkeep this hunk? [Y/n] `);
+    if (answer === null) throw new InputClosed();
+    return /^\s*n/i.test(answer) ? 'decline' : 'keep';
+  };
 }
 
-function makeStdinConfirm(): { confirm: Confirm; close: () => void } {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  const confirm: Confirm = (question) =>
-    new Promise((res) => {
-      process.stderr.write(`\n${question}\n`);
-      rl.question('keep this hunk? [Y/n] ', (a) => res(!/^\s*n/i.test(a)));
-    });
-  return { confirm, close: () => rl.close() };
+/** A person at a terminal: both ends, as for every question hatch asks. */
+function atTerminal(): boolean {
+  return process.stdin.isTTY === true && process.stderr.isTTY === true;
+}
+
+/** How a run with a person in it goes on when a hunk has to be written by hand: the
+ *  reason is shown, the person asked, and the .md so far opened in their editor. */
+function steering(answers: Answers, log: Logger, session: EditSession, review?: Steering['review']): Steering {
+  return {
+    review,
+    async offerEdit(why) {
+      log.note(why);
+      if (!atTerminal()) {
+        log.note('  writing hunks by hand needs a terminal: stopping, nothing is written');
+        return false;
+      }
+      const answer = await answers.next(`  edit the hunks by hand (${editorCommand()})? [y/N] `);
+      return answer !== null && /^\s*y(es)?\s*$/i.test(answer);
+    },
+    edit: (text) => session.edit(text),
+  };
 }
 
 function makeTracer(log: Logger): Tracer {
@@ -247,62 +254,78 @@ function makeTracer(log: Logger): Tracer {
   };
 }
 
-/** What the OLD version was read from, kept for the error report: an error deep in
- *  synthesis points into this text, and the reader has to be told which text it is. */
-interface OldVersion {
-  readonly text: string;
-  readonly spec: string;
-}
-
-const GIT_FLAGS = '--head / --branch / --commit / --repo-path';
-
-function asksGit(opts: Options): boolean {
-  return opts.head || opts.branch !== undefined || opts.commit !== undefined || opts.repoPath !== undefined;
-}
-
 /** A usage question, answered before a single file is opened: a wrong invocation has
  *  to be told apart from a file that is not there. */
 function requireOneOldSource(opts: Options): void {
-  const one = `exactly one source of the OLD version: --in-old <file>, or git (${GIT_FLAGS})`;
+  const one = `exactly one source of the OLD version: --in-old <file>, or git (${GIT_FLAG_NAMES})`;
   if (opts.inOld !== undefined && asksGit(opts)) throw new Error(`provide ${one} — not both`);
   if (opts.inOld === undefined && !asksGit(opts)) throw new Error(`provide ${one}`);
 }
 
-async function oldVersion(opts: Options, inPath: string): Promise<OldVersion> {
+async function oldVersion(opts: Options, inPath: string, ask: Ask): Promise<FileVersion> {
   return opts.inOld !== undefined
     ? { text: readInputFile(opts.inOld, '--in-old'), spec: opts.inOld }
-    : fileFromGit({ branch: opts.branch, commit: opts.commit, path: opts.repoPath }, inPath);
+    : readFromGit(opts, inPath, ask);
 }
 
-async function run(opts: Options, config: ResolvedConfig, log: Logger, seen: Seen): Promise<void> {
+async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
+  const config = loadConfig({
+    explicitPath: opts.config,
+    startDir: opts.in !== undefined ? dirname(resolve(opts.in)) : process.cwd(),
+    useFile: opts.useConfig,
+    flags: flagOverrides(opts),
+  });
+  if (opts.printConfig) {
+    process.stdout.write(formatConfig(config));
+    return;
+  }
+  if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
+  const answers = answersFrom();
+  try {
+    await generate(opts, config, log, seen, answers);
+  } finally {
+    answers.close();
+  }
+}
+
+async function generate(
+  opts: Options,
+  config: ResolvedConfig,
+  log: Logger,
+  seen: Seen,
+  answers: Answers,
+): Promise<void> {
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
   requireOneOldSource(opts);
 
   const newStr = readInputFile(opts.in, '--in');
-  const old = await oldVersion(opts, opts.in);
+  const old = await oldVersion(opts, opts.in, terminalAsker(opts.yes, (m) => log.note(m), answers));
   seen.old = old;
   log.trace(`old version: ${old.spec} (${old.text.length} bytes)`);
 
   const settings = config.generate;
-  const review = opts.agreement ? makeStdinConfirm() : null;
+  const request: GenerateRequest = {
+    oldText: old.text,
+    newText: newStr,
+    language: settings.language ?? undefined,
+    path: opts.in,
+    exact: settings.exact,
+    bridgeGap: settings.bridgeGap,
+    limits: settings,
+    init: { allowDownload: opts.downloadGrammars || downloadAllowedByEnv() },
+    trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
+  };
+  const session = editSession();
   let outcome: GenerateOutcome;
   try {
-    outcome = await generatePatch({
-      oldText: old.text,
-      newText: newStr,
-      language: settings.language ?? undefined,
-      path: opts.in,
-      label: langLabel(settings.language, opts.in),
-      exact: settings.exact,
-      bridgeGap: settings.bridgeGap,
-      limits: settings,
-      init: { allowDownload: opts.downloadGrammars || downloadAllowedByEnv() },
-      trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
-      ...(review !== null ? { review: (hunks) => reviewHunks(hunks, review.confirm) } : {}),
-    });
-  } finally {
-    review?.close();
+    outcome = await synthesizeFor(opts, request, () => steering(answers, log, session, hunkReviewer(answers)), () =>
+      steering(answers, log, session),
+    );
+  } catch (e) {
+    if (session.file !== undefined) log.note(`the hunks as last edited are kept in ${session.file}`);
+    throw e;
   }
+  session.discard();
 
   for (const w of outcome.warnings) log.note(`warning: ${w}`);
 
@@ -317,53 +340,36 @@ async function run(opts: Options, config: ResolvedConfig, log: Logger, seen: See
   log.note(`generated ${outcome.hunkCount} hunk(s) → ${outPath}`);
 }
 
+/** `-a` steers from the first hunk. Without it synthesis runs on its own, and only a
+ *  change it cannot anchor, with a person at a terminal, hands the run over — a script
+ *  or CI gets the error as before. */
+async function synthesizeFor(
+  opts: Options,
+  request: GenerateRequest,
+  reviewed: () => Steering,
+  unreviewed: () => Steering,
+): Promise<GenerateOutcome> {
+  if (opts.agreement) return generatePatch({ ...request, steering: reviewed() });
+  try {
+    return await generatePatch(request);
+  } catch (e) {
+    if (!(e instanceof MatchError || e instanceof AmbiguityError) || !atTerminal()) throw e;
+    return generatePatch({ ...request, steering: unreviewed() });
+  }
+}
+
 interface Seen {
-  old?: OldVersion;
+  old?: FileVersion;
 }
 
-export async function main(argv: readonly string[]): Promise<void> {
-  let opts: Options;
-  try {
-    opts = parseArgs(argv, SPEC, { ...INITIAL });
-  } catch (e) {
-    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  if (opts.help) {
-    process.stdout.write(`${USAGE}\n`);
-    return;
-  }
-
-  const log = createLoggerOrWarn({
-    ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'generate') } : {}),
-    verbose: opts.debug,
-    header: logHeader('generate', argv),
-  });
-
-  const seen: Seen = {};
-  try {
-    const config = loadConfig({
-      explicitPath: opts.config,
-      startDir: opts.in !== undefined ? dirname(resolve(opts.in)) : process.cwd(),
-      useFile: opts.useConfig,
-      flags: flagOverrides(opts),
-    });
-    if (opts.printConfig) {
-      process.stdout.write(formatConfig(config));
-      return;
-    }
-    if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
-    await run(opts, config, log, seen);
-    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
-  } catch (e) {
-    process.exitCode = log.fail(e, errorContext(opts, seen));
-  } finally {
-    log.close();
-  }
+export function main(argv: readonly string[]): Promise<void> {
+  return runCommand(
+    { name: 'generate', usage: USAGE, spec: SPEC, initial: INITIAL, verbose: (o) => o.debug, run, errorContext },
+    argv,
+  );
 }
 
-function errorContext(opts: Options, seen: Seen): { source?: string; sourcePath?: string } {
+function errorContext(opts: Options, seen: Seen): ErrorContext {
   if (seen.old !== undefined) return { source: seen.old.text, sourcePath: seen.old.spec };
   return opts.inOld !== undefined ? { sourcePath: opts.inOld } : {};
 }

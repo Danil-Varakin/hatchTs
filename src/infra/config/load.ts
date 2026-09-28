@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { isAbsolute, join, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { isFile, isRepoRoot, upwards } from '../fs.ts';
 import { ConfigError } from '../../core/errors.ts';
 import {
@@ -13,7 +13,7 @@ import {
   knownConfigKeys,
 } from './schema.ts';
 import type { FieldSpec, GenerateSettings, PartialSettings } from './schema.ts';
-import { CONFIG_VERSION } from './schema.ts';
+import { CONFIG_MIN, CONFIG_VERSION, configRange } from './schema.ts';
 
 export const CONFIG_FILE_NAME = 'hatch.config.json';
 
@@ -72,9 +72,7 @@ export function readConfigFile(file: string): PartialSettings {
   for (const [key, value] of Object.entries(parsed)) {
     if (key === '$schema') continue;
     if (key === 'version') {
-      if (value !== CONFIG_VERSION) {
-        throw new ConfigError(`"version" must be ${CONFIG_VERSION} (got ${JSON.stringify(value)})`, file);
-      }
+      checkSchemaVersion(value, file);
       continue;
     }
     collect(value, key, out, file);
@@ -108,12 +106,13 @@ export function resolveConfig(options: {
 
   const fileOrigin = options.file !== undefined ? `config ${options.file}` : 'config';
 
-
+  // Already checked by readConfigFile, where the file's name is still at hand; flags
+  // arrive raw and are checked below.
   for (const [key, value] of Object.entries(options.fromFile ?? {})) {
     if (value === undefined) continue;
     const spec = FIELD_BY_KEY.get(key as keyof GenerateSettings);
     if (spec === undefined) continue;
-    settings[key] = checkValue(value, spec, options.file);
+    settings[key] = value;
     origins[spec.path] = fileOrigin;
   }
 
@@ -146,7 +145,7 @@ export function loadConfig(options: {
 
   let file: string | undefined;
   if (options.explicitPath !== undefined) {
-    file = isAbsolute(options.explicitPath) ? options.explicitPath : resolve(options.explicitPath);
+    file = resolve(options.explicitPath);
     if (!isFile(file)) throw new ConfigError('no such config file', file);
   } else {
     file = findConfigFile(options.startDir);
@@ -163,4 +162,30 @@ export function formatConfig(config: ResolvedConfig): string {
     lines.push(`${spec.path.padEnd(width)} = ${value.padEnd(6)}  [${config.origins[spec.path]}]`);
   }
   return lines.join('\n') + '\n';
+}
+
+/** Every schema in the range is read; outside it the message says WHICH side is behind —
+ *  a config from a newer hatch asks for an update, not for its own deletion. */
+function checkSchemaVersion(value: unknown, file: string | undefined): void {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new ConfigError(
+      `"version" must be a whole number, the config schema version — this hatch reads ${configRange()} ` +
+        `(got ${JSON.stringify(value)})`,
+      file,
+    );
+  }
+  if (value > CONFIG_VERSION) {
+    throw new ConfigError(
+      `"version" ${value} is a config schema this hatch does not know yet — it reads ${configRange()}: ` +
+        'update hatch, or write the config for the schema this one reads',
+      file,
+    );
+  }
+  if (value < CONFIG_MIN) {
+    throw new ConfigError(
+      `"version" ${value} is a config schema this hatch no longer reads — it reads ${configRange()}: ` +
+        `move the file to v${CONFIG_VERSION}`,
+      file,
+    );
+  }
 }

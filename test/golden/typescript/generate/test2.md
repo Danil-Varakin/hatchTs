@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     const cache: Map<string, Array<Promise<number>>> = new Map();

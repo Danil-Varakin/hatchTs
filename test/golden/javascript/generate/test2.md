@@ -1,4 +1,4 @@
-# match js
+# match javascript
     ...
     >>>
     const render = (user) => `hello, ${user.name.trim()} (${user.roles.join(', ')})`;

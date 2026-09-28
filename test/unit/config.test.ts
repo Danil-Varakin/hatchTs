@@ -166,7 +166,7 @@ test('$schema is ignored, "all" and booleans pass through', withTempDir((dir) =>
 
 test('a version other than the current one is refused', withTempDir((dir) => {
   const file = writeConfig(dir, { version: CONFIG_VERSION + 1, generate: {} });
-  assert.throws(() => readConfigFile(file), /"version" must be 1/);
+  assert.throws(() => readConfigFile(file), /does not know yet — it reads v1: update hatch/);
 }));
 
 // ── file lookup ──────────────────────────────────────────────────────────────────

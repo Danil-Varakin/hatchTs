@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     void B();
     >>>

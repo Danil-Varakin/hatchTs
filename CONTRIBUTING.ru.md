@@ -82,11 +82,20 @@ npm run generate -- --in new.cpp --in-old old.cpp --debug
   контракт), `adapter.ts` (реестр), общие `canon.ts` / `build-map.ts` /
   `block-spans.ts` / `treesitter.ts` и папки языков (`cpp/`, `python/`).
 - `src/generate/` — обратный конвейер: `diff.ts` (атомарные сегменты правок),
-  `synth.ts` (структурная привязка и проверка), `printer.ts` (сборка `.md`),
-  `agreement.ts` (режим `-a`, чистое ядро — `confirm` приходит снаружи).
-- `src/infra/` — побочные эффекты: атомарная запись, чтение файла из git-ветки.
-- `src/cli/` — `apply.ts` и `generate.ts`, у каждого свой маленький разбор
-  аргументов и `main()`, переводящий `HatchError` в код выхода.
+  `synth.ts` (структурная привязка и проверка), `steer.ts` (синтез, которым правит
+  человек: по ханку, с ханками вручную — человек приходит снаружи), `printer.ts`
+  (сборка `.md`), `pipeline.ts` (весь `generate` над текстом — одна дверь для CLI и
+  сервиса).
+- `src/infra/` — побочные эффекты: файлы (атомарная запись с сохранением прав и
+  сквозь симлинки), git, грамматики, конфиг, лог; `ask.ts` — единственная форма
+  вопроса «да/нет».
+- `src/service/` — hatch долгоживущим процессом, JSON по stdio
+  ([PROTOCOL.md](./PROTOCOL.md)).
+- `src/cli/` — `index.ts` раздаёт работу `apply`, `generate`, `grammars`; `command.ts` —
+  то, что каждая команда делает вокруг своей работы (аргументы, `--help`, лог, код
+  выхода); `args.ts` разбирает, `prompt.ts` читает ответы, `confirm.ts` спрашивает
+  перед шагом, который может что-то потерять, `editor.ts` запускает редактор,
+  `git-source.ts` — git-флаги, общие для `apply` и `generate`.
 
 ## Тесты
 
@@ -133,18 +142,23 @@ npm run grammars
 
 ## Релиз
 
-Релиз выпускает **CI**, а не человек. Всё, что нужно, — поставить тег:
+**[VERSIONING.md](./VERSIONING.md) обязателен**: какой номер когда поднимается (пакет,
+диапазон протокола, диапазон схемы конфига), что считается ломающим изменением и шаги
+релиза. У каждого релиза до тега есть запись в [CHANGELOG.md](./CHANGELOG.md).
+
+Релиз выпускает **CI**, а не человек: шаги — в VERSIONING.md §5, и последний из них
+отправляет тег:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git push origin v<версия>
 ```
 
 Дальше `.github/workflows/release.yml` на чистой машине сверяет тег с `version` в
 `package.json`, гоняет тайпчек и тесты, собирает `dist/`, делает `npm pack` и сам
 создаёт GitHub Release с приложенным `.tgz`. Если тесты красные — релиза не будет.
 
-Сверка тега с версией не даёт выпустить `v0.2.0` из кода, который считает себя
-`0.1.0`: подняли версию в `package.json`, закоммитили, потом тег.
+Сверка тега с версией не даёт выпустить тег из кода, который всё ещё несёт прежнюю
+версию: подняли версию в `package.json`, закоммитили, потом тег.
 
 Локально архив можно собрать для проверки — ничего никуда не отправляя:
 
@@ -158,18 +172,18 @@ npm run pack
 npm pack --dry-run
 ```
 
-Внутри должны быть только `dist/`, оба README, `hatch.config.schema.json` и
-`package.json` — список задаёт поле `files` в `package.json`. Ничего из `src/`,
+Внутри должны быть только `dist/`, оба README, `PROTOCOL.md`, `hatch.config.schema.json`
+и `package.json` — список задаёт поле `files` в `package.json`. Ничего из `src/`,
 `test/`, `docs/`.
 
 Установка у пользователя:
 
 ```bash
-npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v<версия>/hatch-<версия>.tgz
 ```
 
-Появляется команда `hatch`. Грамматик в архиве нет (~17 МБ на одиннадцать языков),
-поэтому первый запуск скажет, что делать: `hatch grammars`.
+Появляется команда `hatch`. Грамматик в архиве нет, поэтому первый запуск скажет, что
+делать: `hatch grammars`.
 
 Работает и установка прямо из репозитория (`npm i -g github:Danil-Varakin/hatchTs`) —
 за это отвечает `prepare`, который собирает `dist/` уже на машине пользователя.
@@ -178,7 +192,8 @@ npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch
 
 `.github/workflows/ci.yml` запускается на каждый push и pull request:
 
-- **матрица** — Linux, macOS, Windows × Node 22 и 24, шесть комбинаций;
+- **матрица** — Linux, macOS и Windows, каждая на всех версиях Node, которые проект
+  поддерживает (список — в `ci.yml`);
 - **грамматики** кешируются между прогонами (`HATCH_GRAMMAR_CACHE` указывает на папку
   внутри рабочего каталога, её и запоминает `actions/cache`);
 - **отдельная задача** собирает пакет и печатает его состав, чтобы лишний файл в
@@ -188,7 +203,7 @@ npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch
 
 ## Корпус и golden
 
-`test/golden/` — 345 рукописных кейсов по одиннадцати языкам, они в репозитории и
+`test/golden/` — рукописные кейсы для каждого языка, они в репозитории и
 гоняются обычным `npm test`. Проверяются ДВЕ разные вещи:
 
 - **round-trip** — `synthesize → печать → разбор → apply → сверка с new`: результат

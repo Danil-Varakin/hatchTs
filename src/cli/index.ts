@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { HatchError } from '../core/errors.ts';
 import { renderError } from '../infra/log.ts';
-import { CONFIG_VERSION } from '../infra/config/index.ts';
+import { configRange } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
 import { invokedDirectly } from '../infra/entry.ts';
 
@@ -10,27 +10,29 @@ interface Command {
   readonly load: () => Promise<{ main: (argv: readonly string[]) => Promise<void> }>;
 }
 
-const COMMANDS: Readonly<Record<string, Command>> = {
-  apply: {
-    summary: 'apply .md instructions to a source file',
-    load: () => import('./apply.ts'),
-  },
-  generate: {
-    summary: 'synthesize .md instructions from two versions of a file',
-    load: () => import('./generate.ts'),
-  },
-  grammars: {
-    summary: 'put the tree-sitter grammars in place (the only command that goes online)',
-    load: () => import('./grammars.ts'),
-  },
-};
+// A Map, not an object literal: the command name is whatever was typed, and an object
+// answers `constructor`, `toString` and `__proto__` with what it inherits.
+const COMMANDS: ReadonlyMap<string, Command> = new Map([
+  ['apply', { summary: 'apply .md instructions to a source file', load: () => import('./apply.ts') }],
+  [
+    'generate',
+    { summary: 'synthesize .md instructions from two versions of a file', load: () => import('./generate.ts') },
+  ],
+  [
+    'grammars',
+    {
+      summary: 'put the tree-sitter grammars in place (the only command that goes online)',
+      load: () => import('./grammars.ts'),
+    },
+  ],
+]);
 
 const USAGE = `hatch — structural patch instructions in Markdown
 
   hatch <command> [options]
 
 Commands:
-${Object.entries(COMMANDS)
+${[...COMMANDS]
   .map(([name, c]) => `  ${name.padEnd(10)}${c.summary}`)
   .join('\n')}
 
@@ -44,7 +46,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
   if (first === undefined || first === '--help' || first === '-h' || first === 'help') {
     const topic = first === 'help' ? rest[0] : undefined;
-    const named = topic === undefined ? undefined : COMMANDS[topic];
+    const named = topic === undefined ? undefined : COMMANDS.get(topic);
     if (named !== undefined) {
       await (await named.load()).main(['--help']);
       return;
@@ -57,9 +59,9 @@ export async function main(argv: readonly string[]): Promise<void> {
     return;
   }
 
-  const command = COMMANDS[first];
+  const command = COMMANDS.get(first);
   if (command === undefined) {
-    const known = Object.keys(COMMANDS).join(', ');
+    const known = [...COMMANDS.keys()].join(', ');
     const hint = first.startsWith('-')
       ? `options come AFTER the command: hatch <command> ${first} …`
       : `known commands: ${known}`;
@@ -79,7 +81,7 @@ export async function main(argv: readonly string[]): Promise<void> {
 
 function version(): string {
   const pkg = packageIdentity();
-  return `${pkg.name} ${pkg.version} (config schema v${CONFIG_VERSION})`;
+  return `${pkg.name} ${pkg.version} (config schema ${configRange()})`;
 }
 
 if (invokedDirectly(import.meta.url)) {

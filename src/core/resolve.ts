@@ -3,7 +3,8 @@ import type { LanguageAdapter, SourceMap, MapCache } from '../lang/source-map.ts
 import { mapFor } from '../lang/source-map.ts';
 import type { Edit } from './patcher.ts';
 import { matchPattern } from './matcher.ts';
-import { planEdit, applyEdit } from './patcher.ts';
+import { applyEdit } from './patcher.ts';
+import { planHunk } from './apply.ts';
 import { AmbiguityError, MatchError } from './errors.ts';
 
 export interface Span {
@@ -55,7 +56,7 @@ export function resolveHunks(
     const untouched = current === baseline;
     const map = untouched ? baselineMap : mapFor(adapter, current, maps);
     try {
-      const edit = planEdit(matchPattern(hunk.match, map, adapter.normalize), map, hunk.patch);
+      const edit = planHunk(current, map, hunk, adapter);
       drafts.push({
         index,
         hunk,

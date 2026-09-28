@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -12,15 +12,18 @@ import { reviewHunks } from '../../src/generate/agreement.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { applyAll } from '../../src/core/apply.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
+import { pythonAdapter } from '../../src/lang/python/index.ts';
+import { generatePatch } from '../../src/generate/pipeline.ts';
+import type { LanguageAdapter } from '../../src/lang/source-map.ts';
 import { buildRepo, version } from '../git-repo.ts';
 import type { Repo } from '../git-repo.ts';
 
 // ── the round trip THROUGH .md: synth → print → parse → apply == new ──────────
 
-async function pipelineRoundtrip(oldStr: string, newStr: string): Promise<void> {
-  await cppAdapter.init();
-  const md = printHatchFile(synthesize(oldStr, newStr, cppAdapter), 'cpp');
-  const { source } = applyAll(oldStr, parseHatchFile(md), cppAdapter);
+async function pipelineRoundtrip(oldStr: string, newStr: string, adapter: LanguageAdapter = cppAdapter): Promise<void> {
+  await adapter.init();
+  const md = printHatchFile(synthesize(oldStr, newStr, adapter), adapter.name);
+  const { source } = applyAll(oldStr, parseHatchFile(md), adapter);
   assert.equal(source, newStr);
 }
 
@@ -40,6 +43,35 @@ test('printer round trip: insertion, deletion and several hunks', async () => {
 
 test('printer round trip: a literal holding ... is escaped and survives parsing', async () => {
   await pipelineRoundtrip('int a = f(x, y);\nint z = 0;\n', 'int a = f(x, ...);\nint z = 0;\n');
+});
+
+// A .md carries no line endings of its own (git and editors turn them either way), so
+// the lines a hunk writes into a CRLF file must come out CRLF — byte for byte, not only
+// after normalization, which would hide a mixed file.
+test('printer round trip: a CRLF file gets CRLF on every line the hunks write', async () => {
+  await pipelineRoundtrip(
+    'int f() {\r\n  int a = 1;\r\n  return a;\r\n}\r\n',
+    'int f() {\r\n  int a = 5;\r\n  int b = 6;\r\n  int c = 7;\r\n  return a;\r\n}\r\n',
+  );
+  await pipelineRoundtrip(
+    'int f() {\r\n  a();\r\n}\r\n\r\nint g() {\r\n  b();\r\n}\r\n',
+    'int f() {\r\n  a();\r\n  a2();\r\n}\r\n\r\nint g() {\r\n}\r\n',
+  );
+});
+
+test('printer round trip: a CRLF Python file, where the indent is the structure', async () => {
+  await pipelineRoundtrip(
+    'def f():\r\n    a = 1\r\n    return a\r\n',
+    'def f():\r\n    a = 5\r\n    if a:\r\n        a += 1\r\n    return a\r\n',
+    pythonAdapter,
+  );
+});
+
+test('generatePatch: a heading apply would read as another language is refused up front', async () => {
+  await assert.rejects(
+    () => generatePatch({ oldText: 'int a;\n', newText: 'int b;\n', language: 'cpp', label: 'c' }),
+    /'# match c' would be read back by apply as language 'c', not as 'cpp'/,
+  );
 });
 
 test('printHatchFile: the parser reads back the headings it writes', async () => {
@@ -78,18 +110,15 @@ interface CliRun {
   stderr: string;
 }
 
+/** Both streams, whatever the exit: a warning printed on the way to success is part of
+ *  what a run says, and has to be there to be checked. */
 function runCli(cli: string, args: string[], cwd?: string): CliRun {
-  try {
-    const stdout = execFileSync('node', ['--experimental-strip-types', cli, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      ...(cwd !== undefined ? { cwd } : {}),
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string };
-    return { status: err.status ?? -1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-  }
+  const r = spawnSync('node', ['--experimental-strip-types', cli, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    ...(cwd !== undefined ? { cwd } : {}),
+  });
+  return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
 }
 
 test('CLI generate --in-old writes the .md, and apply brings the new file back', () => {
@@ -110,6 +139,142 @@ test('CLI generate --in-old writes the .md, and apply brings the new file back',
     const ap = runCli(APPLY_CLI, ['--match', md, '--in', oldF, '--out', out]);
     assert.equal(ap.status, 0, ap.stderr);
     assert.equal(readFileSync(out, 'utf8'), newStr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate → apply with no --language: the heading is the language\'s own name', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-gen-'));
+  try {
+    const cases = [
+      { ext: '.m', name: 'objc', from: '@implementation Foo\n- (void)bar {\n  int a = 1;\n}\n@end\n', to: '2;' },
+      { ext: '.mm', name: 'objc', from: '@implementation Foo\n- (void)bar {\n  int a = 1;\n}\n@end\n', to: '2;' },
+      { ext: '.pyi', name: 'python', from: 'def f() -> int:\n    return 1\n', to: '2\n' },
+      { ext: '.kts', name: 'kotlin', from: 'fun f() {\n  val a = 1\n}\n', to: '2\n' },
+      { ext: '.mts', name: 'typescript', from: 'function f() {\n  const a = 1;\n}\n', to: '2;' },
+    ];
+    for (const c of cases) {
+      const oldF = join(dir, `old${c.ext}`);
+      const newF = join(dir, `new${c.ext}`);
+      const md = join(dir, `patch${c.ext}.md`);
+      const out = join(dir, `result${c.ext}`);
+      const newStr = c.from.replace(/1(;|\n)/, c.to);
+      writeFileSync(oldF, c.from);
+      writeFileSync(newF, newStr);
+
+      const gen = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md]);
+      assert.equal(gen.status, 0, `${c.ext}: ${gen.stderr}`);
+      const printed = readFileSync(md, 'utf8');
+      assert.match(printed, new RegExp(`^# match ${c.name}$`, 'm'), c.ext);
+
+      const ap = runCli(APPLY_CLI, ['--match', md, '--in', oldF, '--out', out]);
+      assert.equal(ap.status, 0, `${c.ext}: ${ap.stderr}`);
+      assert.equal(readFileSync(out, 'utf8'), newStr, c.ext);
+
+      // hatch 0.2.0 wrote the extension there instead: that .md applies the same
+      writeFileSync(md, printed.replace(`# match ${c.name}`, `# match ${c.ext.slice(1)}`));
+      const old = runCli(APPLY_CLI, ['--match', md, '--in', oldF, '--out', out]);
+      assert.equal(old.status, 0, `${c.ext} as 0.2.0 wrote it: ${old.stderr}`);
+      assert.equal(readFileSync(out, 'utf8'), newStr, `${c.ext} as 0.2.0 wrote it`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate → apply on a CRLF file: the result is the new file byte for byte', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-gen-'));
+  try {
+    const oldF = join(dir, 'old.c');
+    const newF = join(dir, 'new.c');
+    const md = join(dir, 'patch.md');
+    const out = join(dir, 'result.c');
+    const newStr = 'int f() {\r\n  int a = 5;\r\n  int b = 6;\r\n  int c = 7;\r\n  return a;\r\n}\r\n';
+    writeFileSync(oldF, 'int f() {\r\n  int a = 1;\r\n  return a;\r\n}\r\n');
+    writeFileSync(newF, newStr);
+
+    const gen = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md]);
+    assert.equal(gen.status, 0, gen.stderr);
+    const ap = runCli(APPLY_CLI, ['--match', md, '--in', oldF, '--out', out]);
+    assert.equal(ap.status, 0, ap.stderr);
+    assert.equal(readFileSync(out, 'utf8'), newStr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── -a: one answer per hunk, from a terminal or a pipe ─────────────────────────
+
+function runCliWithInput(cli: string, args: string[], input: string): CliRun {
+  const r = spawnSync('node', ['--experimental-strip-types', cli, ...args], {
+    encoding: 'utf8',
+    input,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
+}
+
+const TWO_OLD = 'void f() {\n  a();\n}\n\nvoid g() {\n  b();\n}\n';
+const TWO_NEW = 'void f() {\n  a2();\n}\n\nvoid g() {\n  b2();\n}\n';
+
+function withTwoHunks(body: (files: { oldF: string; newF: string; md: string; dir: string }) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-review-'));
+  try {
+    const oldF = join(dir, 'old.cc');
+    const newF = join(dir, 'new.cc');
+    writeFileSync(oldF, TWO_OLD);
+    writeFileSync(newF, TWO_NEW);
+    body({ oldF, newF, md: join(dir, 'patch.md'), dir });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('CLI generate -a: y keeps a hunk; n offers the editor, and with no terminal the run stops', () => {
+  withTwoHunks(({ oldF, newF, md }) => {
+    const r = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md, '-a'], 'y\nn\n');
+    assert.equal(r.status, 1, r.stderr);
+    assert.match(r.stderr, /hunk 1\/2:[\s\S]*keep this hunk\? \[Y\/n\][\s\S]*hunk 2\/2:/);
+    assert.match(r.stderr, /hunk 2: declined/);
+    assert.match(r.stderr, /writing hunks by hand needs a terminal: stopping, nothing is written/);
+    assert.equal(existsSync(md), false, 'no .md');
+
+    const all = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md, '-a'], 'y\n\n');
+    assert.equal(all.status, 0, all.stderr);
+    assert.equal(parseHatchFile(readFileSync(md, 'utf8')).hunks.length, 2, 'y and Enter keep');
+  });
+});
+
+test('CLI generate -a: an input that closes early stops the run and writes nothing', () => {
+  withTwoHunks(({ oldF, newF, md }) => {
+    for (const [input, at] of [['', 1], ['y\n', 2]] as const) {
+      const r = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md, '-a'], input);
+      assert.equal(r.status, 1, JSON.stringify(input));
+      assert.match(r.stderr, new RegExp(`the input closed at hunk ${at} of 2, before it was answered — nothing was written`));
+      assert.match(r.stderr, /answer every hunk \(one line each, Enter keeps it\), or drop -a/);
+      assert.equal(existsSync(md), false, `${JSON.stringify(input)}: no .md`);
+    }
+  });
+});
+
+test('CLI generate: a change that cannot be anchored, with no terminal, is the error it always was', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hatch-unanchored-'));
+  try {
+    const oldF = join(dir, 'old.cc');
+    const newF = join(dir, 'new.cc');
+    const old = 'void f() {\n  if (cond) {\n    a();\n    work();\n  }\n  if (cond) {\n    a();\n    work();\n  }\n}\n';
+    writeFileSync(oldF, old);
+    writeFileSync(newF, old.replace(/work\(\);(?![\s\S]*work\(\);)/, 'work(2);'));
+
+    const plain = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', '-']);
+    assert.ok(plain.status === 3 || plain.status === 4, plain.stderr);
+    assert.ok(!plain.stderr.includes('by hand'), 'a script is not offered the editor');
+
+    const reviewed = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', '-', '-a'], '');
+    assert.equal(reviewed.status, plain.status, 'the same error, the same code');
+    assert.match(reviewed.stderr, /could not be anchored/);
+    assert.match(reviewed.stderr, /writing hunks by hand needs a terminal: stopping, nothing is written/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -354,6 +519,26 @@ test('CLI generate --head sits beside the coordinates rather than fighting them'
     const without = generateIn(repo, ['--repo-path', 'src/core/side-only.cc', '--branch', 'side']);
     assert.equal(withHead.status, 0, withHead.stderr);
     assert.equal(withHead.stdout, without.stdout, '--head asks for git, the coordinates say which version');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('CLI generate --yes: what would be asked about is read, the rest is still refused', () => {
+  const repo = buildRepo('hatch-cli-yes-');
+  try {
+    const off = generateIn(repo, ['--branch', repo.branch, '--commit', repo.s, '--yes']);
+    assert.equal(off.status, 0, off.stderr);
+    assert.match(off.stderr, /warning: commit .* is not on branch/);
+    assertReplaces(off.stdout, 'int a = 3;', 'int a = 4;');
+
+    const tag = generateIn(repo, ['--branch', 'v1.0', '-y']);
+    assert.equal(tag.status, 0, tag.stderr);
+    assertReplaces(tag.stdout, 'int a = 2;', 'int a = 4;');
+
+    const none = generateIn(repo, ['--branch', 'nope', '--yes']);
+    assert.notEqual(none.status, 0, 'nothing to read is not a question --yes can answer');
+    assert.match(none.stderr, /no such branch/);
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
   }

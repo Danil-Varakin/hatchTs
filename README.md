@@ -61,6 +61,12 @@ The one exception worth knowing: a payload line made of *significant trailing
 whitespace* is indistinguishable from junk to a whitespace fixer, so don't run
 one over an instruction file — `generate` warns when it emits such a line.
 
+Line endings are not payload. An instruction file may reach you with LF or CRLF —
+git and editors turn them either way — and both read alike. A patch takes the line
+ending of the file it lands in: in a CRLF file every line it writes ends in CRLF, in an
+LF file it lands byte for byte. Where a file mixes the two, the line the edit starts on
+decides.
+
 ## The language: three operators
 
 The `match` block is written in the target language with operators interleaved:
@@ -142,12 +148,19 @@ its anchors this way by default.
 
 ## Install
 
+Requirements: **Node.js 22 or newer**; **git** only for reading a version out of a
+repository (`--head`, `--branch`, `--commit`, `--repo-path`, the service's `baseGit`).
+Linux, macOS and Windows are all tested in CI.
+
+Every release on the [Releases page](https://github.com/Danil-Varakin/hatchTs/releases)
+has a `hatch-<version>.tgz` attached; install that archive by its URL:
+
 ```bash
-npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v<version>/hatch-<version>.tgz
 ```
 
-You get a `hatch` command. Grammars are not inside (~22 MB across eleven languages),
-so once after installing:
+You get a `hatch` command. The grammars are not inside — they are large, and a run
+needs only its own language's — so once after installing:
 
 ```bash
 hatch grammars
@@ -160,6 +173,9 @@ From a clone it also works without installing: `npm run hatch -- <command>`.
 ```bash
 # apply
 hatch apply --match changes.md --in src/main.cpp --out src/main.cpp
+
+# ...or patch the file as git holds it: does the patch still fit master?
+hatch apply --match changes.md --in src/main.cpp --branch master --verify
 
 # generate
 hatch generate --in new.cpp --in-old old.cpp --out changes.md   # a file: it has an extension
@@ -178,17 +194,23 @@ hatch generate --in src/main.cpp --branch master --commit 1f3ac9d \
 options, `hatch --version` reports the tool version and the config schema version.
 
 Exit codes, for scripts to rely on:
-`0` ok · `1` usage · `2` `.md` parse · `3` no match · `4` ambiguous · `5` config ·
-`6` grammar.
+`0` ok · `1` usage or any other refusal · `2` `.md` parse · `3` no match ·
+`4` ambiguous · `5` config · `6` grammar (details under "Exit codes" below).
 
 ### `apply` options
 ```
 --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
---in,    -i <file>      source file to patch                     [required]
+--in,    -i <file>      the file to patch                        [required]
+                        read from disk, unless a git coordinate is named
+--head,   -H            the file as git holds it — the same four flags, with the
+--branch, -b <branch>   same defaults, questions and refusals, as `generate` (see "Where
+--commit, -c <commit>   the old version comes from" below)
+--repo-path  <path>
 --out,   -o <path>      where to write the result   [required unless --dry-run/--verify]
-                        same placement rules as `generate --out`, minus `-` and
+                        same placement rules as `generate --out`, minus
                         mirroring: a directory gets <name of --in> inside it, any
-                        other path is written as is, directories are created
+                        other path is written as is, directories are created,
+                        `-` writes to stdout
 --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
                         the file extension)
 --dry-run               show planned edits, write nothing
@@ -199,8 +221,26 @@ Exit codes, for scripts to rely on:
                         0600. A place that is a directory (or ends in /) gets a
                         generated name, otherwise it IS the name; omitted means
                         ./hatch-logs/
+--yes,    -y            answer yes in advance to every question (see "When hatch
+                        asks before going on" below)
 --help,  -h             this help
 ```
+
+With a git coordinate, `--in` stops being the file's content and becomes its **name**:
+it finds the repository, gives the default path inside it, and names the result — so
+it need not exist on disk at all. The result is named after `--in` even when
+`--repo-path` read another path: patching the version from before a rename and saving
+it under the new name is the case this serves.
+
+One rule is `apply`'s own. Writing the result over `--in` itself while the content
+came out of git puts a patched git version where your working file is. If that would
+lose what the working file holds, you are **asked** first (see "When hatch asks before
+going on"). Nothing is asked when nothing is lost: the working file already had the git
+text, or the result is the working file itself (a patch generated from it, applied
+back). Patching in place from disk is untouched.
+
+The case this is for most is CI: `--verify --branch main` answers "does this patch
+still fit main" without checking anything out.
 
 ### `generate` options
 ```
@@ -210,12 +250,12 @@ Exit codes, for scripts to rely on:
                         current branch, its last commit, the path of --in
 --branch, -b <branch>   which branch (default: the one we are on). Alone it
                         means the last commit of that branch. A BRANCH, local
-                        or remote-tracking: a tag or a raw sha is refused,
-                        those are --commit
+                        or remote-tracking: a tag or a raw sha belongs in
+                        --commit, and here it is asked about first
 --commit, -c <commit>   which commit (default: the last one of that branch).
                         Any revision git understands: a sha, a tag, HEAD~3.
                         Alone it is taken as given; together with --branch it
-                        must be a commit that branch holds, or the run stops
+                        should be one that branch holds, or you are asked
 --repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the
                         path of --in). Unlike --in-old, which is a path on
                         disk, this is a path git knows: a relative one is
@@ -234,7 +274,11 @@ Exit codes, for scripts to rely on:
                         then always a directory; a relative one is taken from the
                         repository root, never from the current directory
 --language,-l <lang>    force language (else: extension of --in)
---agreement,-a          confirm each hunk before writing
+--agreement,-a          show each hunk as it is made: Enter keeps it; n offers to
+                        write the hunks by hand in the editor (see "Writing a hunk
+                        by hand"), and refusing that stops the run without a .md.
+                        Answers may be piped in, one line per hunk; an input that
+                        closes early stops the run without a .md
 --exact,  -e            reproduce the new file byte for byte; without it every
                         line only has to match after normalization (indentation
                         and inner spacing are free, the set of lines is not)
@@ -246,6 +290,7 @@ Exit codes, for scripts to rely on:
                         of every value, and the whole synthesis trace whether or
                         not -v is on. Every run gets its own file, mode 0600;
                         omitted means ./hatch-logs/
+--yes,    -y            answer yes in advance to every question (see below)
 --help,   -h            this help
 ```
 
@@ -270,19 +315,63 @@ last commit of `master`, `--commit 1f3ac9d` is that commit of this same file,
 
 A commit names a version on its own, so `--commit 1f3ac9d` is taken as given, wherever
 that commit lives. The branch beside it is a **claim about** it — and a claim is worth
-checking, which makes `--branch` with `--commit` the one combination that can be
-refused: a commit the branch never held stops the run instead of quietly handing back a
-version out of another history.
+checking, which makes `--branch` with `--commit` the one combination that can
+contradict itself: a commit the branch never held is asked about before a version out
+of another history is read.
 
 Each coordinate is also held to its own kind. `--branch` takes a **branch** (local or
-remote-tracking); a tag or a raw sha is refused with a pointer to `--commit`, which
-takes any revision git understands. `--repo-path` takes a **file**: a directory is
-refused rather than handed back as a printed tree listing.
+remote-tracking); a tag or a raw sha is asked about, with a pointer to `--commit`,
+which takes any revision git understands. `--repo-path` takes a **file**: a directory
+is refused rather than handed back as a printed tree listing.
 
 `--in-old` is untouched by all of this — an old version that lives in no repository
 is still a path on disk, and always will be. That is also the difference to keep in
 mind between the two path flags: `--in-old` is a path your shell can complete,
 `--repo-path` is a path git can look up.
+
+#### Writing a hunk by hand
+
+When synthesis cannot anchor a change — two identical places, say — and a person is at
+the terminal, `generate` does not simply fail: it says why and offers the editor
+(`$VISUAL`, else `$EDITOR`, else `vi` / `notepad`). The editor gets the `.md` so far —
+**every** hunk, with a hunk to start from for the change in question and the change
+itself quoted on top. Whatever comes back, pattern and patch body alike, is checked: it
+has to parse, and every hunk has to land on the old version in order. If it does not,
+the reason goes on top and you are asked again, as many times as it takes; say no and
+the run stops without a `.md` (the edited file is kept, and its path printed). Once it
+stands, synthesis goes on from the text those hunks produce. A patch body edited to
+differ from `--in` stays as edited, and the run ends with a warning that the `.md` does
+not give `--in`.
+
+With no terminal — a script, CI — the error is the one it always was, with its exit
+code.
+
+#### When hatch asks before going on
+
+Some requests git can carry out but that may not say what was meant. Those are
+**asked about**, not refused — the warning says what going ahead means, and the answer
+decides:
+
+| situation | going ahead means |
+|---|---|
+| `--commit` is not on the `--branch` named beside it | that commit is read all the same, out of a history the branch never had |
+| `--branch` names a tag or a raw sha | it is read as a plain revision, the way `--commit` would |
+| `apply` writes over `--in` while its content came out of git, and the file holds changes that version lacks | the patched git version takes its place; whatever of it was not committed is lost |
+
+```
+warning: commit 1f3ac9d is not on branch main — going ahead reads that commit all the
+same, out of a history branch main never had
+  go ahead? [y/N]
+```
+
+The default is **no**. `--yes` / `-y` answers yes in advance, for scripts. With no
+terminal to answer — a pipe, CI — the answer is no and the run stops, saying that
+`--yes` would have gone on. A run nobody watches must not be the one that quietly
+throws work away.
+
+What git cannot carry out at all — a branch, commit or file that is not there, a
+directory where a file goes, git not runnable — is never a question: there is nothing
+to go ahead with, and `--yes` does not change that.
 
 #### Anchoring options (how much context a hunk carries)
 ```
@@ -331,10 +420,9 @@ built-in defaults  <  hatch.config.json  <  CLI flags
 
 ```json
 {
-  "$schema": "./hatch.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/hatch.config.schema.json",
   "version": 1,
   "generate": {
-    "out": "patches/",
     "language": "cpp",
     "exact": false,
     "bridgeGap": 0,
@@ -350,6 +438,12 @@ built-in defaults  <  hatch.config.json  <  CLI flags
   }
 }
 ```
+
+`$schema` is for editors only: it gives completion and checking while you type. The
+schema is also in the SchemaStore catalog's format (`.github/schemastore/`), and once it
+is listed there VS Code and JetBrains pick it up by the file name, without the line.
+hatch itself never reads `$schema` — it checks the whole file on every run and names
+any key it does not know.
 
 `generate.out` is a *place*, not necessarily a name. A value with **no extension** — or
 one ending with a slash, or naming a directory that is already there — is a directory, and
@@ -394,7 +488,9 @@ touching the file.
 ### Exit codes (for CI)
 `0` success · `2` parse error · `3` no match (reports the deepest point the
 pattern reached) · `4` ambiguous match (reports the competing positions) · `5`
-bad configuration · `6` grammar missing or failing its checksum · `1` unexpected.
+bad configuration · `6` grammar missing or failing its checksum · `1` everything
+else: a wrong invocation, a missing file, a git refusal, an unknown language, a
+question answered no, or an unexpected failure.
 
 `6` is deliberately its own code: it says the *environment* lacks a grammar (fix:
 `hatch grammars`), not that anything is wrong with the patch.
@@ -451,11 +547,19 @@ sub-paths (`hatch/dist/...`) are closed off by the `exports` field.
 `LanguageAdapter` is available as a type: adapters are obtained from the registry and
 handed back. Writing your own adapter is not supported.
 
+## Service: hatch for an editor
+
+`node node_modules/hatch/dist/service/index.js` runs hatch as a long-lived process that
+speaks JSON over stdio: `generate`, `resolve` and `apply` on text instead of files, and
+coordinates of every hunk in the base and in the patched text. It is what the VS Code
+extension talks to. The contract, and how its version is checked, is in
+[PROTOCOL.md](./PROTOCOL.md); the types are published as `hatch/protocol`.
+
 ## Grammars
 
 Parsing is done by tree-sitter, so every language needs its `.wasm` grammar. They
-are **not** kept in the repository — the eleven of them weigh 22 MB, and most runs
-need exactly one. Instead each language pins its grammar in its own folder:
+are **not** kept in the repository — together they weigh tens of megabytes, and most
+runs need exactly one. Instead each language pins its grammar in its own folder:
 
 ```ts
 grammar: {
@@ -513,6 +617,33 @@ These are intentional and stable; patches rely on them:
    write that construct's closing token in the pattern. This is why `generate`
    emits both the header of an enclosing function and its `}`.
 
+## Known limitations
+
+What hatch does not do, on purpose or not yet — worth knowing before you rely on it:
+
+- **Identical code with identical context cannot be told apart.** The pattern
+  language has no "the n-th occurrence": when two places match word for word, their
+  neighbours included, `generate` reports ambiguity and `apply` exits `4`. Write that
+  anchor by hand, leaning on code that differs — often what comes *after* the edit.
+- **"Already applied" is not recognized.** Applying a patch a second time, or to the
+  wrong file, both end in exit `3`: telling the two apart is the calling pipeline's
+  job, not hatch's.
+- **Line endings belong to the file, not to the patch.** A patch writes its lines
+  with the ending of the line the edit starts on, so a patch cannot convert CRLF lines
+  to LF (or back) where it starts on a CRLF line.
+- **Git with `core.autocrlf=true`** (the Git for Windows default): a version read out
+  of git has the line endings the repository stores (LF), while the file on disk has
+  CRLF, so `generate --head` sees every line as changed. Set `core.autocrlf false` for
+  the repository (Chromium's Windows setup does), or pass the old version with
+  `--in-old`.
+- **Large files full of near-identical code make `generate` slow** — seconds to minutes
+  where one pattern has to be tried against many look-alike places.
+- **Writing a file keeps its permission bits and writes through symlinks**, but not its
+  owner, ACLs or extended attributes, and a hard link to it is split off — the write
+  goes through a temp file and a rename, so that a run cut short never leaves half a file.
+- **Whitespace inside a multi-line string literal is not significant** (see "The
+  language"), and `.mm` is read with the Objective-C grammar (see "Language support").
+
 ## Language support
 
 The languages Chromium is written in:
@@ -530,6 +661,11 @@ The languages Chromium is written in:
 | Java | `.java` | `java` |
 | Kotlin | `.kt` `.kts` | `kotlin`, `kt` |
 | Go | `.go` | `go`, `golang` |
+
+`generate` writes the language's own name into the heading — the first name in the
+last column (`cpp`, `objc`, `python`), however the language was picked. Every
+extension in the table, without its dot, is a name as well: hatch 0.2.0 and earlier
+wrote that (`# match mm`), and such a `.md` applies the same.
 
 Structure comes from tree-sitter, so preprocessor branches, raw strings, macros
 and generics (`Map<K, V>` is a bracket pair, `a < b` is not) don't confuse the

@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     export function pick<T extends Record<string, unknown>>(src: T, key: keyof T): T[keyof T] {

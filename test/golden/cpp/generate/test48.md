@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     // [BRACE] функция обёрнута в новый #if — правка ДОБАВЛЯЕТ несбалансированный препроцессор
     >>>
@@ -9,7 +9,7 @@
     #if BUILDFLAG(IS_WIN)
 # end
 
-# match cc
+# match cpp
     ...
     >>>
 # end

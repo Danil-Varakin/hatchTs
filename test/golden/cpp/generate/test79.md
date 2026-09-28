@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     const char kDoc[] = R"(
     >>>

@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     >>>
       IPC_MESSAGE_HANDLER(Msg_B, OnB)

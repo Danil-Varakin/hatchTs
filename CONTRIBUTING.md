@@ -83,11 +83,20 @@ The config is intentionally strict; each flag earns its place:
   `block-spans.ts` / `treesitter.ts`, and per-language folders (`cpp/`,
   `python/`).
 - `src/generate/` — the reverse pipeline: `diff.ts` (atomic change segments),
-  `synth.ts` (structural anchoring and verification), `printer.ts` (`.md`
-  assembly), `agreement.ts` (the `-a` review loop, pure — `confirm` is injected).
-- `src/infra/` — side effects: atomic writes, reading a file out of a git branch.
-- `src/cli/` — `apply.ts` and `generate.ts`, each with its own small argument
-  parser and a `main()` that maps `HatchError` to an exit code.
+  `synth.ts` (structural anchoring and verification), `steer.ts` (synthesis a person
+  steers, hunk by hunk, with hand-written hunks — the person is injected),
+  `printer.ts` (`.md` assembly), `pipeline.ts` (the whole of `generate` on text — the
+  one door for the CLI and the service).
+- `src/infra/` — side effects: files (atomic writes that keep permissions and follow
+  symlinks), git, grammars, config, the log; `ask.ts` is the one shape of a yes/no
+  question.
+- `src/service/` — hatch as a long-lived process speaking JSON over stdio
+  ([PROTOCOL.md](./PROTOCOL.md)).
+- `src/cli/` — `index.ts` dispatches to `apply`, `generate`, `grammars`; `command.ts`
+  is what every command does around its own work (arguments, `--help`, the log, the
+  exit code); `args.ts` parses, `prompt.ts` reads answers, `confirm.ts` asks before a
+  step that loses work, `editor.ts` runs the editor, `git-source.ts` holds the git
+  flags shared by `apply` and `generate`.
 
 ## Tests
 
@@ -134,10 +143,15 @@ else ever downloads on its own — see the Grammars section of the README.
 
 ## Releasing
 
-Releases are cut by **CI**, not by hand. All it takes is a tag:
+**[VERSIONING.md](./VERSIONING.md) is binding**: which number moves when (package,
+protocol range, config schema range), what counts as breaking, and the release steps.
+Every release has its [CHANGELOG.md](./CHANGELOG.md) entry before its tag.
+
+Releases are cut by **CI**, not by hand: the steps are in VERSIONING.md §5, and the
+last of them pushes the tag:
 
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+git push origin v<version>
 ```
 
 `.github/workflows/release.yml` then checks the tag against `version` in
@@ -145,8 +159,8 @@ git tag v0.1.0 && git push origin v0.1.0
 `npm pack` and creates the GitHub Release with the `.tgz` attached. Red tests mean no
 release.
 
-The tag/version check stops `v0.2.0` being cut from code that still calls itself
-`0.1.0`: bump `package.json`, commit, then tag.
+The tag/version check stops a tag being cut from code that still carries the previous
+version: bump `package.json`, commit, then tag.
 
 To build the archive locally, sending nothing anywhere:
 
@@ -160,18 +174,18 @@ To list the files without creating anything:
 npm pack --dry-run
 ```
 
-It must contain only `dist/`, both READMEs, `hatch.config.schema.json` and
-`package.json` — the `files` field in `package.json` decides. Nothing from `src/`,
+It must contain only `dist/`, both READMEs, `PROTOCOL.md`, `hatch.config.schema.json`
+and `package.json` — the `files` field in `package.json` decides. Nothing from `src/`,
 `test/` or `docs/`.
 
 How a user installs it:
 
 ```bash
-npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v0.1.0/hatch-0.1.0.tgz
+npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v<version>/hatch-<version>.tgz
 ```
 
-They get a `hatch` command. Grammars are not in the tarball (~17 MB across eleven
-languages), so the first run tells them what to do: `hatch grammars`.
+They get a `hatch` command. Grammars are not in the tarball, so the first run tells
+them what to do: `hatch grammars`.
 
 Installing straight from the repository works too
 (`npm i -g github:Danil-Varakin/hatchTs`) — that is what `prepare` is for.
@@ -180,7 +194,8 @@ Installing straight from the repository works too
 
 `.github/workflows/ci.yml` runs on every push and pull request:
 
-- **matrix** — Linux, macOS, Windows across Node 22 and 24, six combinations;
+- **matrix** — Linux, macOS and Windows, each on every Node version the project
+  supports (the list is in `ci.yml`);
 - **grammars** are cached between runs (`HATCH_GRAMMAR_CACHE` points at a directory
   inside the workspace, which `actions/cache` remembers);
 - **a separate job** builds the package and prints its contents, so a stray file in
@@ -190,7 +205,7 @@ Installing straight from the repository works too
 
 ## Corpus and golden
 
-`test/golden/` holds 345 hand-written cases across eleven languages. They live in the
+`test/golden/` holds hand-written cases for every language. They live in the
 repository and run with plain `npm test`, and they check TWO different things:
 
 - **round-trip** — `synthesize → print → parse → apply → compare with new`: the result

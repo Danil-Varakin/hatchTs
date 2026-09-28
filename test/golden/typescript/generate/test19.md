@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     const index: Map<string, Array<Set<number>>> = new Map();

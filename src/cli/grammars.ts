@@ -1,10 +1,10 @@
 import { adaptersByName } from '../lang/adapter.ts';
 import { ensureGrammars, formatPin, locate, pinFor } from '../infra/grammar-store.ts';
 import type { GrammarSource } from '../lang/source-map.ts';
-import { HatchError, LanguageError } from '../core/errors.ts';
+import { LanguageError } from '../core/errors.ts';
 import { invokedDirectly } from '../infra/entry.ts';
-import { parseArgs } from './args.ts';
 import type { ArgSpec } from './args.ts';
+import { runCommand } from './command.ts';
 
 interface Options {
   language?: string;
@@ -80,30 +80,8 @@ async function run(opts: Options): Promise<void> {
   process.stderr.write(`${statuses.length} grammar(s) ready, ${fetched} downloaded\n`);
 }
 
-export async function main(argv: readonly string[]): Promise<void> {
-  let opts: Options;
-  try {
-    opts = parseArgs(argv, SPEC, { list: false, help: false });
-  } catch (e) {
-    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  if (opts.help) {
-    process.stdout.write(`${USAGE}\n`);
-    return;
-  }
-  try {
-    await run(opts);
-  } catch (e) {
-    if (e instanceof HatchError) {
-      process.stderr.write(`${e.name}: ${e.message}\n`);
-      process.exitCode = e.exitCode;
-    } else {
-      process.stderr.write(`error: ${(e as Error).message}\n`);
-      process.exitCode = 1;
-    }
-  }
+export function main(argv: readonly string[]): Promise<void> {
+  return runCommand({ name: 'grammars', usage: USAGE, spec: SPEC, initial: { list: false, help: false }, run }, argv);
 }
 
 if (invokedDirectly(import.meta.url)) {

@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     export function read(src: Buffer): string;

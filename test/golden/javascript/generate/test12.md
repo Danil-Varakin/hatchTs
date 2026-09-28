@@ -1,4 +1,4 @@
-# match js
+# match javascript
     ...
     >>>
     const b = a + 1

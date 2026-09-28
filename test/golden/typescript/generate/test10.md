@@ -1,4 +1,4 @@
-# match ts
+# match typescript
     ...
     >>>
     const typed = raw as unknown as Record<string, number>;

@@ -3,6 +3,7 @@ import { simpleGit } from 'simple-git';
 import type { SimpleGit } from 'simple-git';
 import { GitError } from '../core/errors.ts';
 import { findRepoRoot } from './fs.ts';
+import type { Ask } from './ask.ts';
 
 // The old version taken out of git is named by three INDEPENDENT coordinates, and
 // every one of them may be left out — what is missing takes its default:
@@ -33,6 +34,12 @@ export interface GitSource {
   readonly path?: string | undefined;
 }
 
+/** Asked (`ask`) when a request can be carried out but says something it may not have
+ *  meant — a commit off the branch named beside it, a tag given where a branch goes.
+ *  `true` goes ahead, `false` stops with the refusal. Who answers is the caller's
+ *  business: a person at a terminal, `--yes`, or nobody at all (the default, always no). */
+const REFUSE: Ask = () => Promise.resolve(false);
+
 export interface GitVersion {
   readonly text: string;
   /** `<revision>:<path>` — what was actually read, for messages and logs. */
@@ -43,15 +50,28 @@ const BRANCH = '--branch';
 const COMMIT = '--commit';
 const REPO_PATH = '--repo-path';
 
-export async function fileFromGit(source: GitSource, inPath: string): Promise<GitVersion> {
+export async function fileFromGit(source: GitSource, inPath: string, ask: Ask = REFUSE): Promise<GitVersion> {
+  notAnOption(source.branch, BRANCH, 'a branch name');
+  notAnOption(source.commit, COMMIT, 'a revision');
   const abs = resolve(inPath);
   const root = repoRootFor(dirname(abs));
   const git = gitAt(root);
   await mustRunGit(git, root);
 
   const path = repoPath(source, abs, root);
-  const revision = await revisionOf(git, source, root);
+  const revision = await revisionOf(git, source, root, ask);
   return { text: await blob(git, revision, path, root), spec: `${revision}:${path.value}` };
+}
+
+/** A coordinate reaches git as an argument of its own, and git reads one that starts
+ *  with `-` as an OPTION of its own: `--branch --all` made `rev-parse` list every ref.
+ *  No branch name and no revision starts with `-` (git refuses such names), so it is
+ *  refused here, before git sees it — for the CLI and for a value that came over the
+ *  service's pipe alike. The path never needs this: it travels inside `<rev>:<path>`. */
+function notAnOption(value: string | undefined, flag: string, what: string): void {
+  if (value !== undefined && value.startsWith('-')) {
+    throw new GitError(`${flag} ${value}: ${what} never starts with '-'`, value);
+  }
 }
 
 // ── where ────────────────────────────────────────────────────────────────────────
@@ -95,19 +115,24 @@ interface Revision {
   readonly label: string;
 }
 
-async function revisionOf(git: SimpleGit, source: GitSource, root: string): Promise<string> {
-  if (source.commit === undefined) return (await branchRevision(git, source.branch, root)).rev;
+async function revisionOf(git: SimpleGit, source: GitSource, root: string, ask: Ask): Promise<string> {
+  if (source.commit === undefined) return (await branchRevision(git, source.branch, root, ask)).rev;
 
   // A named branch is judged first — coordinates are read in the order they are written
   // — but it is only a claim ABOUT the commit, so with no branch there is nothing to
   // check against and the commit is taken as given.
-  const branch = source.branch === undefined ? undefined : await branchRevision(git, source.branch, root);
+  const branch = source.branch === undefined ? undefined : await branchRevision(git, source.branch, root, ask);
   const commit = await commitOf(git, source.commit, root);
-  if (branch !== undefined) await mustContain(git, branch, commit, root);
+  if (branch !== undefined) await mustContain(git, branch, commit, root, ask);
   return commit.spelled;
 }
 
-async function branchRevision(git: SimpleGit, branch: string | undefined, root: string): Promise<Revision> {
+async function branchRevision(
+  git: SimpleGit,
+  branch: string | undefined,
+  root: string,
+  ask: Ask,
+): Promise<Revision> {
   if (branch === undefined) {
     if (await shaOf(git, 'HEAD') === undefined) {
       throw new GitError(`the repository ${root} has no commits yet, so there is no old version to take`);
@@ -118,9 +143,20 @@ async function branchRevision(git: SimpleGit, branch: string | undefined, root: 
   const ref = await refName(git, branch);
   if (ref === undefined) throw new GitError(`${BRANCH} ${branch}: no such branch in ${root}`, branch);
   if (!ref.startsWith('refs/heads/') && !ref.startsWith('refs/remotes/')) {
+    // A branch may share its name with a tag (`v1.2` the release branch, `v1.2` the tag
+    // on it). Git calls the short name ambiguous and names no ref, so the branch is
+    // looked for by its full name — and read by it, or git would pick the tag.
+    const full = await branchRefNamed(git, branch);
+    if (full !== undefined) return { rev: full, label: `branch ${branch}` };
+
+    // A real revision all the same, so there IS a version to read: worth asking.
+    const names = ref === '' ? 'no ref at all' : ref;
+    const question =
+      `${BRANCH} ${branch} is not a branch, it names ${names} — going ahead reads it as a ` +
+      `plain revision, the way ${COMMIT} would`;
+    if (await ask(question)) return { rev: branch, label: branch };
     throw new GitError(
-      `${BRANCH} ${branch}: not a branch, it names ${ref === '' ? 'no ref at all' : ref}` +
-        ` — for any other revision use ${COMMIT}`,
+      `${BRANCH} ${branch}: not a branch, it names ${names} — for any other revision use ${COMMIT}`,
       branch,
     );
   }
@@ -144,8 +180,18 @@ async function commitOf(git: SimpleGit, spelled: string, root: string): Promise<
  *  the branch never held would quietly hand back a version out of another history.
  *  Containment is read as `merge-base(commit, branch) === commit`, the same statement
  *  `--is-ancestor` makes — but as an ANSWER, not an exit code (see the note above). */
-async function mustContain(git: SimpleGit, branch: Revision, commit: Commit, root: string): Promise<void> {
+async function mustContain(
+  git: SimpleGit,
+  branch: Revision,
+  commit: Commit,
+  root: string,
+  ask: Ask,
+): Promise<void> {
   if ((await attempt(git, ['merge-base', commit.sha, branch.rev]))?.trim() === commit.sha) return;
+  const question =
+    `commit ${commit.spelled} is not on ${branch.label} — going ahead reads that commit all the ` +
+    `same, out of a history ${branch.label} never had`;
+  if (await ask(question)) return;
   throw new GitError(
     `commit ${commit.spelled} is not on ${branch.label} (repository ${root})\n` +
       `  name the branch that holds it with ${BRANCH}, or drop ${COMMIT}`,
@@ -220,4 +266,12 @@ async function shaOf(git: SimpleGit, revision: string): Promise<string | undefin
  *  or undefined when git does not know it. */
 async function refName(git: SimpleGit, revision: string): Promise<string | undefined> {
   return (await attempt(git, ['rev-parse', '--symbolic-full-name', revision]))?.trim();
+}
+
+/** `refs/heads/<name>` or `refs/remotes/<name>`, whichever git holds, or undefined. */
+async function branchRefNamed(git: SimpleGit, name: string): Promise<string | undefined> {
+  for (const full of [`refs/heads/${name}`, `refs/remotes/${name}`]) {
+    if ((await shaOf(git, full)) !== undefined) return full;
+  }
+  return undefined;
 }

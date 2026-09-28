@@ -1,18 +1,25 @@
+import { resolve } from 'node:path';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { applyAll } from '../core/apply.ts';
 import type { AppliedEdit } from '../core/apply.ts';
-import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
+import type { HatchFile } from '../core/ast.ts';
+import { ensureParent, isFile, readInputFile, replacesFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-import { adapterForLanguage, adapterForFile } from '../lang/adapter.ts';
+import { pickAdapter } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
-import { createLoggerOrWarn, resolveLogPath, logHeader } from '../infra/log.ts';
-import type { Logger } from '../infra/log.ts';
+import type { ErrorContext, Logger } from '../infra/log.ts';
 import { invokedDirectly } from '../infra/entry.ts';
-import { parseArgs } from './args.ts';
 import type { ArgSpec } from './args.ts';
+import { runCommand } from './command.ts';
+import { GIT_ARGS, GIT_USAGE, asksGit, readFromGit } from './git-source.ts';
+import type { FileVersion, GitOptions } from './git-source.ts';
+import { CONFIRM_ARGS, CONFIRM_USAGE, terminalAsker } from './confirm.ts';
+import type { ConfirmOptions } from './confirm.ts';
+import type { Ask } from '../infra/ask.ts';
+import { answersFrom } from './prompt.ts';
 
-interface Options {
+interface Options extends GitOptions, ConfirmOptions {
   match?: string;
   in?: string;
   out?: string;
@@ -27,13 +34,25 @@ interface Options {
 const USAGE = `hatch apply — apply .md instructions to a source file
 
   --match, -m <file.md>   patch instructions (match/patch hunks)   [required]
-  --in,    -i <file>      source file to patch                     [required]
+  --in,    -i <file>      the file to patch                        [required]
+                          read from disk — unless a git coordinate below is named:
+                          then only its PATH is used (the repository, the default
+                          path inside it, the name of the result), the content comes
+                          out of git, and the file need not exist on disk at all
+
+${GIT_USAGE}
+
+${CONFIRM_USAGE}
+
   --out,   -o <path>      where to write the result   [required unless --dry-run/--verify]
                           a directory (existing, or ending with a slash) gets
                           <name of --in> inside it; any other path is written as is
                           and overwritten. Missing directories are created, and a
                           relative path is measured from the repository root.
-                          \`-\` writes to stdout
+                          \`-\` writes to stdout. Writing over --in itself while its
+                          content came out of git ASKS first when that would lose what
+                          --in holds now (see --yes) — and does not ask when --in had
+                          the git text anyway, or the result is --in itself
   --language, -l <lang>   force language (else: '# match <lang>' in the .md, else
                           the file extension)
   --dry-run               show planned edits, write nothing
@@ -49,6 +68,8 @@ const USAGE = `hatch apply — apply .md instructions to a source file
 
 const SPEC: ArgSpec<Options> = {
   flags: {
+    ...GIT_ARGS.flags,
+    ...CONFIRM_ARGS.flags,
     '--dry-run': 'dryRun',
     '--verify': 'verify',
     '--download-grammars': 'downloadGrammars',
@@ -56,6 +77,7 @@ const SPEC: ArgSpec<Options> = {
     '-h': 'help',
   },
   values: {
+    ...GIT_ARGS.values,
     '--match': 'match', '-m': 'match',
     '--in': 'in', '-i': 'in',
     '--out': 'out', '-o': 'out',
@@ -64,11 +86,14 @@ const SPEC: ArgSpec<Options> = {
   optional: { '--log': 'log' },
 };
 
-function resolveAdapter(opts: Options, mdLanguage: string | undefined): LanguageAdapter {
-  if (opts.language !== undefined) return adapterForLanguage(opts.language);
-  if (mdLanguage !== undefined) return adapterForLanguage(mdLanguage);
-  return adapterForFile(opts.in!);
-}
+const INITIAL: Options = {
+  head: false,
+  yes: false,
+  dryRun: false,
+  verify: false,
+  downloadGrammars: false,
+  help: false,
+};
 
 function describeEdit(applied: AppliedEdit, index: number, total: number): string {
   const { edit, oldText } = applied;
@@ -78,7 +103,40 @@ function describeEdit(applied: AppliedEdit, index: number, total: number): strin
   return `hunk ${index + 1}/${total}:\n  ${kind} ${where}\n    new: ${JSON.stringify(edit.text)}${old}`;
 }
 
-async function run(opts: Options, log: Logger): Promise<void> {
+/** The file to patch: the one on disk, or — once any coordinate is named — its version
+ *  out of git, with `--in` reduced to naming WHICH file that is. */
+async function sourceOf(opts: Options, inPath: string, ask: Ask): Promise<FileVersion> {
+  return asksGit(opts) ? readFromGit(opts, inPath, ask) : { text: readInputFile(inPath, '--in'), spec: inPath };
+}
+
+/** Writing the result over --in while its content came out of git puts the patched git
+ *  version where the working file is. Nothing is lost when the working file held the git
+ *  text to begin with, or when the result IS the working file (a patch generated from
+ *  that very version, applied back) — then there is nothing to ask. Anything else throws
+ *  away what the file holds now, and that is asked first. */
+async function mustKeepLocalEdits(
+  target: string,
+  inPath: string,
+  source: FileVersion,
+  result: string,
+  ask: Ask,
+): Promise<void> {
+  const file = resolve(inPath);
+  if (!isFile(file) || !replacesFile(target, file)) return;
+  const onDisk = readInputFile(file, '--in');
+  if (onDisk === source.text || onDisk === result) return;
+  const question =
+    `writing over ${inPath}: it holds changes that ${source.spec} does not, and the patched ` +
+    `${source.spec} takes its place — whatever of its current content is not committed is lost`;
+  if (await ask(question)) return;
+  throw new Error(
+    `--out is --in itself, and ${inPath} holds changes that ${source.spec} does not: writing ` +
+      `the patched ${source.spec} over it would lose them\n` +
+      '  write the result elsewhere, or drop the git flags to patch the file as it is on disk',
+  );
+}
+
+async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
   if (opts.match === undefined) throw new Error('missing --match <file.md>');
   if (opts.in === undefined) throw new Error('missing --in <file>');
   const willWrite = !opts.dryRun && !opts.verify;
@@ -87,12 +145,30 @@ async function run(opts: Options, log: Logger): Promise<void> {
   }
 
   const file = parseHatchFile(readInputFile(opts.match, '--match'));
-  const adapter = resolveAdapter(opts, file.language);
+  const adapter = pickAdapter({ language: opts.language, heading: file.language, path: opts.in });
   await adapter.init({ allowDownload: opts.downloadGrammars || downloadAllowedByEnv() });
 
-  const source = readInputFile(opts.in, '--in');
-  log.trace(`source: ${opts.in} (${source.length} bytes), ${file.hunks.length} hunk(s)`);
-  const { source: result, edits } = applyAll(source, file, adapter);
+  const answers = answersFrom();
+  try {
+    await applyWith(opts, opts.in, file, adapter, log, seen, terminalAsker(opts.yes, (m) => log.note(m), answers));
+  } finally {
+    answers.close();
+  }
+}
+
+async function applyWith(
+  opts: Options,
+  inPath: string,
+  file: HatchFile,
+  adapter: LanguageAdapter,
+  log: Logger,
+  seen: Seen,
+  ask: Ask,
+): Promise<void> {
+  const source = await sourceOf(opts, inPath, ask);
+  seen.source = source;
+  log.trace(`source: ${source.spec} (${source.text.length} bytes), ${file.hunks.length} hunk(s)`);
+  const { source: result, edits } = applyAll(source.text, file, adapter);
 
   if (opts.dryRun) {
     for (const [i, e] of edits.entries()) log.info(describeEdit(e, i, edits.length));
@@ -103,54 +179,33 @@ async function run(opts: Options, log: Logger): Promise<void> {
     log.info(`verify: ok — ${edits.length} hunk(s) apply cleanly`);
     return;
   }
-  const target = resolveOutPath({ inPath: opts.in, out: opts.out!, suffix: '' }).path;
+  const target = resolveOutPath({ inPath, out: opts.out!, suffix: '' }).path;
   if (target === undefined) {
     process.stdout.write(result);
     log.note(`applied ${edits.length} hunk(s) → stdout`);
     return;
   }
+  if (asksGit(opts)) await mustKeepLocalEdits(target, inPath, source, result, ask);
   ensureParent(target);
   writeFileAtomic(target, result);
   log.info(`applied ${edits.length} hunk(s) → ${target}`);
 }
 
-export async function main(argv: readonly string[]): Promise<void> {
-  let opts: Options;
-  try {
-    opts = parseArgs(argv, SPEC, { dryRun: false, verify: false, downloadGrammars: false, help: false });
-  } catch (e) {
-    process.stderr.write(`error: ${(e as Error).message}\n\n${USAGE}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  if (opts.help) {
-    process.stdout.write(`${USAGE}\n`);
-    return;
-  }
-
-  const log = createLoggerOrWarn({
-    ...(opts.log !== undefined ? { logPath: resolveLogPath(opts.log, 'apply') } : {}),
-    header: logHeader('apply', argv),
-  });
-
-  try {
-    await run(opts, log);
-    if (log.logPath !== undefined) log.note(`log: ${log.logPath}`);
-  } catch (e) {
-    process.exitCode = log.fail(e, errorContext(opts));
-  } finally {
-    log.close();
-  }
+interface Seen {
+  source?: FileVersion;
 }
 
-function errorContext(opts: Options): { source?: string; sourcePath?: string; mdPath?: string } {
+export function main(argv: readonly string[]): Promise<void> {
+  return runCommand({ name: 'apply', usage: USAGE, spec: SPEC, initial: INITIAL, run, errorContext }, argv);
+}
+
+function errorContext(opts: Options, seen: Seen): ErrorContext {
   const ctx: { source?: string; sourcePath?: string; mdPath?: string } = {};
-  if (opts.in !== undefined) {
+  if (seen.source !== undefined) {
+    ctx.source = seen.source.text;
+    ctx.sourcePath = seen.source.spec;
+  } else if (opts.in !== undefined) {
     ctx.sourcePath = opts.in;
-    try {
-      ctx.source = readInputFile(opts.in, '--in');
-    } catch {
-    }
   }
   if (opts.match !== undefined) ctx.mdPath = opts.match;
   return ctx;

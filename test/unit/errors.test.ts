@@ -6,6 +6,11 @@ import {
   ParseError,
   MatchError,
   AmbiguityError,
+  PathError,
+  LanguageError,
+  GitError,
+  GrammarError,
+  ConfigError,
 } from '../../src/core/errors.ts';
 
 test('ParseError → code 2, carries a string and (optional) a hint', () => {
@@ -41,4 +46,26 @@ test('class names are saved (instanceof via prototype chain)', () => {
   const e: HatchError = new ParseError('x', 1);
   assert.equal(e.name, 'ParseError');
   assert.ok(e instanceof Error);
+});
+
+// `detail()` is what the service sends as `error.detail`: part of the protocol, pinned
+// here field by field — a changed field is a protocol change (VERSIONING.md).
+test('detail(): every error kind states exactly its protocol fields', () => {
+  assert.deepEqual(new ParseError('bad', 3, 'fix it').detail(), { mdLine: 3, hint: 'fix it' });
+  assert.deepEqual(new ParseError('bad', 3).detail(), { mdLine: 3 });
+  assert.deepEqual(
+    new MatchError('no', 10, 1, { totalSteps: 4, origPos: 7, anchorText: 'a()', matchedText: 'x', hint: 'h' }).detail(),
+    { failedStepIndex: 1, totalSteps: 4, origPos: 7, anchorText: 'a()' },
+  );
+  assert.deepEqual(new MatchError('no', 0, 0).detail(), { failedStepIndex: 0 });
+  assert.deepEqual(new AmbiguityError('two', [1, 5], [2, 6]).detail(), { positions: [1, 5] });
+  assert.deepEqual(new PathError('p', '/a/b', '/a').detail(), { path: '/a/b', blocker: '/a' });
+  assert.deepEqual(new LanguageError('l', { language: 'x', extension: '.y' }).detail(), { language: 'x', extension: '.y' });
+  assert.deepEqual(new LanguageError('l').detail(), {});
+  assert.deepEqual(new GitError('g', 'main').detail(), { revision: 'main' });
+  assert.equal(new GitError('g').detail(), undefined);
+  assert.deepEqual(new GrammarError('m', 'tree-sitter-cpp@1').detail(), { grammar: 'tree-sitter-cpp@1' });
+  assert.equal(new GrammarError('m').detail(), undefined);
+  assert.deepEqual(new ConfigError('c', '/p/hatch.config.json').detail(), { file: '/p/hatch.config.json' });
+  assert.equal(new ConfigError('c').detail(), undefined);
 });

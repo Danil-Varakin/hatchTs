@@ -4,6 +4,7 @@ import type { ResolveResult } from '../core/resolve.ts';
 import type {
   ApplyParams,
   ApplyResultMessage,
+  BaseParams,
   GenerateParams,
   GenerateResult,
   GitSourceParams,
@@ -16,27 +17,17 @@ import type {
   ServiceError,
   VersionResult,
 } from './protocol.ts';
-import { PROTOCOL_VERSION } from './protocol.ts';
+import { PROTOCOL_MIN, PROTOCOL_VERSION } from './protocol.ts';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { resolveHunks } from '../core/resolve.ts';
-import {
-  AmbiguityError,
-  ConfigError,
-  GitError,
-  GrammarError,
-  HatchError,
-  LanguageError,
-  MatchError,
-  ParseError,
-  PathError,
-} from '../core/errors.ts';
+import { HatchError } from '../core/errors.ts';
 import { generatePatch } from '../generate/pipeline.ts';
-import { adapterForFile, adapterForLanguage, supportedLanguages } from '../lang/adapter.ts';
+import { namedLanguage, pickAdapter, supportedLanguages } from '../lang/adapter.ts';
 import { checkParent } from '../infra/fs.ts';
 import { fileFromGit } from '../infra/git.ts';
 import type { GitSource } from '../infra/git.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
-import { CONFIG_VERSION, loadConfig, overridesFrom } from '../infra/config/index.ts';
+import { CONFIG_MIN, CONFIG_VERSION, loadConfig, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
@@ -73,7 +64,9 @@ function version(): VersionResult {
   return {
     hatch: packageIdentity().version,
     protocol: PROTOCOL_VERSION,
+    protocolMin: PROTOCOL_MIN,
     configSchema: CONFIG_VERSION,
+    configSchemaMin: CONFIG_MIN,
     languages: supportedLanguages,
   };
 }
@@ -124,10 +117,14 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
   };
 }
 
-/** The old version, sent as text or named in git — exactly one of the two. The service
- *  opens no files of its own (the new version is an unsaved buffer, and stays one), but
- *  a base the client does not have cannot be sent: only git holds it. */
-async function baseOf(p: GenerateParams): Promise<{ text: string; spec: string | null }> {
+/** The base, sent as text or named in git — exactly one of the two. The service opens
+ *  no files of its own (what the client edits is an unsaved buffer, and stays one), but
+ *  a version the client does not have cannot be sent: only git holds it.
+ *
+ *  Nobody is asked anything here: a pipe has no one to answer, so a request git could
+ *  carry out but that contradicts itself (a commit off the branch named) is refused, as
+ *  the CLI refuses it without a terminal. */
+async function baseOf(p: BaseParams & LanguageParams): Promise<Base> {
   if ((p.baseText === undefined) === (p.baseGit === undefined)) {
     throw new BadRequest(
       'send exactly one base: params.baseText (the old version as text), or params.baseGit ' +
@@ -175,7 +172,7 @@ function gitSource(value: unknown): GitSource {
 
 function paramOverrides(p: GenerateParams): FlagOverride[] {
   const values: PartialSettings = {
-    language: p.language,
+    language: namedLanguage(p.language),
     exact: p.exact,
     bridgeGap: p.bridgeGap,
     out: p.out,
@@ -185,33 +182,32 @@ function paramOverrides(p: GenerateParams): FlagOverride[] {
   return overridesFrom(values, (spec) => `params.${spec.key}`);
 }
 
+interface Base {
+  readonly text: string;
+  readonly spec: string | null;
+}
+
 async function resolve(p: ResolveParams): Promise<ResolveResultMessage> {
-  const { links } = await resolveRequest(p);
-  return { hunks: links };
+  const { result, base } = await resolveRequest(p);
+  return { hunks: result.links, baseSpec: base.spec };
 }
 
 async function apply(p: ApplyParams): Promise<ApplyResultMessage> {
-  const { links, applied } = await resolveRequest(p);
-  return { text: applied, hunks: links };
+  const { result, base } = await resolveRequest(p);
+  return { text: result.applied, hunks: result.links, baseSpec: base.spec };
 }
 
-async function resolveRequest(p: ResolveParams): Promise<ResolveResult> {
+async function resolveRequest(p: ResolveParams): Promise<{ result: ResolveResult; base: Base }> {
   text(p.md, 'md');
-  text(p.baseText, 'baseText');
   absolutePath(p);
+  const base = await baseOf(p);
   const file = parseHatchFile(p.md);
   const adapter = await ready(p, file.language);
-  return resolveHunks(p.baseText, file, adapter);
+  return { result: resolveHunks(base.text, file, adapter), base };
 }
 
 async function ready(p: LanguageParams, fromHeading: string | undefined): Promise<LanguageAdapter> {
-  const named = p.language ?? fromHeading;
-  const adapter =
-    named !== undefined && named !== ''
-      ? adapterForLanguage(named)
-      : p.path !== undefined
-        ? adapterForFile(p.path)
-        : adapterForLanguage(undefined); // throws, listing what is supported
+  const adapter = pickAdapter({ language: p.language, heading: fromHeading, path: p.path });
   await adapter.init(grammarPolicy(p));
   return adapter;
 }
@@ -256,7 +252,7 @@ function toServiceError(e: unknown): ServiceError {
     return { kind: 'BadRequest', message: e.message, exitCode: 1 };
   }
   if (e instanceof HatchError) {
-    const detail = detailOf(e);
+    const detail = e.detail();
     return {
       kind: e.name,
       message: e.message,
@@ -269,30 +265,4 @@ function toServiceError(e: unknown): ServiceError {
     message: e instanceof Error ? e.message : String(e),
     exitCode: 1,
   };
-}
-
-function detailOf(e: HatchError): Record<string, unknown> | undefined {
-  if (e instanceof ParseError) {
-    return { mdLine: e.mdLine, ...(e.hint !== undefined ? { hint: e.hint } : {}) };
-  }
-  if (e instanceof MatchError) {
-    return {
-      failedStepIndex: e.failedStepIndex,
-      ...(e.totalSteps !== undefined ? { totalSteps: e.totalSteps } : {}),
-      ...(e.origPos !== undefined ? { origPos: e.origPos } : {}),
-      ...(e.anchorText !== undefined ? { anchorText: e.anchorText } : {}),
-    };
-  }
-  if (e instanceof AmbiguityError) return { positions: e.positions };
-  if (e instanceof PathError) return { path: e.path, blocker: e.blocker };
-  if (e instanceof LanguageError) {
-    return {
-      ...(e.language !== undefined ? { language: e.language } : {}),
-      ...(e.extension !== undefined ? { extension: e.extension } : {}),
-    };
-  }
-  if (e instanceof GitError) return e.revision !== undefined ? { revision: e.revision } : undefined;
-  if (e instanceof GrammarError) return e.grammar !== undefined ? { grammar: e.grammar } : undefined;
-  if (e instanceof ConfigError) return e.file !== undefined ? { file: e.file } : undefined;
-  return undefined;
 }

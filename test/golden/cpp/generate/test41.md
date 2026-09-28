@@ -1,4 +1,4 @@
-# match cc
+# match cpp
     ...
     void f() {
     ...
@@ -19,7 +19,7 @@
       step(5);
 # end
 
-# match cc
+# match cpp
     ...
     void f() {
     ...

@@ -97,14 +97,18 @@ export class PathError extends HatchError {
 export class ConfigError extends HatchError {
   readonly exitCode = 5;
   readonly file: string | undefined;
+  /** `keys` not in the schema `version` the config names — each `{ path, since, until }`. */
+  readonly facts: Readonly<Record<string, unknown>> | undefined;
 
-  constructor(message: string, file?: string) {
+  constructor(message: string, file?: string, facts?: Record<string, unknown>) {
     super(file !== undefined ? `${file}: ${message}` : message);
     this.file = file;
+    this.facts = facts;
   }
 
   override detail(): Record<string, unknown> | undefined {
-    return this.file !== undefined ? { file: this.file } : undefined;
+    if (this.file === undefined && this.facts === undefined) return undefined;
+    return { ...(this.file !== undefined ? { file: this.file } : {}), ...this.facts };
   }
 }
 

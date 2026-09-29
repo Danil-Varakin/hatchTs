@@ -138,6 +138,10 @@ for `generate`, the one to patch for `resolve`/`apply`. Send **exactly one** of:
   `core.autocrlf=true` that is LF while the file on disk has CRLF — send `baseText`
   there, or `generate` sees every line as changed.
 
+`generate` may send neither (protocol 4): then the base is the one the project's
+config names in `generate.base` — `{ head?, branch?, commit? }`, read as `baseGit` with
+those fields. No `generate.base` either is the same refusal as before.
+
 **Nothing is asked over a pipe.** Where the CLI asks before going on (a commit off the
 named branch, a tag given as the branch), there is no one to answer, so the service
 answers no and replies with a `GitError` carrying the same message. A client that wants
@@ -152,7 +156,7 @@ a base out of git, `null` for one sent as text.
 No params.
 
 ```jsonc
-{ "hatch": "0.3.0", "protocol": 3, "protocolMin": 2,
+{ "hatch": "0.4.0", "protocol": 4, "protocolMin": 2,
   "configSchema": 1, "configSchemaMin": 1, "languages": ["cpp", "c++", …] }
 ```
 
@@ -214,6 +218,43 @@ time.
 
 A patch takes the line endings of the base: in a CRLF base every line it writes ends in
 CRLF (protocol 3; before, such lines ended in LF).
+
+### `configTemplate`
+
+The text of a new `hatch.config.json` (protocol 4). The service writes nothing: asking
+the user, writing the file, overwriting one that is there and trusting the workspace
+are the client's.
+
+| param | |
+|---|---|
+| `path` | **absolute**, required — a file or the workspace folder; the repository root is found from it |
+| `version` | the config schema to write, within `configSchemaMin..configSchema`; the newest when left out |
+| `settings` | initial values in the paths of the config, nested (`{"generate": {"out": "patches/"}}`) or dotted (`{"generate.out": "patches/"}`); checked as the loader checks a file |
+
+```jsonc
+{ "text": "{\n  \"$schema\": \"…/schemas/hatch.config.v1.schema.json\",\n  \"version\": 1\n}\n",
+  "version": 1,
+  "suggestedPath": "/work/repo/hatch.config.json",
+  "exists": false,
+  "versions": [{ "version": 1, "summary": "v1: generate: out, mirror (added in 0.2.0 without a bump), …" }] }
+```
+
+`text` holds `$schema`, `version`, then only the settings sent, in schema order: a
+default is never written out, so a later change of it reaches the project. The core
+reads `text` back to exactly `settings`. `suggestedPath` is where the core itself looks
+from `path`: the repository root, outside a repository the directory of `path`.
+
+Errors: `BadRequest` for a missing or relative `path`, a `version` that is not a number,
+`settings` that is not an object. `ConfigError` for a version outside the range (the
+message names the side: newer — update hatch; older — move the file to the current
+schema), a value the loader refuses, and keys outside the chosen schema — all of them
+in one error, with `detail`:
+
+```jsonc
+{ "version": 1, "keys": [{ "path": "generate.x", "since": null, "until": null }] }
+```
+
+`since`/`until` are the schemas a key belongs to; `since: null` — no schema has it.
 
 ## The link table: `hunks`
 
@@ -294,3 +335,17 @@ hatch 0.3.0; `protocolMin` 2 — a client written for protocol 2 works unchanged
   (`generate` used to answer a `ConfigError`).
 - In a CRLF base, `resolve`/`apply` write patch lines with CRLF. A fix: the old mixed
   line endings were the bug.
+
+### Protocol 4
+
+`protocolMin` 2 — a client written for protocol 2 or 3 works unchanged.
+
+- `configTemplate`: the text of a new `hatch.config.json` for a schema version and
+  initial settings, with `suggestedPath`, `exists` and `versions`.
+- A `ConfigError` about config keys outside a schema carries `detail.version` and
+  `detail.keys`.
+- `generate` that sends neither `baseText` nor `baseGit` takes the base the project's
+  config names in `generate.base` (config schema 2) — before, such a request was
+  refused. Without `generate.base` it is still refused. `config.settings` in the
+  result carries `baseHead`, `baseBranch`, `baseCommit`; a base sent in the request
+  replaces the config's whole, and `config.origins` names the param.

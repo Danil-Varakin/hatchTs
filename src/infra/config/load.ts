@@ -8,12 +8,14 @@ import {
   FIELD_BY_KEY,
   FIELD_BY_PATH,
   GROUP_PATHS,
+  checkKeysOf,
   checkPairs,
+  checkSchemaVersion,
   checkValue,
   knownConfigKeys,
 } from './schema.ts';
 import type { FieldSpec, GenerateSettings, PartialSettings } from './schema.ts';
-import { CONFIG_MIN, CONFIG_VERSION, configRange } from './schema.ts';
+import { CONFIG_VERSION } from './schema.ts';
 
 export const CONFIG_FILE_NAME = 'hatch.config.json';
 
@@ -68,22 +70,31 @@ export function readConfigFile(file: string): PartialSettings {
     throw new ConfigError('config must be a JSON object', file);
   }
 
-  const out: PartialSettings = {};
+  return readSettings(parsed as Record<string, unknown>, file);
+}
+
+/** A config object, `$schema` and `version` included, checked as the loader checks a
+ *  file: the schema version first, then every key against THAT version's keys, then
+ *  each value. A config without `version` is read as the newest schema. */
+export function readSettings(parsed: Readonly<Record<string, unknown>>, file: string | undefined): PartialSettings {
+  const version = 'version' in parsed ? checkSchemaVersion(parsed['version'], file) : CONFIG_VERSION;
+  const found = new Map<string, unknown>();
   for (const [key, value] of Object.entries(parsed)) {
-    if (key === '$schema') continue;
-    if (key === 'version') {
-      checkSchemaVersion(value, file);
-      continue;
-    }
-    collect(value, key, out, file);
+    if (key === '$schema' || key === 'version') continue;
+    collect(value, key, found, file);
+  }
+  checkKeysOf([...found.keys()].filter((p) => FIELD_BY_PATH.has(p)), version, file);
+  const out: PartialSettings = {};
+  for (const [path, value] of found) {
+    const spec = FIELD_BY_PATH.get(path)!;
+    Object.assign(out, { [spec.key]: checkValue(value, spec, file) });
   }
   return out;
 }
 
-function collect(node: unknown, path: string, out: PartialSettings, file: string): void {
-  const spec = FIELD_BY_PATH.get(path);
-  if (spec !== undefined) {
-    Object.assign(out, { [spec.key]: checkValue(node, spec, file) });
+function collect(node: unknown, path: string, out: Map<string, unknown>, file: string | undefined): void {
+  if (FIELD_BY_PATH.has(path)) {
+    out.set(path, node);
     return;
   }
   if (!GROUP_PATHS.has(path)) {
@@ -162,30 +173,4 @@ export function formatConfig(config: ResolvedConfig): string {
     lines.push(`${spec.path.padEnd(width)} = ${value.padEnd(6)}  [${config.origins[spec.path]}]`);
   }
   return lines.join('\n') + '\n';
-}
-
-/** Every schema in the range is read; outside it the message says WHICH side is behind —
- *  a config from a newer hatch asks for an update, not for its own deletion. */
-function checkSchemaVersion(value: unknown, file: string | undefined): void {
-  if (typeof value !== 'number' || !Number.isInteger(value)) {
-    throw new ConfigError(
-      `"version" must be a whole number, the config schema version — this hatch reads ${configRange()} ` +
-        `(got ${JSON.stringify(value)})`,
-      file,
-    );
-  }
-  if (value > CONFIG_VERSION) {
-    throw new ConfigError(
-      `"version" ${value} is a config schema this hatch does not know yet — it reads ${configRange()}: ` +
-        'update hatch, or write the config for the schema this one reads',
-      file,
-    );
-  }
-  if (value < CONFIG_MIN) {
-    throw new ConfigError(
-      `"version" ${value} is a config schema this hatch no longer reads — it reads ${configRange()}: ` +
-        `move the file to v${CONFIG_VERSION}`,
-      file,
-    );
-  }
 }

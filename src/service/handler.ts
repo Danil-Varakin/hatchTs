@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { dirname, isAbsolute } from 'node:path';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import type { ResolveResult } from '../core/resolve.ts';
@@ -5,6 +6,8 @@ import type {
   ApplyParams,
   ApplyResultMessage,
   BaseParams,
+  ConfigTemplateParams,
+  ConfigTemplateResult,
   GenerateParams,
   GenerateResult,
   GitSourceParams,
@@ -23,12 +26,21 @@ import { resolveHunks } from '../core/resolve.ts';
 import { HatchError } from '../core/errors.ts';
 import { generatePatch } from '../generate/pipeline.ts';
 import { namedLanguage, pickAdapter, supportedLanguages } from '../lang/adapter.ts';
-import { checkParent } from '../infra/fs.ts';
+import { checkParent, isFile } from '../infra/fs.ts';
 import { fileFromGit } from '../infra/git.ts';
 import type { GitSource } from '../infra/git.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
-import { CONFIG_MIN, CONFIG_VERSION, loadConfig, overridesFrom } from '../infra/config/index.ts';
-import type { FlagOverride, PartialSettings } from '../infra/config/index.ts';
+import {
+  CONFIG_MIN,
+  CONFIG_VERSION,
+  basesOnGit,
+  configTemplate,
+  loadConfig,
+  overridesFrom,
+  schemaVersions,
+  suggestedConfigPath,
+} from '../infra/config/index.ts';
+import type { FlagOverride, GenerateSettings, PartialSettings } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
 
@@ -53,9 +65,11 @@ async function dispatch(message: RequestMessage, id: number, emit: Emit | undefi
       return resolve(params<ResolveParams>(message));
     case 'apply':
       return apply(params<ApplyParams>(message));
+    case 'configTemplate':
+      return configTemplateOf(params<ConfigTemplateParams>(message));
     default:
       throw new BadRequest(
-        `unknown method '${String(message.method)}'; known: version, generate, resolve, apply`,
+        `unknown method '${String(message.method)}'; known: version, generate, resolve, apply, configTemplate`,
       );
   }
 }
@@ -74,7 +88,6 @@ function version(): VersionResult {
 async function generate(p: GenerateParams, id: number, emit: Emit | undefined): Promise<GenerateResult> {
   text(p.newText, 'newText');
   absolutePath(p);
-  const base = await baseOf(p);
 
   const anchor = p.path !== undefined ? dirname(p.path) : undefined;
   const config = loadConfig({
@@ -83,6 +96,12 @@ async function generate(p: GenerateParams, id: number, emit: Emit | undefined): 
     flags: paramOverrides(p),
   });
   const settings = config.generate;
+  // Neither base sent: the one the project's config names in git, if it names one.
+  const base = await baseOf(
+    p.baseText === undefined && p.baseGit === undefined && basesOnGit(settings)
+      ? { ...p, baseGit: gitWireOf(settings) }
+      : p,
+  );
 
   const outcome = await generatePatch({
     oldText: base.text,
@@ -178,8 +197,28 @@ function paramOverrides(p: GenerateParams): FlagOverride[] {
     out: p.out,
     mirror: p.mirror,
     ...(p.limits ?? {}),
+    ...baseOverrides(p),
   };
-  return overridesFrom(values, (spec) => `params.${spec.key}`);
+  return overridesFrom(values, (spec) =>
+    spec.path.startsWith('generate.base.') ? (p.baseText !== undefined ? 'params.baseText' : 'params.baseGit') : `params.${spec.key}`,
+  );
+}
+
+/** A base sent in the request replaces the config's `generate.base` whole, so the
+ *  settings answered back say where this run's base came from. */
+function baseOverrides(p: BaseParams): PartialSettings {
+  if (p.baseText !== undefined) return { baseHead: false, baseBranch: null, baseCommit: null };
+  if (p.baseGit === undefined) return {};
+  const source = gitSource(p.baseGit);
+  return { baseHead: true, baseBranch: source.branch ?? null, baseCommit: source.commit ?? null };
+}
+
+/** `generate.base` as a `baseGit` would name it; the file is `path`, as for `baseGit: {}`. */
+function gitWireOf(settings: GenerateSettings): GitSourceParams {
+  return {
+    ...(settings.baseBranch !== null ? { branch: settings.baseBranch } : {}),
+    ...(settings.baseCommit !== null ? { commit: settings.baseCommit } : {}),
+  };
 }
 
 interface Base {
@@ -217,6 +256,37 @@ function grammarPolicy(p: LanguageParams): { allowDownload: boolean; log: (m: st
     allowDownload: p.allowDownload === true || downloadAllowedByEnv(),
     log: (m: string) => process.stderr.write(`${m}\n`),
   };
+}
+
+function configTemplateOf(p: ConfigTemplateParams): ConfigTemplateResult {
+  if (typeof p.path !== 'string' || p.path === '') {
+    throw new BadRequest('params.path must be the absolute path the config is for: the repository root is found from it');
+  }
+  absolutePath(p);
+  if (p.version !== undefined && typeof p.version !== 'number') {
+    throw new BadRequest('params.version must be a number, a config schema version');
+  }
+  if (p.settings !== undefined && (p.settings === null || typeof p.settings !== 'object' || Array.isArray(p.settings))) {
+    throw new BadRequest('params.settings must be an object of config keys');
+  }
+  const template = configTemplate({ version: p.version, settings: p.settings });
+  const suggestedPath = suggestedConfigPath(isDirectory(p.path) ? p.path : dirname(p.path));
+  return {
+    text: template.text,
+    version: template.version,
+    suggestedPath,
+    exists: isFile(suggestedPath),
+    versions: schemaVersions(),
+  };
+}
+
+/** `path` may name the workspace folder as well as a file in it. */
+function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 // ── request decoding ─────────────────────────────────────────────────────────────

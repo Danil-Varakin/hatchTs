@@ -10,6 +10,7 @@ import {
   CONFIG_FILE_NAME,
   CONFIG_VERSION,
   DEFAULT_SETTINGS,
+  basesOnGit,
   findConfigFile,
   formatConfig,
   knownConfigKeys,
@@ -21,6 +22,7 @@ import { ConfigError, MatchError } from '../../src/core/errors.ts';
 import { DEFAULT_SYNTH_LIMITS, resolveLimits, synthesize } from '../../src/generate/synth.ts';
 import { printHatchFile } from '../../src/generate/printer.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
+import { buildRepo, version } from '../git-repo.ts';
 
 function withTempDir(body: (dir: string) => void | Promise<void>): () => Promise<void> {
   return async () => {
@@ -166,7 +168,7 @@ test('$schema is ignored, "all" and booleans pass through', withTempDir((dir) =>
 
 test('a version other than the current one is refused', withTempDir((dir) => {
   const file = writeConfig(dir, { version: CONFIG_VERSION + 1, generate: {} });
-  assert.throws(() => readConfigFile(file), /does not know yet — it reads v1: update hatch/);
+  assert.throws(() => readConfigFile(file), /does not know yet — it reads v1–v2: update hatch/);
 }));
 
 // ── file lookup ──────────────────────────────────────────────────────────────────
@@ -235,10 +237,21 @@ test('--no-config ignores the file, --config demands an existing one', withTempD
 
 test('formatConfig prints every value with its origin', () => {
   const text = formatConfig(resolveConfig({ flags: [{ key: 'maxSiblings', value: 0, flag: '--siblings' }] }));
-  assert.match(text, /^version = 1$/m);
+  assert.match(text, new RegExp(`^version = ${CONFIG_VERSION}$`, 'm'));
   assert.match(text, /generate\.siblings\.max\s+= 0\s+\[flag --siblings\]/);
   assert.match(text, /generate\.parents\.min\s+= 1\s+\[default\]/);
 });
+
+test('schema 2: generate.base names the old version in git; v1 refuses it by its version', withTempDir((dir) => {
+  const file = writeConfig(dir, { version: 2, generate: { base: { branch: 'main', commit: 'v1.0' } } });
+  assert.deepEqual(readConfigFile(file), { baseBranch: 'main', baseCommit: 'v1.0' });
+  const config = loadConfig({ startDir: dir, useFile: true });
+  assert.equal(basesOnGit(config.generate), true);
+  assert.equal(basesOnGit(DEFAULT_SETTINGS), false);
+
+  const old = writeConfig(dir, { version: 1, generate: { base: { head: true } } });
+  assert.throws(() => readConfigFile(old), /generate\.base\.head \(since v2\)/);
+}));
 
 test('the JSON Schema lists exactly the keys the code knows', () => {
   const schemaPath = fileURLToPath(new URL('../../hatch.config.schema.json', import.meta.url));
@@ -409,3 +422,27 @@ test('CLI: --parent-detail is honoured, and the removed ceiling flag is refused'
   assert.notEqual(stale.status, 0);
   assert.match(stale.stderr, /--parent-detail-limit/);
 }));
+
+test('CLI generate: generate.base in the config is the old version when no flag names one', () => {
+  const repo = buildRepo('hatch-cfg-base-');
+  try {
+    writeFileSync(repo.inPath, version(4));
+    writeFileSync(join(repo.dir, CONFIG_FILE_NAME), JSON.stringify({ version: 2, generate: { base: { commit: repo.a } } }));
+    const gen = (...args: string[]): string => {
+      const r = runCli(['generate', '--in', repo.inPath, '--out', '-', ...args], repo.dir);
+      assert.equal(r.status, 0, r.stderr);
+      return r.stdout;
+    };
+    const against = (text: string): string => {
+      const oldFile = join(repo.dir, 'old.cc');
+      writeFileSync(oldFile, text);
+      return gen('--in-old', oldFile); // --in-old ignores the config's base
+    };
+
+    assert.equal(gen(), against(version(1)), 'the commit the config names');
+    // A git flag replaces the config's coordinates whole: no commit is left to pair with it.
+    assert.equal(gen('--branch', 'side'), against(version(3)), 'the branch the flag names');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});

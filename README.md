@@ -20,11 +20,12 @@ Hatch describes a change declaratively — "insert this *after that include*,
 the parsed structure of the file, so reformatting and unrelated edits upstream
 don't invalidate the patch.
 
-Three commands:
+Four commands:
 
 - **`apply`** — apply a `.md` instruction file to a source file.
 - **`generate`** — diff two versions of a file and emit the `.md` instructions.
 - **`grammars`** — put the tree-sitter grammars in place (see Grammars below).
+- **`init`** — write a `hatch.config.json` (see Configuration below).
 
 `generate` then `apply` round-trips: applying a generated patch to the old file
 reproduces the new file. `generate` guarantees this by construction — it applies
@@ -188,6 +189,9 @@ hatch generate --in src/main.cpp --branch master --out changes.md
 hatch generate --in src/main.cpp --commit 1f3ac9d --out changes.md
 hatch generate --in src/main.cpp --branch master --commit 1f3ac9d \
                --repo-path src/legacy/main.cpp --out changes.md
+
+# a hatch.config.json at the root of the repository
+hatch init
 ```
 
 `hatch` with no arguments lists the commands, `hatch <command> --help` shows its
@@ -418,9 +422,23 @@ nothing in the output would tell you it applied. Layers, weakest first:
 built-in defaults  <  hatch.config.json  <  CLI flags
 ```
 
+`hatch init` writes one: only `"$schema"` and `"version"`, so every default stays the
+built-in one until you set it.
+
+| option | |
+|---|---|
+| `--config-version <n>` | the config schema to write; default the newest this hatch reads (`hatch --version`). An older one is said so on stderr |
+| `--dir <dir>` | where to write; default the git repository root around the current directory, outside a repository the directory itself |
+| `--force` | replace an existing `hatch.config.json` — without it the file is left as it is and hatch exits with 5 |
+| `--dry-run` | print the file to stdout, write nothing |
+
+`"$schema"` names the JSON Schema of that very version,
+`schemas/hatch.config.v<N>.schema.json`: an editor checks a v1 file against v1, not
+against whatever is newest. A file is held to the keys of the version it names.
+
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/hatch.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/schemas/hatch.config.v1.schema.json",
   "version": 1,
   "generate": {
     "language": "cpp",
@@ -465,6 +483,12 @@ the same boundary the config search stops at. A file outside any repository is a
 not a guess, so mirrored patches can never land somewhere unrelated. A relative `out` is
 taken from that root as well, so running `hatch generate` from different directories
 writes to the same place.
+
+`generate.base` (schema 2) names the old version once for the project, as `--head`,
+`--branch` and `--commit` do for one run: `{ "head": true }` is the last commit here,
+`{ "branch": "main" }` the tip of `main`, `{ "commit": "v1.0" }` that tag. With it,
+`hatch generate --in <file>` needs no source flag. Any git flag replaces all three for
+that run, and `--in-old` ignores them.
 
 ```
 --config <file>         use this config instead of searching upwards; an

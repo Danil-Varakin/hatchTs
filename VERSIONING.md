@@ -151,19 +151,21 @@ field of params and results, error kinds and their `detail`, and every validatio
 | 1 | never released | — | lived only inside `dev`; named two contracts (R2) |
 | 2 | 0.2.0 | first | `version`, `generate`, `resolve`, `apply`; `generate` takes `baseText` or `baseGit`, answers `baseSpec`; `params.path` must be absolute |
 | 3 | 0.3.0 | additive, M = 2 | `resolve`/`apply` take `baseGit` and answer `baseSpec`; `version` announces `protocolMin` and `configSchemaMin`; every file extension is also a language name (`languages` grows); `generate` writes the language's own name into `# match`; `baseGit.branch` finds a branch that shares its name with a tag; `language: ""` means none in every method; a patch lands in a CRLF base with CRLF lines — a fix, the old mixed endings were the bug |
+| 4 | unreleased | additive, M = 2 | `configTemplate`: the text of a new `hatch.config.json` for a schema version and settings, `suggestedPath`, `exists`, `versions`; a `ConfigError` about keys outside the schema carries `detail.version` and `detail.keys`; `generate` with neither `baseText` nor `baseGit` takes the config's `generate.base` (refused before); `config.settings` grows `baseHead`, `baseBranch`, `baseCommit` |
 
 ### Config schema
 
 | N | first release | kind | what changed |
 |---|---|---|---|
 | 1 | 0.1.0 | first | `generate`: `out`, `language`, `exact`, `bridgeGap`, `parents`, `siblings` |
-| 1 | 0.2.0 | **added without a bump** | `generate.mirror` — before these rules; by C2 it would be schema 2. A config using it, read by hatch 0.1.x, fails with "unknown key" rather than "update hatch". Left as released (P7) |
+| 1 | 0.2.0 | **added without a bump** | `generate.mirror` — before these rules; by C2 it would be schema 2. A config using it, read by hatch 0.1.x, fails with "unknown key" rather than "update hatch". Left as released (P7); marked `unbumpedIn` in `FIELDS` and in the v1 summary |
+| 2 | unreleased | additive, M = 1 | `generate.base`: `head`, `branch`, `commit` — the old version out of git, as `--head` / `--branch` / `--commit` (C6) |
 
 ### Clients
 
 | client | version | protocol it speaks | |
 |---|---|---|---|
-| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, unreleased | 2–3 | range check as R8 |
+| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, unreleased | 2–4 | range check as R8; `configTemplate` only from protocol 4 |
 
 ## 7. Support
 

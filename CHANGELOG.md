@@ -4,6 +4,42 @@ Every release names its three numbers — package, protocol range, config schema
 then what changed, breaking changes first. The rules for all three are in
 [VERSIONING.md](./VERSIONING.md); an entry is written before its tag (P6).
 
+## Unreleased
+
+**Protocol 2–4 · config schema 1–2**
+
+### Added
+
+- Config schema 2 (additive, `CONFIG_MIN` stays 1): `generate.base.head`,
+  `generate.base.branch`, `generate.base.commit` — the old version `generate` compares
+  against, named once for the project as `--head` / `--branch` / `--commit` name it.
+  With them set, `hatch generate --in <file>` needs no source flag. Any git flag
+  replaces all three for that run; `--in-old` ignores them. Over the service, a
+  `generate` that sends neither `baseText` nor `baseGit` takes this base (protocol 4,
+  additive: such a request was refused before). A config with `"version": 1` is read
+  as before; hatch 0.3.0 meeting `"version": 2` says to update hatch.
+
+- `hatch init` writes a `hatch.config.json`: only `"$schema"` and `"version"`, so every
+  default stays the built-in one. `--config-version <n>` picks the schema (a line on
+  stderr when it is not the newest), `--dir` the directory (default: the git root around
+  the current directory, outside a repository the directory itself), `--force` replaces
+  an existing file (without it: exit 5, the file untouched), `--dry-run` prints instead.
+- Protocol 4 (additive, `protocolMin` stays 2): the method `configTemplate` answers the
+  text of a new config for a schema version and initial settings, the path the core
+  would look for it at, whether a file is there, and every schema version in the range
+  with a one-line summary. It writes nothing. A `ConfigError` about keys outside the
+  chosen schema carries `detail.version` and `detail.keys`.
+- Each config schema has its own JSON Schema, `schemas/hatch.config.v<N>.schema.json`,
+  and a written config points its `"$schema"` at the one of its version — read from the
+  tag of the release that shipped it, so a released schema never changes (until then,
+  from `main`).
+  `hatch.config.schema.json` stays the newest schema, for SchemaStore.
+
+### Changed
+
+- A config is checked against the keys of the schema its `"version"` names: a v1 file
+  reads exactly as before, and `generate.base` in it is refused as a v2 key.
+
 ## 0.3.0 — 2026-09-28
 
 **Protocol 2–3 · config schema 1–1**

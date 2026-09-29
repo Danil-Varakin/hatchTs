@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
+import { CONFIG_VERSION, configTemplate, schemaVersions } from '../../src/infra/config/index.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Readable, Writable } from 'node:stream';
@@ -152,6 +153,28 @@ test('service generate: exactly one base — neither and both are refused', asyn
     const neither = failed(await generateGit(repo, {}));
     assert.equal(neither.kind, 'BadRequest');
     assert.match(neither.message, /exactly one base/);
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
+test('service generate: no base sent — the one generate.base names in the config (schema 2)', async () => {
+  const repo = buildRepo('hatch-svc-cfgbase-');
+  try {
+    writeFileSync(
+      join(repo.dir, 'hatch.config.json'),
+      JSON.stringify({ version: 2, generate: { base: { commit: repo.a } } }),
+    );
+    const fromConfig = ok(await generateGit(repo, {}));
+    assert.equal(fromConfig['baseSpec'], `${repo.a}:src/core/f.cc`);
+    const config = fromConfig['config'] as { origins: Record<string, string> };
+    assert.match(config.origins['generate.base.commit']!, /^config /);
+
+    // A base in the request replaces the config's whole, and the origins say so.
+    const sent = ok(await generateGit(repo, { baseGit: { branch: 'side' } }));
+    assert.equal(sent['baseSpec'], 'side:src/core/f.cc');
+    const origins = (sent['config'] as { origins: Record<string, string> }).origins;
+    assert.equal(origins['generate.base.commit'], 'flag params.baseGit');
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
   }
@@ -528,4 +551,48 @@ test('service: language "" is no language — generate and resolve alike go by t
     params: { md: md.replace('# match cpp', '# match'), baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
   });
   assert.ok(res.ok, JSON.stringify(res));
+});
+
+// ── configTemplate (protocol 4) ──────────────────────────────────────────────
+
+test('configTemplate: the text, where the core would look, whether it is there, every version', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'hatch-svc-cfg-')));
+  try {
+    mkdirSync(join(dir, '.git'));
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'a.cpp'), '');
+    const result = ok(
+      await handle({ id: 1, method: 'configTemplate', params: { path: join(dir, 'src', 'a.cpp'), settings: { 'generate.out': 'patches/' } } }),
+    );
+    assert.equal(result['text'], configTemplate({ settings: { generate: { out: 'patches/' } } }).text);
+    assert.equal(result['version'], CONFIG_VERSION);
+    assert.equal(result['suggestedPath'], join(dir, 'hatch.config.json'));
+    assert.equal(result['exists'], false);
+    assert.deepEqual(result['versions'], schemaVersions());
+
+    writeFileSync(join(dir, 'hatch.config.json'), '{}');
+    const again = ok(await handle({ id: 2, method: 'configTemplate', params: { path: dir } }));
+    assert.equal(again['exists'], true, 'a folder as path works too');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('configTemplate: path must be absolute; a bad key is a ConfigError listing every key', async () => {
+  assert.equal(failed(await handle({ id: 1, method: 'configTemplate', params: { path: 'rel' } })).kind, 'BadRequest');
+  assert.equal(failed(await handle({ id: 1, method: 'configTemplate', params: {} })).kind, 'BadRequest');
+  const error = failed(
+    await handle({ id: 1, method: 'configTemplate', params: { path: tmpdir(), settings: { generate: { a: 1, b: 2 } } } }),
+  );
+  assert.equal(error.kind, 'ConfigError');
+  assert.equal(error.exitCode, 5);
+  assert.deepEqual(error.detail, {
+    version: CONFIG_VERSION,
+    keys: [
+      { path: 'generate.a', since: null, until: null },
+      { path: 'generate.b', since: null, until: null },
+    ],
+  });
+  const newer = failed(await handle({ id: 1, method: 'configTemplate', params: { path: tmpdir(), version: CONFIG_VERSION + 1 } }));
+  assert.match(newer.message, /update hatch/);
 });

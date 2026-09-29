@@ -13,7 +13,7 @@ import type { Ask } from '../infra/ask.ts';
 import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-import { CONFIG_FILE_NAME, formatConfig, loadConfig, overridesFrom } from '../infra/config/index.ts';
+import { CONFIG_FILE_NAME, basesOnGit, formatConfig, loadConfig, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings, ResolvedConfig } from '../infra/config/index.ts';
 import type { ErrorContext, Logger } from '../infra/log.ts';
 import { invokedDirectly } from '../infra/entry.ts';
@@ -61,6 +61,10 @@ The OLD version — exactly one source, either a file on disk or git.
   --in-old     <file>     old version, read from this path
 
 ${GIT_USAGE}
+
+A project that always compares against the same version names it once in
+${CONFIG_FILE_NAME}: generate.base.head / .branch / .commit, as the flags above. Any
+git flag replaces those three as a whole for this run; --in-old ignores them.
 
 ${CONFIRM_USAGE}
 
@@ -129,7 +133,8 @@ Configuration
   --print-config          print the effective settings with the origin of each
                           (default / config / flag) and exit`;
 
-const SPEC: ArgSpec<Options> = {
+/** Exported for the C6 test: every flag here has a config key or is exempt by name. */
+export const SPEC: ArgSpec<Options> = {
   flags: {
     ...GIT_ARGS.flags,
     ...CONFIRM_ARGS.flags,
@@ -191,6 +196,11 @@ function flagOverrides(opts: Options): FlagOverride[] {
     minSiblings: opts.minSiblings as PartialSettings['minSiblings'],
     maxSiblings: opts.siblings as PartialSettings['maxSiblings'],
     siblingDetailBase: opts.siblingDetailBase as PartialSettings['siblingDetailBase'],
+    // Flags name the old version whole: a --branch on the command line is not paired
+    // with a commit the config names for another branch.
+    ...(asksGit(opts)
+      ? { baseHead: true, baseBranch: opts.branch ?? null, baseCommit: opts.commit ?? null }
+      : {}),
   };
   return overridesFrom(values, (spec) => spec.flag);
 }
@@ -256,16 +266,25 @@ function makeTracer(log: Logger): Tracer {
 
 /** A usage question, answered before a single file is opened: a wrong invocation has
  *  to be told apart from a file that is not there. */
-function requireOneOldSource(opts: Options): void {
+function requireOneOldSource(opts: Options, config: ResolvedConfig): void {
   const one = `exactly one source of the OLD version: --in-old <file>, or git (${GIT_FLAG_NAMES})`;
   if (opts.inOld !== undefined && asksGit(opts)) throw new Error(`provide ${one} — not both`);
-  if (opts.inOld === undefined && !asksGit(opts)) throw new Error(`provide ${one}`);
+  if (opts.inOld === undefined && !basesOnGit(config.generate)) {
+    throw new Error(`provide ${one}, or set generate.base in ${CONFIG_FILE_NAME}`);
+  }
 }
 
-async function oldVersion(opts: Options, inPath: string, ask: Ask): Promise<FileVersion> {
-  return opts.inOld !== undefined
-    ? { text: readInputFile(opts.inOld, '--in-old'), spec: opts.inOld }
-    : readFromGit(opts, inPath, ask);
+/** --in-old wins over a git base the config names; git flags have already replaced the
+ *  config's coordinates (flagOverrides), so the settings hold the git source either way. */
+async function oldVersion(opts: Options, settings: ResolvedConfig['generate'], inPath: string, ask: Ask): Promise<FileVersion> {
+  if (opts.inOld !== undefined) return { text: readInputFile(opts.inOld, '--in-old'), spec: opts.inOld };
+  const git: GitOptions = {
+    head: true,
+    ...(settings.baseBranch !== null ? { branch: settings.baseBranch } : {}),
+    ...(settings.baseCommit !== null ? { commit: settings.baseCommit } : {}),
+    ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
+  };
+  return readFromGit(git, inPath, ask);
 }
 
 async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
@@ -296,10 +315,10 @@ async function generate(
   answers: Answers,
 ): Promise<void> {
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
-  requireOneOldSource(opts);
+  requireOneOldSource(opts, config);
 
   const newStr = readInputFile(opts.in, '--in');
-  const old = await oldVersion(opts, opts.in, terminalAsker(opts.yes, (m) => log.note(m), answers));
+  const old = await oldVersion(opts, config.generate, opts.in,terminalAsker(opts.yes, (m) => log.note(m), answers));
   seen.old = old;
   log.trace(`old version: ${old.spec} (${old.text.length} bytes)`);
 

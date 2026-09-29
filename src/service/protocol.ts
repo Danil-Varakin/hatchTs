@@ -10,7 +10,7 @@ export type { GenerateSettings } from '../infra/config/index.ts';
 // unchanged, every client written for PROTOCOL_MIN or later. Every change to the wire
 // raises PROTOCOL_VERSION (once per release); only a change an older client would trip
 // over raises PROTOCOL_MIN with it. Rules: VERSIONING.md.
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 export const PROTOCOL_MIN = 2;
 
 export interface RequestMessage {
@@ -78,6 +78,19 @@ export interface ResolveParams extends LanguageParams, BaseParams {
 
 export type ApplyParams = ResolveParams;
 
+/** The text of a new hatch.config.json. The service writes nothing: the client asks
+ *  the user, writes the file and decides about overwriting. Protocol 4. */
+export interface ConfigTemplateParams {
+  /** absolute; the repository root is found from it */
+  readonly path: string;
+  /** the config schema to write, within `version().configSchemaMin..configSchema`;
+   *  the newest when left out */
+  readonly version?: number;
+  /** initial values, in the paths of the config: `{ generate: { out: "patches/" } }` or
+   *  `{ "generate.out": "patches/" }` */
+  readonly settings?: Readonly<Record<string, unknown>>;
+}
+
 // ── results ──────────────────────────────────────────────────────────────────────
 
 export interface VersionResult {
@@ -122,4 +135,17 @@ export interface ApplyResultMessage {
   readonly text: string;
   readonly hunks: readonly HunkLink[];
   readonly baseSpec: string | null;
+}
+
+export interface ConfigTemplateResult {
+  readonly text: string;
+  /** the schema version written */
+  readonly version: number;
+  /** where the core itself looks for the config from `path`: the repository root, or
+   *  the directory of `path` outside a repository */
+  readonly suggestedPath: string;
+  /** whether a file is already there */
+  readonly exists: boolean;
+  /** every schema this hatch reads, oldest first, each with one line of what it holds */
+  readonly versions: readonly { readonly version: number; readonly summary: string }[];
 }

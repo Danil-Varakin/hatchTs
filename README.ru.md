@@ -18,11 +18,12 @@
 функции*» — тремя операторами. Позиция ищется по разобранной структуре файла,
 поэтому переформатирование и несвязанные правки upstream патч не ломают.
 
-Три команды:
+Четыре команды:
 
 - **`apply`** — применить `.md`-инструкции к исходному файлу.
 - **`generate`** — сравнить две версии файла и породить `.md`-инструкции.
 - **`grammars`** — положить грамматики tree-sitter на место (см. «Грамматики»).
+- **`init`** — создать `hatch.config.json` (см. «Конфигурация»).
 
 `generate`, затем `apply` замыкают round-trip: применение порождённого патча к
 старому файлу воспроизводит новый. `generate` гарантирует это по построению — он
@@ -186,6 +187,9 @@ hatch generate --in src/main.cpp --branch master --out changes.md
 hatch generate --in src/main.cpp --commit 1f3ac9d --out changes.md
 hatch generate --in src/main.cpp --branch master --commit 1f3ac9d \
                --repo-path src/legacy/main.cpp --out changes.md
+
+# hatch.config.json в корне репозитория
+hatch init
 ```
 
 `hatch` без аргументов печатает список команд, `hatch <команда> --help` — её опции,
@@ -414,9 +418,23 @@ same, out of a history branch main never had
 встроенные дефолты  <  hatch.config.json  <  флаги CLI
 ```
 
+`hatch init` создаёт такой файл: только `"$schema"` и `"version"`, так что все
+значения по умолчанию остаются встроенными, пока их не задать.
+
+| опция | |
+|---|---|
+| `--config-version <n>` | версия схемы конфига; по умолчанию самая новая, которую читает этот hatch (`hatch --version`). О более старой будет строка в stderr |
+| `--dir <папка>` | куда писать; по умолчанию корень git-репозитория от текущей папки, вне репозитория — сама папка |
+| `--force` | заменить существующий `hatch.config.json` — без него файл не трогается, код выхода 5 |
+| `--dry-run` | напечатать файл в stdout, ничего не записывая |
+
+`"$schema"` указывает на JSON Schema именно этой версии,
+`schemas/hatch.config.v<N>.schema.json`: редактор проверяет файл v1 по схеме v1, а не по
+самой новой. Ключи файла сверяются с версией, которую он называет.
+
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/hatch.config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/schemas/hatch.config.v1.schema.json",
   "version": 1,
   "generate": {
     "language": "cpp",
@@ -460,6 +478,12 @@ SchemaStore схема тоже подготовлена (`.github/schemastore/`
 а не догадка: зеркальный патч не может лечь в постороннее место. Относительный `out`
 тоже берётся от этого корня, поэтому `hatch generate` из разных папок пишет в одно и то
 же место.
+
+`generate.base` (схема 2) один раз на проект называет старую версию — так же, как
+`--head`, `--branch` и `--commit` на один запуск: `{ "head": true }` — последний коммит
+здесь, `{ "branch": "main" }` — вершина `main`, `{ "commit": "v1.0" }` — этот тег. С ним
+`hatch generate --in <файл>` не нужен флаг источника. Любой git-флаг заменяет все три на
+этот запуск, а `--in-old` их не замечает.
 
 ```
 --config <файл>         взять этот конфиг вместо поиска вверх по дереву; явный

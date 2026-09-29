@@ -8,7 +8,8 @@
     "README.ru.md",
     "PROTOCOL.md",
     "LICENSE",
-    "hatch.config.schema.json"
+    "hatch.config.schema.json",
+    "schemas"
   ],
   "scripts": {
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",

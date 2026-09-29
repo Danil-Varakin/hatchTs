@@ -25,6 +25,7 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map([
       load: () => import('./grammars.ts'),
     },
   ],
+  ['init', { summary: 'write a hatch.config.json for the project', load: () => import('./init.ts') }],
 ]);
 
 const USAGE = `hatch — structural patch instructions in Markdown

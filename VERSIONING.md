@@ -88,6 +88,17 @@ field of params and results, error kinds and their `detail`, and every validatio
 - **C4.** One bump per release, frozen on release — as R3.
 - **C5.** Outside the range the message names the side: newer — update hatch; older —
   move the file to the current schema.
+- **C6.** Every `generate` option the core supports has a config key under `generate`,
+  shipped in the same release as the option — a flag, a protocol param or both. *(Why:
+  what a project settles once — how much context a hunk carries, what it is compared
+  against — must not have to be retyped on every run or taught to every client
+  separately.)* Exempt, because they name one run and not the project: the files of
+  that run (`--in`, `--in-old`, `baseText`, `newText`, `path`, `--repo-path`), where the
+  config itself comes from (`--config`, `--no-config`, `--print-config`), how the run
+  talks to a person (`--agreement`, `--yes`, `--help`, `--debug`, `--log`) and
+  permission to download (`--download-grammars`, `allowDownload`). A new exemption is
+  added here, with its reason, before the option ships without a key. A key follows C2:
+  schema + 1.
 
 ## 4. What has no number
 
@@ -110,6 +121,10 @@ field of params and results, error kinds and their `detail`, and every validatio
 
 1. Everything for the release is committed on `dev`, and `CHANGELOG.md` has its entry
    with the three numbers (P6). The tables below are up to date (R10).
+   A config schema version shipping for the first time gets its row in
+   `SCHEMA_RELEASED_IN` (`src/infra/config/template.ts`) with this release's tag: from
+   then on a written config's `"$schema"` points at that tag, which never moves (P7),
+   so the released schema file cannot change under anyone.
 2. `npm run check` is green.
 3. The version bump, alone in its commit (P5):
    `npm version minor -m "поднята версия"` (or `patch`, by P2).

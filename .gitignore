@@ -33,9 +33,12 @@ yarn-error.log*
 # the manual-run corpus over chromium/brave: fetched data, never committed
 /corpus/
 
-# tree-sitter grammars: not committed, fetched into the user cache
-# (`npm run grammars`), see src/infra/grammar-store.ts
+# tree-sitter grammars: not committed — scripts/fetch-grammars.ts puts the pinned ones
+# here (`npm run grammars`, pretest, prepack) and `npm pack` ships them inside hatch
 /grammars/
+
+# hatch-apply as scripts/build-apply-bin.mjs builds it
+/build/
 
 # the archive npm pack produces
 *.tgz

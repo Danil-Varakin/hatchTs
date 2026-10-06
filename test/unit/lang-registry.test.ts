@@ -9,10 +9,9 @@ import { adapterForLanguage, adapterForFile } from '../../src/lang/adapter.ts';
 import { hatchMd } from '../helpers.ts';
 import type { SourceMap } from '../../src/lang/source-map.ts';
 
-// depthAt / enclosingEnd жили в SourceMap, но в src/ их не звал никто — только тесты.
-// Оба выводятся из enclosing(), который возвращает спаны от самого внутреннего.
+// depthAt жил в SourceMap, но в src/ его не звал никто — только тесты. Выводится из
+// enclosing(), который возвращает спаны от самого внутреннего.
 const depthAt = (map: SourceMap, pos: number): number => map.enclosing(pos).length;
-const enclosingEnd = (map: SourceMap, pos: number): number => map.enclosing(pos)[0]?.close ?? map.eof;
 
 
 interface Case {

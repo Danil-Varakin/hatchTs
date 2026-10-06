@@ -177,13 +177,10 @@ test('no match is a MatchError', async () => {
 test('two identical anchors give an AmbiguityError carrying both places', async () => {
   await cppAdapter.init();
   const src = 'void f(){ ping(); ping(); }';
-  try {
-    run(src, pattern('... ping(); >>> ...'));
-    assert.fail('expected an AmbiguityError');
-  } catch (e) {
-    assert.ok(e instanceof AmbiguityError);
-    assert.equal(e.positions.length, 2);
-  }
+  assert.throws(
+    () => run(src, pattern('... ping(); >>> ...')),
+    (e: unknown) => e instanceof AmbiguityError && e.positions.length === 2,
+  );
 });
 
 // ── the commitment: `... }` is decided by the block the pattern opened ────────

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseArgs, parseCountValue } from '../../src/cli/args.ts';
+import { parseArgs, parseCountValue, pickOptions } from '../../src/cli/args.ts';
 import type { ArgSpec } from '../../src/cli/args.ts';
 
 interface Options {
@@ -89,4 +89,15 @@ test('order does not matter and later wins', () => {
     in: 'a.cc',
   });
   assert.equal(parse(['--in', 'a.cc', '--in', 'b.cc']).in, 'b.cc');
+});
+
+test('pickOptions: the options named, each with the meaning it has in the full spec — and none it lacks', () => {
+  const picked = pickOptions(SPEC, ['--in', '-v', '--no-config', '--log']);
+  assert.deepEqual(picked, {
+    values: { '--in': 'in' },
+    flags: { '-v': 'verbose' },
+    negated: { '--no-config': 'useConfig' },
+    optional: { '--log': 'log' },
+  });
+  assert.throws(() => pickOptions(SPEC, ['--out']), /--out is not an option of the full command/);
 });

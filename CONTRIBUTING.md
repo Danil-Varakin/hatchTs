@@ -227,6 +227,7 @@ Two markers, both on the first line of a case:
 - `KNOWN-GAP` — synthesis cannot do this yet, said out loud. Fix it and the test fails
   with "it works now, remove the marker".
 
-Hatch has also been exercised against real Chromium files carrying real Brave patches.
+Hatch has also been exercised against real Chromium files carrying real downstream
+patches.
 That material is third-party code under a third-party licence and is not part of this
 repository; `test/golden` is the suite everyone can run.

@@ -1,27 +1,30 @@
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import type { Tracer, SynthEvent } from '../generate/synth.ts';
 import { generatePatch } from '../generate/pipeline.ts';
 import { printPattern } from '../core/hatch-printer.ts';
 import { describeHunk } from '../generate/agreement.ts';
 import type { GenerateOutcome, GenerateRequest } from '../generate/pipeline.ts';
 import type { Steering } from '../generate/steer.ts';
-import { AmbiguityError, MatchError } from '../core/errors.ts';
+import { ConfigError, SynthesisError } from '../core/errors.ts';
 import { editorCommand, editSession } from './editor.ts';
 import type { EditSession } from './editor.ts';
 import { InputClosed } from '../infra/ask.ts';
 import type { Ask } from '../infra/ask.ts';
-import { ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
+import { checkParent, ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
-import { downloadAllowedByEnv } from '../infra/grammar-store.ts';
-import { CONFIG_FILE_NAME, basesOnGit, formatConfig, loadConfig, overridesFrom } from '../infra/config/index.ts';
+import { GRAMMARS_SHIP_INSIDE } from './deprecated.ts';
+import { CONFIG_FILE_NAME, basesOnGit, formatConfig, gitSourceOf, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings, ResolvedConfig } from '../infra/config/index.ts';
 import type { ErrorContext, Logger } from '../infra/log.ts';
-import { invokedDirectly } from '../infra/entry.ts';
 import type { ArgSpec } from './args.ts';
 import { runCommand } from './command.ts';
-import { GIT_ARGS, GIT_FLAG_NAMES, GIT_USAGE, asksGit, readFromGit } from './git-source.ts';
+import { GIT_ARGS, GIT_FLAG_NAMES, GIT_USAGE, asksGit, gitEol } from './git-source.ts';
+import { fileFromGit } from '../infra/git.ts';
+import { isPatchPath, patchAt, patchTarget } from '../infra/pair.ts';
+import { loadProject } from '../infra/project.ts';
+import type { Project } from '../infra/project.ts';
 import type { FileVersion, GitOptions } from './git-source.ts';
-import { CONFIRM_ARGS, CONFIRM_USAGE, terminalAsker } from './confirm.ts';
+import { CONFIRM_ARGS, CONFIRM_USAGE, atTerminal, terminalAsker } from './confirm.ts';
 import type { ConfirmOptions } from './confirm.ts';
 import { answersFrom } from './prompt.ts';
 import { namedLanguage } from '../lang/adapter.ts';
@@ -42,7 +45,6 @@ interface Options extends GitOptions, ConfirmOptions {
   siblingDetailBase?: unknown;
   bridgeGap?: unknown;
   requireParents: boolean;
-  mirror: boolean;
   downloadGrammars: boolean;
   useConfig: boolean;
   printConfig: boolean;
@@ -52,7 +54,7 @@ interface Options extends GitOptions, ConfirmOptions {
   help: boolean;
 }
 
-const USAGE = `hatch generate — synthesize .md instructions from two versions of a file
+const USAGE = `hatch generate — synthesize a .hatch patch from two versions of a file
 
   --in,     -i <file>     new version of the file                    [required]
 
@@ -68,19 +70,18 @@ git flag replaces those three as a whole for this run; --in-old ignores them.
 
 ${CONFIRM_USAGE}
 
-  --out,    -o <path>     where to write the .md. A directory (existing, or ending
-                          with a slash) gets <name of --in>.md inside it; any other
-                          path is written as is and overwritten. Missing directories
+  --out,    -o <path>     where to write the .hatch. A directory (existing, or ending
+                          with a slash, or a name without an extension) gets
+                          <name of --in>.hatch inside it; a file must be a .hatch and
+                          is written as is, over what is there. Missing directories
                           are created. A relative path is measured from the
                           repository root, not from the current directory. Omitted
-                          means next to --in; \`-\` writes to stdout
-  --mirror                keep the patches in a tree of their own: the .md goes to
-                          <--out>/<path of --in inside the repository>.md, and
-                          missing directories are created. Requires --out to name a
-                          directory; a relative one is taken from the repository
-                          root, never from the current directory. Paths are measured
-                          from the nearest ancestor holding .git, so a file outside
-                          any repository is an error rather than a guess
+                          means next to --in; \`-\` writes to stdout. With
+                          "upstream" in ${CONFIG_FILE_NAME} a directory is the root of
+                          a tree that repeats the upstream's:
+                          <config dir>/<out>/<path of --in from the upstream>.hatch.
+                          A patch already at a place hatch computed that names
+                          another Target is not written over without asking (--yes)
   --language,-l <lang>    force language (else: extension of --in)
   --agreement,-a          confirm each hunk before writing
   --exact,  -e            reproduce the new file byte for byte; without it every
@@ -88,8 +89,8 @@ ${CONFIRM_USAGE}
                           and inner spacing are free, the set of lines is not)
   --debug,  -v            trace synthesis to stderr: every segment, each probe
                           attempt (incl. non-unique) and the chosen hunk
-  --download-grammars     allow fetching the language's grammar if it is missing
-                          (off by default; npm run grammars fetches them once)
+  --download-grammars     does nothing since 0.4 (grammars ship inside hatch) and
+                          warns; removed in 0.5
   --log [place]           also write a full log — the resolved config and the whole
                           synthesis trace, whether or not -v is on. A place that is a
                           directory (or ends in /) receives a generated name, so every
@@ -125,10 +126,13 @@ be set in ${CONFIG_FILE_NAME}; the flag wins for this run.
 
 Configuration
 
-  --config <file>         use this config file instead of searching for
-                          ${CONFIG_FILE_NAME} upwards from --in. The search stops
-                          at the repository root and never enters the home
-                          directory; --config itself has no such bound
+  --config <file>         use this config file — no search. Without it: the
+                          ${CONFIG_FILE_NAME} up from --in to its repository root;
+                          else the one whose "upstream" holds --in, in a
+                          subdirectory of a repository root on the way up or in a
+                          directory above the repository; else $HATCH_CONFIG; else
+                          the one in the current directory, if it claims --in.
+                          The search never enters the home directory
   --no-config             ignore config files entirely (built-in defaults + flags)
   --print-config          print the effective settings with the origin of each
                           (default / config / flag) and exit`;
@@ -143,7 +147,6 @@ export const SPEC: ArgSpec<Options> = {
     '--debug': 'debug', '-v': 'debug',
     '--help': 'help', '-h': 'help',
     '--require-parents': 'requireParents',
-    '--mirror': 'mirror',
     '--download-grammars': 'downloadGrammars',
     '--print-config': 'printConfig',
   },
@@ -172,7 +175,6 @@ const INITIAL: Options = {
   head: false,
   yes: false,
   requireParents: false,
-  mirror: false,
   downloadGrammars: false,
   useConfig: true,
   printConfig: false,
@@ -185,7 +187,7 @@ const INITIAL: Options = {
 function flagOverrides(opts: Options): FlagOverride[] {
   const values: PartialSettings = {
     out: opts.out,
-    mirror: opts.mirror ? true : undefined,
+    baseEol: gitEol(opts.eol),
     language: namedLanguage(opts.language),
     exact: opts.exact ? true : undefined,
     bridgeGap: opts.bridgeGap as PartialSettings['bridgeGap'],
@@ -208,7 +210,7 @@ function flagOverrides(opts: Options): FlagOverride[] {
 /** `-a`: each hunk is shown as it is made, and kept unless the answer is no — Enter
  *  keeps it. The answers may come from a terminal or be piped in, one line per hunk; an
  *  input that closes before every hunk is answered stops the run. No offers to write the
- *  hunks by hand; refused, the run stops without a .md. */
+ *  hunks by hand; refused, the run stops without a patch. */
 function hunkReviewer(answers: Answers): Steering['review'] {
   return async (hunk, number, total) => {
     const answer = await answers.next(`\n${describeHunk(hunk, number - 1, total)}\nkeep this hunk? [Y/n] `);
@@ -217,13 +219,8 @@ function hunkReviewer(answers: Answers): Steering['review'] {
   };
 }
 
-/** A person at a terminal: both ends, as for every question hatch asks. */
-function atTerminal(): boolean {
-  return process.stdin.isTTY === true && process.stderr.isTTY === true;
-}
-
 /** How a run with a person in it goes on when a hunk has to be written by hand: the
- *  reason is shown, the person asked, and the .md so far opened in their editor. */
+ *  reason is shown, the person asked, and the patch so far opened in their editor. */
 function steering(answers: Answers, log: Logger, session: EditSession, review?: Steering['review']): Steering {
   return {
     review,
@@ -278,19 +275,13 @@ function requireOneOldSource(opts: Options, config: ResolvedConfig): void {
  *  config's coordinates (flagOverrides), so the settings hold the git source either way. */
 async function oldVersion(opts: Options, settings: ResolvedConfig['generate'], inPath: string, ask: Ask): Promise<FileVersion> {
   if (opts.inOld !== undefined) return { text: readInputFile(opts.inOld, '--in-old'), spec: opts.inOld };
-  const git: GitOptions = {
-    head: true,
-    ...(settings.baseBranch !== null ? { branch: settings.baseBranch } : {}),
-    ...(settings.baseCommit !== null ? { commit: settings.baseCommit } : {}),
-    ...(opts.repoPath !== undefined ? { repoPath: opts.repoPath } : {}),
-  };
-  return readFromGit(git, inPath, ask);
+  return fileFromGit({ ...gitSourceOf(settings), path: opts.repoPath }, inPath, ask);
 }
 
 async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
-  const config = loadConfig({
-    explicitPath: opts.config,
-    startDir: opts.in !== undefined ? dirname(resolve(opts.in)) : process.cwd(),
+  const { config, project } = loadProject({
+    path: opts.in,
+    search: { explicitPath: opts.config, cwd: process.cwd() },
     useFile: opts.useConfig,
     flags: flagOverrides(opts),
   });
@@ -301,7 +292,7 @@ async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
   if (log.logPath !== undefined) log.trace(formatConfig(config).trimEnd());
   const answers = answersFrom();
   try {
-    await generate(opts, config, log, seen, answers);
+    await generate(opts, config, project, log, seen, answers);
   } finally {
     answers.close();
   }
@@ -310,6 +301,7 @@ async function run(opts: Options, log: Logger, seen: Seen): Promise<void> {
 async function generate(
   opts: Options,
   config: ResolvedConfig,
+  project: Project,
   log: Logger,
   seen: Seen,
   answers: Answers,
@@ -317,12 +309,19 @@ async function generate(
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
   requireOneOldSource(opts, config);
 
+  if (opts.downloadGrammars) log.note(`warning: ${GRAMMARS_SHIP_INSIDE}`);
+  const settings = config.generate;
+  const ask = terminalAsker(opts.yes, (m) => log.note(m), answers);
+  // before anything is read: a place the patch cannot go is known without it
+  const out = resolveOutPath({ inPath: resolve(opts.in), out: settings.out, project });
+  if (out.path !== undefined) checkParent(out.path);
+  const target = patchTarget(project, out.path, opts.in);
+  if (out.path !== undefined && !namedOutright(opts.out)) await mayWriteOver(out.path, target, ask);
+
   const newStr = readInputFile(opts.in, '--in');
-  const old = await oldVersion(opts, config.generate, opts.in,terminalAsker(opts.yes, (m) => log.note(m), answers));
+  const old = await oldVersion(opts, config.generate, opts.in, ask);
   seen.old = old;
   log.trace(`old version: ${old.spec} (${old.text.length} bytes)`);
-
-  const settings = config.generate;
   const request: GenerateRequest = {
     oldText: old.text,
     newText: newStr,
@@ -331,8 +330,9 @@ async function generate(
     exact: settings.exact,
     bridgeGap: settings.bridgeGap,
     limits: settings,
-    init: { allowDownload: opts.downloadGrammars || downloadAllowedByEnv() },
     trace: opts.debug || log.logPath !== undefined ? makeTracer(log) : undefined,
+    target,
+    generatedFrom: old.blob,
   };
   const session = editSession();
   let outcome: GenerateOutcome;
@@ -348,7 +348,6 @@ async function generate(
 
   for (const w of outcome.warnings) log.note(`warning: ${w}`);
 
-  const out = resolveOutPath({ inPath: resolve(opts.in), out: settings.out, mirror: settings.mirror });
   const outPath = out.path;
   if (outPath === undefined) {
     process.stdout.write(outcome.md);
@@ -357,6 +356,22 @@ async function generate(
   ensureParent(outPath);
   writeFileAtomic(outPath, outcome.md);
   log.note(`generated ${outcome.hunkCount} hunk(s) → ${outPath}`);
+}
+
+/** `--out x.hatch`: the person named the file, and writes over it. */
+function namedOutright(out: string | undefined): boolean {
+  return out !== undefined && !/[/\\]$/.test(out) && isPatchPath(out);
+}
+
+/** A place hatch computed holds a patch of ANOTHER file: two files met at one name
+ *  (`out` changed, a flat directory). Regenerating the same file's patch is not asked
+ *  about; this is, and with nobody to answer it is refused. */
+async function mayWriteOver(path: string, target: string | undefined, ask: Ask): Promise<void> {
+  const there = patchAt(path);
+  if (!there.exists || there.target === (target ?? null)) return;
+  const whose = there.target === null ? 'a file that names no Target' : `the patch of ${there.target}`;
+  if (await ask(`${path} holds ${whose}, not of ${target ?? 'this file'}: it would be written over`)) return;
+  throw new ConfigError(`${path} holds ${whose} — nothing written`, undefined);
 }
 
 /** `-a` steers from the first hunk. Without it synthesis runs on its own, and only a
@@ -372,7 +387,7 @@ async function synthesizeFor(
   try {
     return await generatePatch(request);
   } catch (e) {
-    if (!(e instanceof MatchError || e instanceof AmbiguityError) || !atTerminal()) throw e;
+    if (!(e instanceof SynthesisError) || e.reason === 'unreproduced' || !atTerminal()) throw e;
     return generatePatch({ ...request, steering: unreviewed() });
   }
 }
@@ -391,8 +406,4 @@ export function main(argv: readonly string[]): Promise<void> {
 function errorContext(opts: Options, seen: Seen): ErrorContext {
   if (seen.old !== undefined) return { source: seen.old.text, sourcePath: seen.old.spec };
   return opts.inOld !== undefined ? { sourcePath: opts.inOld } : {};
-}
-
-if (invokedDirectly(import.meta.url)) {
-  await main(process.argv.slice(2));
 }

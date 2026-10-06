@@ -102,8 +102,6 @@ export function lineKind(line: string): LineKind {
       return 'add';
     case '\\':
       return 'eofnl';
-    case ' ':
-      return 'context';
     default:
       return 'context';
   }

@@ -6,8 +6,9 @@ export interface ArgSpec<T> {
   readonly optional?: Readonly<Record<string, keyof T & string>>;
 }
 
+/** Digits become a number; anything else — `all`, `-1`, `two` — is passed on as it is,
+ *  for the check that knows the range to refuse it by name. */
 export function parseCountValue(raw: string): unknown {
-  if (raw === 'all') return 'all';
   return /^\d+$/.test(raw) ? Number(raw) : raw;
 }
 
@@ -51,7 +52,21 @@ export function parseArgs<T extends object>(argv: readonly string[], spec: ArgSp
   return initial;
 }
 
-function knownOptions<T>(spec: ArgSpec<T>): ReadonlySet<string> {
+/** The options of `spec` named in `names`, each with the meaning it has there — how a
+ *  command whose flags must be a subset of another's (`hatch-apply` of `hatch apply`,
+ *  VERSIONING.md F2) is built: an option `spec` does not have is a fault of the build. */
+export function pickOptions<T>(spec: ArgSpec<T>, names: readonly string[]): ArgSpec<T> {
+  const groups = ['flags', 'negated', 'values', 'counts', 'optional'] as const;
+  const out: { -readonly [K in keyof ArgSpec<T>]: Record<string, keyof T & string> } = {};
+  for (const name of names) {
+    const group = groups.find((g) => spec[g]?.[name] !== undefined);
+    if (group === undefined) throw new Error(`pickOptions: ${name} is not an option of the full command`);
+    (out[group] ??= {})[name] = spec[group]![name]!;
+  }
+  return out;
+}
+
+export function knownOptions<T>(spec: ArgSpec<T>): ReadonlySet<string> {
   const groups = [spec.flags, spec.negated, spec.values, spec.counts, spec.optional];
   return new Set(groups.flatMap((group) => Object.keys(group ?? {})));
 }

@@ -1,34 +1,246 @@
 # Changelog
 
-Every release names its three numbers — package, protocol range, config schema range —
+Every release names its numbers — package, protocol range, config schema range and,
+from 0.4, patch format range —
 then what changed, breaking changes first. The rules for all three are in
 [VERSIONING.md](./VERSIONING.md); an entry is written before its tag (P6).
 
 ## Unreleased
 
-**Protocol 2–4 · config schema 1–2**
+**Protocol 4–4 · config schema 2–2 · patch format 1–1**
+
+### Breaking
+
+- **A patch is a `.hatch` file.** `generate` writes `<name of --in>.hatch`; `apply
+  --match` refuses any other name ("a patch is a .hatch file"), and `pair` takes a
+  `.md` for code. The hunks inside are the same to the character. hatch 0.1–0.3 wrote
+  `.md`; F1 is rewritten for this in VERSIONING.md (decided 2026-10-02: no one used
+  hatch yet, and a patch that looks like Markdown is reformatted by Markdown tools).
+  → rename your patches: `git mv x.md x.hatch`; scripts and CI that name `*.md`
+  patches name `*.hatch`.
+- `generate --out` (and `generate.out`, the service's `out`) that names a file with
+  another extension than `.hatch` is refused with `ConfigError` (exit 5) before any
+  file is read; before it wrote the file under that name. A directory is taken as
+  before.
+  → name the file `*.hatch`, or give a directory.
+- **The header replaces the marker line.** A `.hatch` opens with `Name: value` lines up
+  to a blank line: `Hatch: 1` (the format number, VERSIONING.md H1–H3), `Target` (the
+  file it patches, from the repository root), `Generated-From` (the git blob of the
+  base, when it came out of git), `Generated-By`, `Grammar`. `<!-- hatch: target=… -->`
+  is no longer written or read: before the first `# match` it is prose, as it always
+  was. A file with no header applies as format 1; a format newer than this hatch reads
+  is refused with "update hatch".
+  → regenerate the patch, or replace the line with `Hatch: 1` and `Target: <path>`
+  followed by a blank line.
+- **`--no-marker`, `generate.marker` and the protocol param `marker` are removed** —
+  `Target` is always written when the patch has a place. None shipped in a release. In
+  `pair`, `how: "marker"` is now `"target"` and the reason `unsafe-marker` is
+  `unsafe-target` (protocol 4, unreleased).
+  → drop `--no-marker` from scripts and `generate.marker` from `hatch.config.json`.
+- **A project and its upstream; `generate.mirror` and `--mirror` are removed.** A
+  config may name `"upstream"`: the root of the code the project patches, measured from
+  the config file (`".."` for a project inside its upstream, `"upstream"` for an
+  upstream inside the project, `"."` for one repository). The patch of a file is then
+  `<config dir>/<generate.out>/<path from the upstream>.hatch`, and its `Target` is that
+  path. `--mirror` goes without the release where it would still work and warn (F2) —
+  decided by the author 2026-10-02.
+  → replace `"mirror": true` with `"upstream": "."` at the top level of the config
+  (`generate.out` stays); drop `--mirror` from scripts — the config does it.
+- **Config schema 1 is read no longer** (`CONFIG_MIN` 2, C3): such a file is refused with
+  "move the file to v2".
+  → set `"version": 2` and replace `generate.mirror` as above; nothing else changes.
+- **The config of a file is looked for in more places.** Up from the file to its
+  repository root as before; then a config whose `upstream` holds the file — in the
+  subdirectories of every repository root on the way up, and above the repository;
+  then `$HATCH_CONFIG`, then the current directory. Two such configs are an error that
+  names both. A patch finds its config up from itself.
+  → nothing for a project of one repository; for a project over an upstream, add
+  `"upstream"` to its config.
+- **`apply --verify` needs a clean base.** It takes the base out of git — the git flags,
+  else `generate.base` of the config; with neither, a person at a terminal is asked
+  whether the files on disk are that base, and without one it is refused (exit 1).
+  `apply` that writes is unchanged.
+  → name the base (`--head` / `--branch` / `--commit`, or `generate.base`), or add
+  `--base-from-disk`.
+- **`generate` asks before writing over another file's patch** at a place it computed
+  (two files met at one name): `--yes` goes ahead, without a terminal it is refused
+  with `ConfigError` (exit 5). The same file's patch, and a `--out x.hatch` named
+  outright, are written over as before.
+  → pass `--yes` where that is meant.
+- Over the service (protocol 4): `pair` answers `how: "upstream"` instead of `"mirror"`,
+  the reason `outside-upstream` instead of `outside-repository`, and the new reason
+  `two-patches` with `patchPaths`; the param `mirror` is gone.
+  → a client switches on the new names.
+- **A grammar in `HATCH_GRAMMAR_DIR` must be the pinned one.** A file whose sha256
+  differs from the pin fails the run (`GrammarError`, exit 6); before it was used with a
+  warning.
+  → put the pinned grammar there (`npm run grammars` fetches it), or unset the variable.
+- **`HATCH_GRAMMAR_CACHE` and `HATCH_GRAMMARS_DOWNLOAD` do nothing**: there is no
+  download and no cache any more (see Added).
+  → drop them from CI; the old cache directory can be deleted.
+- **The protocol field `md` is now `patch`**: the text `generate` answers, and the one
+  `resolve`, `apply` and `pair` take. Inside protocol 4, which already raises
+  `protocolMin` to 4 (R3); `mdSpan` and `mdLine` keep their names.
+  → a client reads `result.patch` and sends `params.patch`; the VS Code extension 0.0.1
+  is updated with this release.
+- `hatch generate` with nothing to change — the new version is the old one, line for
+  line as the language normalizes it, blank lines not counted; with `--exact`, byte for
+  byte — exits **7** with `NoChanges: the new version is the base …` and writes no
+  patch. Before: exit 0, `generated 0 hunk(s)`, and a patch of one empty line that no
+  hatch could apply. A change of only spacing or blank lines now counts as none.
+  → a script that runs `generate` on files that may be unchanged treats exit 7 as
+  "nothing to do", not as a failure, and stops expecting a patch for such a file.
+- Over the service, the same request fails with the new error kind `NoChanges`
+  (`exitCode` 7, `detail.baseSpec`) instead of `ParseError` "no match/patch pairs"
+  (protocol 4). By R5 a change a client could notice, so **`protocolMin` rises to 4**:
+  a client of protocol 2 or 3 is refused with "update the client".
+  → the VS Code extension 0.0.1 speaks 4–4 and ships together with this release; no
+  other client of protocols 2–3 was released.
+- VERSIONING.md: S2 (announce a raise of `protocolMin`/`CONFIG_MIN` one release ahead)
+  is removed, with its reason; S4 carries its own notice rule.
+- `hatch generate` that cannot anchor a change exits **8** with `SynthesisError: could
+  not anchor the change at line N of the new version — …`. Before: exit 3 or 4, as a
+  `MatchError` or an `AmbiguityError` — the codes of a patch that does not apply, with
+  positions in a text the reader never saw. A person at a terminal is still handed the
+  editor, as before.
+  → a script that reads exit 3/4 from `generate` as "could not anchor" reads 8; 3 and 4
+  now come from `apply` only.
+- Over the service, the same `generate` fails with the new error kind `SynthesisError`
+  (`exitCode` 8, `detail.reason` — `no-match`, `ambiguous`, `unreproduced` — and
+  `detail.newLine`) instead of `MatchError`/`AmbiguityError` (protocol 4, inside the
+  raise of `protocolMin` above).
+  → a client that told "could not anchor" by `MatchError`/`AmbiguityError` from
+  `generate` switches on `SynthesisError`; the VS Code extension shows the message and
+  needs no change.
+- The service answers each request when it is done, **not in the order they came**:
+  `generate` hands the loop back after every change, and a `pair`, a `config` or a
+  `cancel` sent meanwhile is answered before it (protocol 4, inside the raise of
+  `protocolMin` above). PROTOCOL.md said "one at a time, in order".
+  → a client pairs replies with requests by `id`; the VS Code extension already does.
+- The API of the package: `generatePatch` with nothing to change throws `NoChanges`,
+  and `synthesize`/`generatePatch` that cannot anchor a change throw `SynthesisError`
+  — where they returned an empty patch, and threw `MatchError`, `AmbiguityError` or a
+  plain `Error`. Both classes are exported now.
+  → code that calls them catches `NoChanges` and `SynthesisError` from `hatch`.
 
 ### Added
 
-- Config schema 2 (additive, `CONFIG_MIN` stays 1): `generate.base.head`,
-  `generate.base.branch`, `generate.base.commit` — the old version `generate` compares
-  against, named once for the project as `--head` / `--branch` / `--commit` name it.
-  With them set, `hatch generate --in <file>` needs no source flag. Any git flag
-  replaces all three for that run; `--in-old` ignores them. Over the service, a
-  `generate` that sends neither `baseText` nor `baseGit` takes this base (protocol 4,
-  additive: such a request was refused before). A config with `"version": 1` is read
-  as before; hatch 0.3.0 meeting `"version": 2` says to update hatch.
+- **Notes on hunks.** A `# note` … `# end` block right before a `# match` is the
+  author's comment on that hunk: prose in any column, no gutter, never read by the
+  matcher. Over the service the hunk in `resolve`/`apply` carries `note` and `noteSpan`
+  (protocol 4). Text between hunks outside a note is still a parse error, now with a
+  message that names the note block. Every patch applies as before (F1): before the first
+  `# match` only a closed note followed by blank lines is read as one, any other prose
+  there is prose as always (apply golden `c/apply/10`). A patch with notes needs this
+  release: hatch 0.3.0 refuses it with "text between hunks is not supported".
+  `generate -a` keeps a note written in its editor, before the hunk it is about;
+  `generate` itself writes none, and generating a patch again drops the notes in it.
+- `--eol repository|worktree` for `generate` and `apply`, `generate.base.eol` (config
+  schema 2), `baseGit.eol` (protocol 4): a version read out of git with the line
+  endings of the file on disk (`worktree`), for repositories with `core.autocrlf`,
+  where git stores LF and the checkout has CRLF. The conversion is the rule a patch
+  already lands by — the endings of the file — read off its first line. The default,
+  `repository`, is the old behavior.
+- **`hatch-apply`** — a new release file for project builds: one executable with Node,
+  the tree-sitter runtime and the grammars inside, for linux-x64, linux-arm64,
+  darwin-arm64 and win-x64, with `SHA256SUMS`. `hatch-apply apply|verify --match
+  <patch>`: the file by `Target`, the base out of git (or `--base-from-disk`, which warns
+  that the files on disk are taken as it), no questions — what `hatch` would ask about
+  (a tag named as a branch, a commit off the branch named) is refused; exit 5 when no
+  clean base is named. In place — `apply` without `--out` — a file that already holds
+  the result is not written again (no new mtime for the build to recompile over), and a
+  file with changes of its own is written over and said so: the code a build patches is
+  not the project's to keep, and a patch that changed is laid on the clean base again.
+  `--version` prints the Node inside and every grammar pin. Its options are picked out of
+  `hatch apply`'s, so each has the same meaning (VERSIONING.md F2, a test holds it), and
+  every apply golden runs through each binary in CI and in the release.
+- The package's entries are in `dist/bin/`: `hatch` is `dist/bin/hatch.js`, the service
+  `dist/bin/service.js`; `node dist/service/index.js` still starts the service, as the
+  VS Code extension does, and `import { serve } from 'hatch/service'` is unchanged.
+  Modules of the CLI no longer run when started directly (`node dist/cli/apply.js`).
+- **The grammars ship inside hatch** (`grammars/` of the package, about 17 MB, 1.7 MB
+  packed): `apply` and `generate` work right after `npm i`, offline, and nothing is ever
+  downloaded. `hatch grammars` and `--download-grammars` still work in this release, do
+  nothing and say so — they are removed in 0.5 (F2). Over the service `allowDownload`
+  is accepted and ignored. In the repository `npm run grammars`
+  (`scripts/fetch-grammars.ts`) fetches the pinned grammars; `npm test` and `npm pack`
+  run it.
+- `apply` without `--in`: the file is the one the patch names in `Target` — from the
+  upstream of the project, else from the repository around the patch. `apply --config`
+  and `--no-config`.
+- `hatch init --upstream <path> [--out <dir>]` writes `"upstream"` and `generate.out`
+  (default `patches`) into the config of the project, and refuses an upstream that is
+  not there.
+- Protocol 4:
+  - `configPath` (absolute) in the params of `generate`, `resolve`, `apply` and in the
+    `overrides` of `config`, `pair`: the config to use, no search — the layout of a
+    project beside its upstream.
+  - `generate` answers `outExists` and `outTarget` — whether a file is at `outPath` and
+    the `Target` it names — so a client asks before writing over another file's patch.
+  - `config` answers `upstreamRoot`, and watches a config found by its claim.
+  - `resolve` and `apply` take the patch's own path: its text from disk unless sent, the
+    code by `Target`, the base from the patch's config. Both answer `code` (the file the
+    patch was laid on), `header` (the patch's header as read) and `warningsAt` — the
+    same marks `generate` gives, for a patch edited by hand too (X1).
+  - `config` answers `projectRoot` and `target` (the pair's `Target`); `config` and
+    `pair` take `configPath` beside `overrides`.
+  - `GitError` carries `detail.reason`: `no-such-file`, `not-a-file`, `no-such-branch`,
+    `not-a-branch`, `no-such-commit`, `not-on-branch`, `no-commits`, `no-repository`,
+    `outside-repository`, `bad-coordinate`, `no-git` (X2).
+  - Error messages over the service name no CLI flag: `nope: no such branch …`; the CLI
+    still says `--branch nope: no such branch …` (X3).
+  - Every reply carries `elapsedMs` (X4).
+  - `config { path, overrides? }` answers the settings `generate` would apply with those
+    params — the same code reads both — the config file's schema version, the
+    repository root, the base (`text`, or `git` with `spec`, the full `sha` and `eol`)
+    and `watch`: the paths whose change may change the answer (config files up the
+    tree, `HEAD`, the branch's ref, `packed-refs`, worktrees included).
+  - `pair { path, patch?, overrides? }`: a file of code and its `.hatch`, either way —
+    the header's `Target` first, then `generate.out` and `upstream` — with `exists` and
+    `how`, or `reason` when there is none: `no-out`, `outside-upstream`, `flat-out`,
+    `outside-out`, `not-a-patch-name`, `two-patches`, `unsafe-target` (a `Target` that
+    leaves its root), `newer-format` (update hatch), `older-format` (regenerate the
+    patch), `bad-header` (a header that does not read).
+  - A line that is JSON but not a request object (`null`, `42`, `[…]`) is answered with
+    `BadRequest` and `id` 0, and the service goes on; before, it ended the process. A
+    param of the wrong type — `path: 42`, `limits: "all"` — is a `BadRequest` that names
+    it, not whatever the code it reached threw (`TypeError`). Values a config checks
+    (`exact`, `bridgeGap`, `out`, the keys of `limits`) answer `ConfigError`, as before.
+  - `SynthesisError` with `detail.reason: "no-match"` also when no candidate pattern
+    could be built around the change (it said `ambiguous`, and nothing had fitted twice).
+  - `generate` answers `warningsAt` beside `warnings`: `{ hunk, mdLine, message }`.
+  - `cancel { id }` takes back a request still running: `generate` stops before its next
+    change and answers the new error kind `Cancelled`; `{ cancelled: false }` when no
+    such request runs. Killing the process still works as it did.
+  - `config` for a file whose git base cannot be read — not committed yet, no such
+    branch — answers the settings with `base: { kind: "unavailable", error }` instead
+    of failing with `GitError`, and watches `HEAD` and the branch, so that the next
+    commit changes the answer (before the first commit, too).
+  - `resolve` answers `baseText` when the base came out of git.
+  - `resolve`/`apply` with a `path` and no base take the config's `generate.base`, as
+    `generate` does (refused before).
+
+- Config schema 2 (`CONFIG_MIN` 2 — see Breaking): `generate.base.head`,
+  `generate.base.branch`, `generate.base.commit`, `generate.base.eol` — the old version
+  `generate` compares against, named once for the project as `--head` / `--branch` /
+  `--commit` name it — and `upstream`. With a base set, `hatch generate --in <file>`
+  needs no source flag. Any git flag replaces all three for that run; `--in-old`
+  ignores them. Over the service, a `generate` that sends neither `baseText` nor
+  `baseGit` takes this base (protocol 4: such a request was refused before). hatch 0.3.0
+  meeting `"version": 2` says to update hatch.
 
 - `hatch init` writes a `hatch.config.json`: only `"$schema"` and `"version"`, so every
   default stays the built-in one. `--config-version <n>` picks the schema (a line on
   stderr when it is not the newest), `--dir` the directory (default: the git root around
   the current directory, outside a repository the directory itself), `--force` replaces
   an existing file (without it: exit 5, the file untouched), `--dry-run` prints instead.
-- Protocol 4 (additive, `protocolMin` stays 2): the method `configTemplate` answers the
+- Protocol 4: the method `configTemplate` answers the
   text of a new config for a schema version and initial settings, the path the core
   would look for it at, whether a file is there, and every schema version in the range
   with a one-line summary. It writes nothing. A `ConfigError` about keys outside the
-  chosen schema carries `detail.version` and `detail.keys`.
+  chosen schema carries `detail.version` and `detail.keys`; a key a schema dropped is
+  named with the schemas that had it (`generate.mirror`: `since: 1`, `until: 1`) and what
+  took its place.
 - Each config schema has its own JSON Schema, `schemas/hatch.config.v<N>.schema.json`,
   and a written config points its `"$schema"` at the one of its version — read from the
   tag of the release that shipped it, so a released schema never changes (until then,
@@ -37,8 +249,50 @@ then what changed, breaking changes first. The rules for all three are in
 
 ### Changed
 
-- A config is checked against the keys of the schema its `"version"` names: a v1 file
-  reads exactly as before, and `generate.base` in it is refused as a v2 key.
+- Two git refusals of the CLI read differently: a path out of the repository is
+  `--in /abs/x.cc: outside its repository root …` (was `--in: /abs/x.cc is outside …`),
+  and the advice after "not a branch" / "not on branch" names the coordinate before its
+  flag — `name any other revision as the commit (--commit)`.
+- The generate goldens record the header `generate` writes (`Hatch`, `Target`,
+  `Grammar`), the apply goldens open with `Hatch` and `Target`; one of them (`c/apply/9`)
+  stays without a header, as a hand-written patch. The hunks are the same to the byte.
+
+- A config is checked against the keys of the schema its `"version"` names: a key of
+  a newer schema is refused with the schema it belongs to.
+- `generate` checks the place for the patch before synthesis, in the CLI and over the
+  service: an `--out` under a file fails at once, not after the work — and before
+  `NoChanges`.
+- `hatch apply` that would write a file with the very text it holds writes nothing, and
+  says `already so: not written`: the file keeps its mtime.
+- `hatch apply` refusing to write a git version over a file with changes of its own says
+  `the result would go over <file>, which holds changes …` — it named `--out` and `--in`
+  even when neither was typed. The exit code is 1, as before.
+- `generate -a`, and `generate` handing a change to the editor, lay each kept hunk once
+  instead of replaying every hunk on every step: 100 changes in a 1000-line file take
+  about 3 s instead of about 3 minutes; the hunks are the same.
+- `config` over a git base asks git 5 times instead of 8: about 40% faster.
+- `hatch init --dry-run` says `printed config schema vN`, not `wrote`.
+
+### Fixed
+
+- A file whose name starts with two dots (`..hidden.c`) was taken for a path out of its
+  root: refused as `--repo-path` or as the file of a git base, and left without a
+  `Target` or a `pair`. It is inside, as any other name.
+- The config search from the home directory itself went on above it (`/Users`); it
+  stops there, as it always did from below it.
+- A patch whose headings spell its language in two cases (`# match cpp`, `# match CPP`)
+  was refused as two languages; it is one.
+- `hatch apply --config` was described and refused as an unknown argument; it works, as
+  it does for `hatch-apply`.
+- `hatch-apply apply` with `--in` relative to a directory below the repository root
+  wrote the result to that path from the root — another file — and exited 0; it writes
+  the file named.
+- `apply --eol` was ignored without a git source and never checked; it is checked now,
+  and refused when no version out of git is named. The flag has not shipped yet (F2).
+- The service cut a request in two at U+2028 or U+2029 inside a string — characters
+  `JSON.stringify` leaves as they are — and answered two `BadRequest`s with `id: 0`, never
+  the request itself (a `generate` waited for ever). A line now ends at `\n` alone, as the
+  transport always said (protocol 4, unreleased).
 
 ## 0.3.0 — 2026-09-28
 

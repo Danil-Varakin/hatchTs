@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 // The editor a person edits hunks in, chosen the way git chooses it: $VISUAL, then
 // $EDITOR, then the one every system has. It runs with the terminal as its own: stdin,
-// and stderr for its screen too — stdout may be where the .md goes (`--out -`).
+// and stderr for its screen too — stdout may be where the patch goes (`--out -`).
 
 export function editorCommand(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
   for (const value of [env['VISUAL'], env['EDITOR']]) {
@@ -48,7 +48,7 @@ export function editSession(command: string = editorCommand()): EditSession {
     },
     edit(text) {
       dir ??= mkdtempSync(join(tmpdir(), 'hatch-edit-'));
-      file ??= join(dir, 'hunks.md');
+      file ??= join(dir, 'hunks.hatch');
       writeFileSync(file, text, 'utf8');
       runEditor(command, file);
       return Promise.resolve(readFileSync(file, 'utf8'));

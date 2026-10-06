@@ -62,8 +62,11 @@ test('detail(): every error kind states exactly its protocol fields', () => {
   assert.deepEqual(new PathError('p', '/a/b', '/a').detail(), { path: '/a/b', blocker: '/a' });
   assert.deepEqual(new LanguageError('l', { language: 'x', extension: '.y' }).detail(), { language: 'x', extension: '.y' });
   assert.deepEqual(new LanguageError('l').detail(), {});
-  assert.deepEqual(new GitError('g', 'main').detail(), { revision: 'main' });
-  assert.equal(new GitError('g').detail(), undefined);
+  assert.deepEqual(new GitError('g', 'no-such-branch', { revision: 'main', flag: '--branch' }).detail(), {
+    reason: 'no-such-branch',
+    revision: 'main',
+  });
+  assert.deepEqual(new GitError('g', 'no-commits').detail(), { reason: 'no-commits' });
   assert.deepEqual(new GrammarError('m', 'tree-sitter-cpp@1').detail(), { grammar: 'tree-sitter-cpp@1' });
   assert.equal(new GrammarError('m').detail(), undefined);
   assert.deepEqual(new ConfigError('c', '/p/hatch.config.json').detail(), { file: '/p/hatch.config.json' });

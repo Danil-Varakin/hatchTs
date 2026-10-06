@@ -1,28 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-import { createHash } from 'node:crypto';
-
-import {
-  cacheEntry,
-  ensureGrammars,
-  grammarCacheDir,
-  grammarUrls,
-  locate,
-  resolveGrammar,
-} from '../../src/infra/grammar-store.ts';
+import { digest, grammarDirs, packageGrammarDir, resolveGrammar } from '../../src/infra/grammar-store.ts';
+import { adaptersByName } from '../../src/lang/adapter.ts';
 import { GrammarError } from '../../src/core/errors.ts';
 
-const SHA_A = 'a'.repeat(64);
-const SOURCE = {
-  file: 'tree-sitter-nonesuch.wasm',
-  package: 'tree-sitter-nonesuch',
-  version: '1.2.3',
-  sha256: SHA_A,
-} as const;
+// Stage 4 of 0.4: grammars ship inside hatch. Looked for in $HATCH_GRAMMAR_DIR, then
+// grammars/ of the package; the bytes must be the pinned ones; nothing is downloaded.
+
+const CLI = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
+const BYTES = new TextEncoder().encode('not really wasm');
+const SOURCE = { file: 'tree-sitter-nonesuch.wasm', package: 'tree-sitter-nonesuch', version: '1.2.3', sha256: digest(BYTES) };
 
 async function withEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
   const saved = new Map(Object.keys(vars).map((k) => [k, process.env[k]]));
@@ -40,135 +34,61 @@ async function withEnv(vars: Record<string, string | undefined>, fn: () => Promi
   }
 }
 
-test('the URL follows from package and version; an explicit url wins', () => {
-  const urls = grammarUrls(SOURCE);
-  assert.equal(urls.length, 2);
-  assert.ok(urls.every((u) => u.startsWith('https://')));
-  assert.ok(urls[0]!.includes('tree-sitter-nonesuch@1.2.3/tree-sitter-nonesuch.wasm'));
-
-  const custom = { ...SOURCE, url: 'https://example.invalid/g.wasm' };
-  assert.deepEqual(grammarUrls(custom), ['https://example.invalid/g.wasm']);
-});
-
-test('cache: HATCH_GRAMMAR_CACHE wins, XDG is honoured, a scope adds no nesting', async () => {
-  await withEnv({ HATCH_GRAMMAR_CACHE: '/tmp/xx' }, async () => {
-    assert.equal(grammarCacheDir(), '/tmp/xx');
-  });
-  await withEnv({ HATCH_GRAMMAR_CACHE: undefined, XDG_CACHE_HOME: '/tmp/xdg' }, async () => {
-    assert.equal(grammarCacheDir(), join('/tmp/xdg', 'hatch', 'grammars'));
-  });
-  await withEnv({ HATCH_GRAMMAR_CACHE: '/tmp/xx' }, async () => {
-    const scoped = { ...SOURCE, package: '@tree-sitter-grammars/tree-sitter-kotlin' };
-    assert.equal(
-      cacheEntry(scoped),
-      join('/tmp/xx', '@tree-sitter-grammars+tree-sitter-kotlin@1.2.3', 'tree-sitter-nonesuch.wasm'),
-    );
+test('every pinned grammar is in grammars/ of the package, with its pinned bytes', async () => {
+  await withEnv({ HATCH_GRAMMAR_DIR: undefined }, async () => {
+    for (const adapter of new Set(adaptersByName().values())) {
+      assert.ok(existsSync(join(packageGrammarDir(), adapter.grammar.file)), adapter.name);
+      // resolveGrammar refuses bytes that are not the pin: reading it is the check
+      assert.ok((await resolveGrammar(adapter.grammar)).byteLength > 0, adapter.name);
+    }
   });
 });
 
-test('without permission it refuses instead of fetching, naming the command and code 6', async () => {
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
-    const e = await resolveGrammar(SOURCE).then(
-      () => null,
-      (err: unknown) => err as GrammarError,
-    );
-    assert.ok(e instanceof GrammarError);
-    assert.equal(e.exitCode, 6);
-    assert.match(e.message, /npm run grammars/);
-    assert.match(e.message, /--download-grammars/);
-    assert.match(e.message, /looked in:/);
-  });
-});
-
-test('the message names the LANGUAGE and gives the command for exactly it', async () => {
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
-    const e = await resolveGrammar(SOURCE, {}, 'cpp').then(
-      () => null,
-      (err: unknown) => err as GrammarError,
-    );
-    assert.ok(e instanceof GrammarError);
-    assert.match(e.message, /the cpp grammar is not installed/);
-    assert.match(e.message, /--language cpp/);
-    assert.match(e.message, /npm run grammars -- --language cpp/);
-  });
-});
-
-test('with no language given the message still works, just without it', async () => {
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
-    const e = await resolveGrammar(SOURCE).then(
-      () => null,
-      (err: unknown) => err as GrammarError,
-    );
-    assert.ok(e instanceof GrammarError);
-    assert.match(e.message, new RegExp(`grammar ${SOURCE.file.replace('.', '\\.')} is not installed`));
-    assert.doesNotMatch(e.message, /--language undefined/);
-  });
-});
-
-test('HATCH_GRAMMAR_DIR hands the file over as is: your build, your checksum', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'hatch-grammars-'));
-  const bytes = new Uint8Array([1, 2, 3]);
-  await writeFile(join(dir, SOURCE.file), bytes);
+test('HATCH_GRAMMAR_DIR comes first; its file must be the pinned one, or it is refused', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hatch-grammar-dir-'));
+  await writeFile(join(dir, SOURCE.file), BYTES);
   await withEnv({ HATCH_GRAMMAR_DIR: dir }, async () => {
-    const got = await resolveGrammar(SOURCE);
-    assert.deepEqual(new Uint8Array(got as Uint8Array), bytes);
+    assert.deepEqual(grammarDirs(), [dir, packageGrammarDir()]);
+    assert.equal(digest(await resolveGrammar(SOURCE)), SOURCE.sha256);
+    await assert.rejects(
+      () => resolveGrammar({ ...SOURCE, sha256: 'b'.repeat(64) }),
+      (e: unknown) => e instanceof GrammarError && /is not the grammar tree-sitter-nonesuch@1\.2\.3 pins/.test(e.message),
+    );
   });
 });
 
-test('a broken cache entry is IGNORED, its checksum being known, not used', async () => {
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  const entry = cacheEntry({ ...SOURCE });
-  await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
-    const path = cacheEntry(SOURCE);
-    await mkdir(join(path, '..'), { recursive: true });
-    await writeFile(path, new Uint8Array([9, 9, 9]));
-    await assert.rejects(resolveGrammar(SOURCE), GrammarError);
+test('a grammar nowhere is a fault of the build, named with where it was looked for — nothing is fetched', async () => {
+  await withEnv({ HATCH_GRAMMAR_DIR: undefined }, async () => {
+    await assert.rejects(
+      () => resolveGrammar({ ...SOURCE, file: 'tree-sitter-absent.wasm' }, 'absent'),
+      (e: unknown) =>
+        e instanceof GrammarError &&
+        /the absent grammar .* is missing from this build of hatch/.test(e.message) &&
+        e.message.includes(packageGrammarDir()) &&
+        !/download|fetch/.test(e.message),
+    );
   });
-  assert.ok(entry.length > 0);
 });
 
-test('a source with no pin is not accepted at all', async () => {
-  await assert.rejects(
-    resolveGrammar({ file: 'x.wasm', package: 'p', version: '1' }),
-    /sha256/,
+test('an explicit path is that file, checked the same way', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hatch-grammar-path-'));
+  const path = join(dir, 'g.wasm');
+  await writeFile(path, BYTES);
+  assert.equal(digest(await resolveGrammar({ ...SOURCE, path })), SOURCE.sha256);
+  await assert.rejects(() => resolveGrammar({ ...SOURCE, path: 'relative.wasm' }), /must be absolute/);
+});
+
+test('F2: `hatch grammars` and --download-grammars still work in 0.4, do nothing and say so', () => {
+  const grammars = spawnSync(process.execPath, ['--experimental-strip-types', CLI, 'grammars', '--language', 'cpp'], { encoding: 'utf8' });
+  assert.equal(grammars.status, 0, grammars.stderr);
+  assert.match(grammars.stderr, /grammars ship inside hatch since 0\.4.*removed in 0\.5/);
+
+  const apply = spawnSync(
+    process.execPath,
+    ['--experimental-strip-types', CLI, 'apply', '--match', 'nope.hatch', '--in', 'x.cc', '--dry-run', '--download-grammars'],
+    { encoding: 'utf8' },
   );
-  await assert.rejects(resolveGrammar({ file: 'x.wasm', path: 'relative/x.wasm' }), /absolute/);
-});
-
-test('ensureGrammars says where each grammar came from — a cache entry fetched again is downloaded', async () => {
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  const good = new Uint8Array([4, 5, 6]);
-  const source = { ...SOURCE, sha256: createHash('sha256').update(good).digest('hex') };
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = (() => Promise.resolve(new Response(good))) as typeof fetch;
-  try {
-    await withEnv({ HATCH_GRAMMAR_CACHE: cache, HATCH_GRAMMAR_DIR: undefined }, async () => {
-      const path = cacheEntry(source);
-      await mkdir(join(path, '..'), { recursive: true });
-      await writeFile(path, new Uint8Array([9, 9, 9]));
-      assert.equal(await locate(source), path, 'there IS a file in the cache — a broken one');
-
-      const [first] = await ensureGrammars([source], { allowDownload: true, log: () => {} });
-      assert.equal(first!.where, 'downloaded', 'the broken entry was replaced, not used');
-      assert.equal(first!.path, path);
-      assert.equal(first!.bytes, good.byteLength);
-
-      const [second] = await ensureGrammars([source], { allowDownload: false });
-      assert.equal(second!.where, 'cache');
-    });
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-});
-
-test('locate: nothing there is null, and a directory by that name is not a grammar', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'hatch-grammars-'));
-  const cache = await mkdtemp(join(tmpdir(), 'hatch-cache-'));
-  await mkdir(join(dir, SOURCE.file));
-  await withEnv({ HATCH_GRAMMAR_DIR: dir, HATCH_GRAMMAR_CACHE: cache }, async () => {
-    assert.equal(await locate(SOURCE), null);
-  });
+  assert.doesNotMatch(apply.stderr, /unknown|unrecognized|usage/i, 'the flag is still known');
+  assert.equal(apply.status, 1, 'the missing patch is refused as before');
+  assert.match(apply.stderr, /no such file: nope\.hatch/, 'for that reason, not for the flag');
 });

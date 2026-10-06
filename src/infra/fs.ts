@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { PathError } from '../core/errors.ts';
 
 const REPO_MARKER = '.git';
@@ -91,12 +91,16 @@ export function checkParent(path: string): void {
   }
 }
 
+/** `startDir` and the directories above it, nearest first — never above the home
+ *  directory: from inside it the walk stops below it, from the home directory itself it
+ *  stops there. The root of the file system is not one of them. */
 export function* upwards(startDir: string): Generator<string> {
+  const home = homedir();
   let dir = resolve(startDir);
   for (;;) {
     yield dir;
     const parent = dirname(dir);
-    if (parent === homedir() || dirname(parent) === parent) return;
+    if (dir === home || parent === home || dirname(parent) === parent) return;
     dir = parent;
   }
 }
@@ -130,6 +134,29 @@ export function isFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function isDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** `path` as seen from `root` when it lies inside it — relative, in the platform's
+ *  separators, `''` for the root itself — or undefined when it does not: a `..` step
+ *  first, or another drive. A NAME that merely starts with two dots (`..hidden.c`) is
+ *  inside. Both paths absolute. */
+export function pathWithin(root: string, path: string): string | undefined {
+  const rel = relative(root, path);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
+  return rel;
+}
+
+/** A relative path of the platform as a `Target` and git spell it: with `/`. */
+export function toPosixPath(relPath: string): string {
+  return relPath.split(sep).join('/');
 }
 
 function firstNonDirectory(dir: string): string | undefined {

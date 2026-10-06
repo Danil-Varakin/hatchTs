@@ -8,7 +8,6 @@ import { fileURLToPath } from 'node:url';
 
 import { synthesize } from '../../src/generate/synth.ts';
 import { printHatchFile } from '../../src/generate/printer.ts';
-import { reviewHunks } from '../../src/generate/agreement.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { applyAll } from '../../src/core/apply.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
@@ -39,6 +38,23 @@ test('printer round trip: insertion, deletion and several hunks', async () => {
     'void f() {\n  a();\n  b();\n  c();\n}\n',
     'void f() {\n  a();\n  X();\n  c();\n  d();\n}\n',
   );
+});
+
+test('printer round trip: a hunk\'s # note is printed before its # match and read back to the same text', () => {
+  const text = [
+    '# note', 'first: why it is here', '', '  indented, any column', '# end',
+    '# match cpp', '    ...', '    a();', '    >>>', '    ...', '# end', '# patch', '    x();', '# end',
+    '',
+    '# match cpp', '    ...', '    b();', '    >>>', '    ...', '# end', '# patch', '    y();', '# end',
+    '',
+    '# note', '# end',
+    '# match cpp', '    ...', '    c();', '    >>>', '    ...', '# end', '# patch', '    z();', '# end',
+    '',
+  ].join('\n');
+  const hunks = parseHatchFile(text).hunks;
+  const again = parseHatchFile(printHatchFile(hunks, 'cpp')).hunks;
+  assert.deepEqual(again.map((h) => h.note?.text), ['first: why it is here\n\n  indented, any column', undefined, '']);
+  assert.deepEqual(again.map((h) => h.patch), hunks.map((h) => h.patch));
 });
 
 test('printer round trip: a literal holding ... is escaped and survives parsing', async () => {
@@ -86,23 +102,11 @@ test('printHatchFile: the parser reads back the headings it writes', async () =>
   assert.equal(file.language, 'cpp');
 });
 
-// ── agreement: keeping only the hunks that were confirmed ─────────────────────
-
-test('reviewHunks keeps only what was confirmed', async () => {
-  const hunks = [
-    { match: { steps: [] }, patch: 'a' },
-    { match: { steps: [] }, patch: 'b' },
-    { match: { steps: [] }, patch: 'c' },
-  ];
-  let i = 0;
-  const kept = await reviewHunks(hunks, async () => i++ !== 1);
-  assert.deepEqual(kept.map((h) => h.patch), ['a', 'c']);
-});
-
 // ── CLI generate end to end, and apply back again ─────────────────────────────
 
-const GEN_CLI = fileURLToPath(new URL('../../src/cli/generate.ts', import.meta.url));
-const APPLY_CLI = fileURLToPath(new URL('../../src/cli/apply.ts', import.meta.url));
+const HATCH = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
+const GEN_CLI = [HATCH, 'generate'];
+const APPLY_CLI = [HATCH, 'apply'];
 
 interface CliRun {
   status: number;
@@ -112,8 +116,8 @@ interface CliRun {
 
 /** Both streams, whatever the exit: a warning printed on the way to success is part of
  *  what a run says, and has to be there to be checked. */
-function runCli(cli: string, args: string[], cwd?: string): CliRun {
-  const r = spawnSync('node', ['--experimental-strip-types', cli, ...args], {
+function runCli(cli: readonly string[], args: string[], cwd?: string): CliRun {
+  const r = spawnSync('node', ['--experimental-strip-types', ...cli, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     ...(cwd !== undefined ? { cwd } : {}),
@@ -126,7 +130,7 @@ test('CLI generate --in-old writes the .md, and apply brings the new file back',
   try {
     const oldF = join(dir, 'old.cc');
     const newF = join(dir, 'new.cc');
-    const md = join(dir, 'patch.md');
+    const md = join(dir, 'patch.hatch');
     const oldStr = 'void f() {\n  int a = 1;\n  return a;\n}\n';
     const newStr = 'void f() {\n  int a = 2;\n  return a;\n}\n';
     writeFileSync(oldF, oldStr);
@@ -157,7 +161,7 @@ test('CLI generate → apply with no --language: the heading is the language\'s 
     for (const c of cases) {
       const oldF = join(dir, `old${c.ext}`);
       const newF = join(dir, `new${c.ext}`);
-      const md = join(dir, `patch${c.ext}.md`);
+      const md = join(dir, `patch${c.ext}.hatch`);
       const out = join(dir, `result${c.ext}`);
       const newStr = c.from.replace(/1(;|\n)/, c.to);
       writeFileSync(oldF, c.from);
@@ -188,7 +192,7 @@ test('CLI generate → apply on a CRLF file: the result is the new file byte for
   try {
     const oldF = join(dir, 'old.c');
     const newF = join(dir, 'new.c');
-    const md = join(dir, 'patch.md');
+    const md = join(dir, 'patch.hatch');
     const out = join(dir, 'result.c');
     const newStr = 'int f() {\r\n  int a = 5;\r\n  int b = 6;\r\n  int c = 7;\r\n  return a;\r\n}\r\n';
     writeFileSync(oldF, 'int f() {\r\n  int a = 1;\r\n  return a;\r\n}\r\n');
@@ -206,8 +210,8 @@ test('CLI generate → apply on a CRLF file: the result is the new file byte for
 
 // ── -a: one answer per hunk, from a terminal or a pipe ─────────────────────────
 
-function runCliWithInput(cli: string, args: string[], input: string): CliRun {
-  const r = spawnSync('node', ['--experimental-strip-types', cli, ...args], {
+function runCliWithInput(cli: readonly string[], args: string[], input: string): CliRun {
+  const r = spawnSync('node', ['--experimental-strip-types', ...cli, ...args], {
     encoding: 'utf8',
     input,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -225,7 +229,7 @@ function withTwoHunks(body: (files: { oldF: string; newF: string; md: string; di
     const newF = join(dir, 'new.cc');
     writeFileSync(oldF, TWO_OLD);
     writeFileSync(newF, TWO_NEW);
-    body({ oldF, newF, md: join(dir, 'patch.md'), dir });
+    body({ oldF, newF, md: join(dir, 'patch.hatch'), dir });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -238,7 +242,7 @@ test('CLI generate -a: y keeps a hunk; n offers the editor, and with no terminal
     assert.match(r.stderr, /hunk 1\/2:[\s\S]*keep this hunk\? \[Y\/n\][\s\S]*hunk 2\/2:/);
     assert.match(r.stderr, /hunk 2: declined/);
     assert.match(r.stderr, /writing hunks by hand needs a terminal: stopping, nothing is written/);
-    assert.equal(existsSync(md), false, 'no .md');
+    assert.equal(existsSync(md), false, 'no .hatch');
 
     const all = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', md, '-a'], 'y\n\n');
     assert.equal(all.status, 0, all.stderr);
@@ -253,12 +257,12 @@ test('CLI generate -a: an input that closes early stops the run and writes nothi
       assert.equal(r.status, 1, JSON.stringify(input));
       assert.match(r.stderr, new RegExp(`the input closed at hunk ${at} of 2, before it was answered — nothing was written`));
       assert.match(r.stderr, /answer every hunk \(one line each, Enter keeps it\), or drop -a/);
-      assert.equal(existsSync(md), false, `${JSON.stringify(input)}: no .md`);
+      assert.equal(existsSync(md), false, `${JSON.stringify(input)}: no .hatch`);
     }
   });
 });
 
-test('CLI generate: a change that cannot be anchored, with no terminal, is the error it always was', () => {
+test('CLI generate: a change that cannot be anchored, with no terminal, is a SynthesisError, exit 8', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-unanchored-'));
   try {
     const oldF = join(dir, 'old.cc');
@@ -268,7 +272,8 @@ test('CLI generate: a change that cannot be anchored, with no terminal, is the e
     writeFileSync(newF, old.replace(/work\(\);(?![\s\S]*work\(\);)/, 'work(2);'));
 
     const plain = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', '-']);
-    assert.ok(plain.status === 3 || plain.status === 4, plain.stderr);
+    assert.equal(plain.status, 8, plain.stderr);
+    assert.match(plain.stderr, /SynthesisError: could not anchor the change at line 8 of the new version — ambiguous match/);
     assert.ok(!plain.stderr.includes('by hand'), 'a script is not offered the editor');
 
     const reviewed = runCliWithInput(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', '-', '-a'], '');
@@ -280,7 +285,7 @@ test('CLI generate: a change that cannot be anchored, with no terminal, is the e
   }
 });
 
-test('CLI generate: with and without --out the name is <name of --in>.md', () => {
+test('CLI generate: with and without --out the name is <name of --in>.hatch', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-gen-out-'));
   try {
     const oldF = join(dir, 'old.cc');
@@ -290,27 +295,27 @@ test('CLI generate: with and without --out the name is <name of --in>.md', () =>
 
     const g1 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--language', 'cpp']);
     assert.equal(g1.status, 0, g1.stderr);
-    assert.match(readFileSync(join(dir, 'in.cc.md'), 'utf8'), /# match/);
+    assert.match(readFileSync(join(dir, 'in.cc.hatch'), 'utf8'), /# match/);
 
     const sub = join(dir, 'sub');
     mkdirSync(sub);
     const g2 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', sub, '--language', 'cpp']);
     assert.equal(g2.status, 0, g2.stderr);
-    assert.match(readFileSync(join(sub, 'in.cc.md'), 'utf8'), /# match/);
+    assert.match(readFileSync(join(sub, 'in.cc.hatch'), 'utf8'), /# match/);
 
     const g3 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', `${dir}/nope/`, '--language', 'cpp']);
     assert.equal(g3.status, 0, g3.stderr);
-    assert.match(readFileSync(join(dir, 'nope', 'in.cc.md'), 'utf8'), /# match/, 'the directory is created');
+    assert.match(readFileSync(join(dir, 'nope', 'in.cc.hatch'), 'utf8'), /# match/, 'the directory is created');
 
     const asDir = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', join(dir, 'patches'), '--language', 'cpp']);
     assert.equal(asDir.status, 0, asDir.stderr);
     assert.match(
-      readFileSync(join(dir, 'patches', 'in.cc.md'), 'utf8'),
+      readFileSync(join(dir, 'patches', 'in.cc.hatch'), 'utf8'),
       /# match/,
       'a name without an extension is a directory, not a file called that',
     );
 
-    const named = join(dir, 'deep', 'named.md');
+    const named = join(dir, 'deep', 'named.hatch');
     const g5 = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--out', named, '--language', 'cpp']);
     assert.equal(g5.status, 0, g5.stderr);
     assert.match(readFileSync(named, 'utf8'), /# match/, 'a path naming a file is written as is');
@@ -340,7 +345,7 @@ test('CLI generate --branch takes the old version from a git branch', () => {
     git(['commit', '-q', '-m', 'old']);
     writeFileSync(join(dir, rel), newStr);
 
-    const md = join(dir, 'patch.md');
+    const md = join(dir, 'patch.hatch');
     const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
     const gen = runCli(GEN_CLI, ['--in', rel, '--branch', branch, '--out', md, '--language', 'cpp'], dir);
     assert.equal(gen.status, 0, gen.stderr);
@@ -378,7 +383,7 @@ test('CLI generate --branch works from a SUBDIRECTORY, not only from the reposit
     const gen = generateIn(repo, ['--branch', repo.branch]);
     assert.equal(gen.status, 0, gen.stderr);
 
-    const md = join(repo.dir, 'patch.md');
+    const md = join(repo.dir, 'patch.hatch');
     writeFileSync(md, gen.stdout);
     const src = join(repo.dir, 'copy.cc');
     const out = join(repo.dir, 'result.cc');
@@ -398,7 +403,7 @@ test('CLI generate --branch takes an ABSOLUTE --in as well', () => {
       '--in', repo.inPath, '--branch', repo.branch, '--out', '-', '--language', 'cpp',
     ]);
     assert.equal(gen.status, 0, gen.stderr);
-    assert.match(gen.stdout, /^# match cpp/);
+    assert.match(gen.stdout, /^Hatch: 1\n(.+\n)*\n# match cpp/);
     assertReplaces(gen.stdout, 'int a = 2;', 'int a = 4;');
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
@@ -440,7 +445,7 @@ test('CLI generate: a git refusal comes out named, with a non-zero exit code', (
   const repo = buildRepo('hatch-git-refusal-');
   try {
     const off = generateIn(repo, ['--branch', repo.branch, '--commit', repo.s]);
-    assert.notEqual(off.status, 0);
+    assert.equal(off.status, 1);
     assert.match(off.stderr, /GitError/);
     assert.match(off.stderr, /is not on branch/);
   } finally {
@@ -453,7 +458,7 @@ test('CLI generate: --in-old and a git coordinate together are refused, and so i
   try {
     for (const args of [['--in-old', 'other.cc', '--head'], ['--in-old', 'other.cc', '-b', 'side'], []]) {
       const r = generateIn(repo, args);
-      assert.notEqual(r.status, 0, `expected a refusal for ${args.join(' ')}`);
+      assert.equal(r.status, 1, `expected a refusal for ${args.join(' ')}`);
       assert.match(r.stderr, /exactly one source of the OLD version/);
     }
   } finally {
@@ -475,7 +480,7 @@ test('CLI generate: a source asked for twice, or not at all, is answered by nami
   try {
     for (const [args, expected] of cases) {
       const r = generateIn(repo, args);
-      assert.notEqual(r.status, 0, `expected a refusal for: ${args.join(' ')}`);
+      assert.equal(r.status, 1, `expected a refusal for: ${args.join(' ')}`);
       assert.match(r.stderr, expected, `for: ${args.join(' ')}`);
       // The message names every flag involved, so the whole usage is not dumped on top
       // of it — that is kept for a slip of the FINGERS, where the list is the answer.
@@ -503,7 +508,7 @@ test('CLI generate: a misspelt or valueless option is answered with the option a
   try {
     for (const [args, expected] of cases) {
       const r = generateIn(repo, args);
-      assert.notEqual(r.status, 0, `expected a refusal for: ${args.join(' ')}`);
+      assert.equal(r.status, 1, `expected a refusal for: ${args.join(' ')}`);
       assert.match(r.stderr, expected, `for: ${args.join(' ')}`);
       assert.match(r.stderr, /hatch generate —/, `the usage follows a slip: ${args.join(' ')}`);
     }
@@ -537,7 +542,7 @@ test('CLI generate --yes: what would be asked about is read, the rest is still r
     assertReplaces(tag.stdout, 'int a = 2;', 'int a = 4;');
 
     const none = generateIn(repo, ['--branch', 'nope', '--yes']);
-    assert.notEqual(none.status, 0, 'nothing to read is not a question --yes can answer');
+    assert.equal(none.status, 1, 'nothing to read is not a question --yes can answer');
     assert.match(none.stderr, /no such branch/);
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
@@ -549,7 +554,7 @@ test('CLI generate --head outside a repository fails with a named error', () => 
   try {
     writeFileSync(join(dir, 'f.cc'), version(4));
     const gen = runCli(GEN_CLI, ['--in', 'f.cc', '--head', '--out', '-', '--language', 'cpp'], dir);
-    assert.notEqual(gen.status, 0);
+    assert.equal(gen.status, 1);
     assert.match(gen.stderr, /GitError/);
     assert.match(gen.stderr, /needs a git repository/);
   } finally {
@@ -557,8 +562,8 @@ test('CLI generate --head outside a repository fails with a named error', () => 
   }
 });
 
-test('CLI generate --mirror: the patch tree repeats the path inside the repository', () => {
-  const root = mkdtempSync(join(tmpdir(), 'hatch-gen-mirror-'));
+test('CLI generate with "upstream": ".": the patch tree repeats the path inside the repository; --mirror is gone', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hatch-gen-tree-'));
   try {
     mkdirSync(join(root, '.git'));
     mkdirSync(join(root, 'chromium_src', 'browser', 'core'), { recursive: true });
@@ -566,35 +571,18 @@ test('CLI generate --mirror: the patch tree repeats the path inside the reposito
     const newF = join(root, 'chromium_src', 'browser', 'core', 'apdate.cc');
     writeFileSync(oldF, 'void f() {\n  int a = 1;\n}\n');
     writeFileSync(newF, 'void f() {\n  int a = 2;\n}\n');
+    writeFileSync(join(root, 'hatch.config.json'), JSON.stringify({ version: 2, upstream: '.', generate: { out: 'patches' } }));
 
-    const ok = runCli(GEN_CLI, [
-      '--in', newF, '--in-old', oldF, '--language', 'cpp', '--mirror', '--out', 'patches',
-    ]);
+    const ok = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--language', 'cpp']);
     assert.equal(ok.status, 0, ok.stderr);
-    const written = join(root, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.md');
-    assert.match(readFileSync(written, 'utf8'), /# match/, 'missing directories are created');
+    const written = join(root, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.hatch');
+    assert.match(readFileSync(written, 'utf8'), /^Hatch: 1\nTarget: chromium_src\/browser\/core\/apdate\.cc\n/, 'missing directories are created');
 
-    const noOut = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--language', 'cpp', '--mirror']);
-    assert.equal(noOut.status, 5, noOut.stderr);
-    assert.match(noOut.stderr, /needs an output root/);
+    const mirror = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--mirror', '--out', 'patches']);
+    assert.equal(mirror.status, 1, mirror.stderr);
+    assert.match(mirror.stderr, /--mirror/);
   } finally {
     rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('CLI generate --mirror: a file outside a repository is refused, not guessed at', () => {
-  const loose = mkdtempSync(join(tmpdir(), 'hatch-gen-loose-'));
-  try {
-    const oldF = join(loose, 'old.cc');
-    const newF = join(loose, 'in.cc');
-    writeFileSync(oldF, 'void f() {\n  int a = 1;\n}\n');
-    writeFileSync(newF, 'void f() {\n  int a = 2;\n}\n');
-
-    const r = runCli(GEN_CLI, ['--in', newF, '--in-old', oldF, '--language', 'cpp', '--mirror', '--out', 'patches']);
-    assert.equal(r.status, 5, r.stderr);
-    assert.match(r.stderr, /no directory with \.git/);
-  } finally {
-    rmSync(loose, { recursive: true, force: true });
   }
 });
 
@@ -606,15 +594,15 @@ test('CLI generate: a plain refusal for a missing input and for a directory', ()
     mkdirSync(join(dir, 'sub'));
 
     const missing = runCli(GEN_CLI, ['--in', join(dir, 'nope.cc'), '--in-old', oldF, '--language', 'cpp']);
-    assert.notEqual(missing.status, 0);
+    assert.equal(missing.status, 1);
     assert.match(missing.stderr, /no such file: .*nope\.cc \(--in\)/);
 
     const isDir = runCli(GEN_CLI, ['--in', join(dir, 'sub'), '--in-old', oldF, '--language', 'cpp']);
-    assert.notEqual(isDir.status, 0);
+    assert.equal(isDir.status, 1);
     assert.match(isDir.stderr, /--in takes a file, and .*sub is a directory/);
 
     const oldIsDir = runCli(GEN_CLI, ['--in', oldF, '--in-old', join(dir, 'sub'), '--language', 'cpp']);
-    assert.notEqual(oldIsDir.status, 0);
+    assert.equal(oldIsDir.status, 1);
     assert.match(oldIsDir.stderr, /--in-old takes a file/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

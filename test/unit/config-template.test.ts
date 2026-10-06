@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,7 +23,17 @@ import { checkKeysOf } from '../../src/infra/config/schema.ts';
 import { olderSchemaNote } from '../../src/cli/init.ts';
 import { ConfigError } from '../../src/core/errors.ts';
 
-const CLI = fileURLToPath(new URL('../../src/cli/index.ts', import.meta.url));
+const CLI = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
+
+/** What `hatch init` writes by default: "$schema" naming that version's own schema file and
+ *  "version", nothing else, as 2-space JSON with a final newline (README "Configuration"). */
+function assertMinimal(text: string): void {
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  assert.deepEqual(Object.keys(parsed), ['$schema', 'version']);
+  assert.equal(parsed['version'], CONFIG_VERSION);
+  assert.match(String(parsed['$schema']), new RegExp(`^https://.*/schemas/hatch\\.config\\.v${CONFIG_VERSION}\\.schema\\.json$`));
+  assert.equal(text, `${JSON.stringify(parsed, null, 2)}\n`);
+}
 
 function withTempDir(body: (dir: string) => void): () => void {
   return () => {
@@ -47,6 +57,8 @@ function sample(spec: FieldSpec): unknown {
       return 'all';
     case 'stringOrNull':
       return spec.key === 'out' ? 'patches/' : 'cpp';
+    case 'eol':
+      return 'worktree';
   }
 }
 
@@ -122,7 +134,18 @@ test('a key not in the chosen version: ONE error naming every such key and where
 
 test('values are checked as the loader checks them, pairs included', () => {
   assert.throws(() => configTemplate({ settings: { generate: { bridgeGap: -1 } } }), /generate\.bridgeGap/);
-  assert.throws(() => configTemplate({ settings: { generate: { mirror: true } } }), /needs an output root/);
+  assert.throws(() => configTemplate({ settings: { upstream: '.' } }), /upstream.*set generate\.out .* to a directory/);
+  // PROTOCOL.md configTemplate: "since/until are the schemas a key belongs to; since: null
+  // — no schema has it". generate.mirror was a key of schema 1 (VERSIONING.md §6).
+  assert.throws(
+    () => configTemplate({ settings: { generate: { mirror: true } } }),
+    (e: unknown) => {
+      assert.ok(e instanceof ConfigError);
+      assert.deepEqual(e.detail(), { version: 2, keys: [{ path: 'generate.mirror', since: 1, until: 1 }] });
+      assert.match(e.message, /generate\.mirror \(v1–v1; "upstream": "\." keeps the patches/);
+      return true;
+    },
+  );
   assert.throws(() => configTemplate({ settings: [] }), /settings must be an object/);
 });
 
@@ -137,15 +160,15 @@ test('the loader holds a file to the keys of the version it names', () => {
   assert.deepEqual(readBack('{ "generate": { "exact": true } }'), { exact: true }, 'no version: the newest');
 });
 
-test('every version has a one-line summary naming each of its keys; mirror is marked', () => {
+test('every version has a one-line summary naming each of its keys', () => {
   const versions = schemaVersions();
   assert.deepEqual(versions.map((v) => v.version), Array.from({ length: CONFIG_VERSION - CONFIG_MIN + 1 }, (_, i) => CONFIG_MIN + i));
   for (const { version, summary } of versions) {
     assert.ok(summary.startsWith(`v${version}: `));
     assert.ok(!summary.includes('\n'));
-    for (const f of fieldsOf(version)) assert.ok(summary.includes(f.path.split('.').slice(1).join('.')), f.path);
+    for (const f of fieldsOf(version)) assert.ok(summary.includes(f.path.split('.').slice(-1)[0]!), f.path);
   }
-  assert.match(schemaVersions()[0]!.summary, /mirror \(added in 0\.2\.0 without a bump\)/);
+  assert.match(schemaVersions()[0]!.summary, /^v2: upstream; generate: out, /);
   assert.ok(FIELDS.every((f) => Number.isInteger(f.since) && f.since >= 1));
 });
 
@@ -160,23 +183,18 @@ test('suggestedConfigPath: the repository root, outside one the directory itself
 // ── hatch init ──────────────────────────────────────────────────────────────────
 
 function init(args: string[], cwd: string): { status: number; stdout: string; stderr: string } {
-  try {
-    const stdout = execFileSync('node', ['--experimental-strip-types', CLI, 'init', ...args], {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string };
-    return { status: err.status ?? -1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-  }
+  const r = spawnSync('node', ['--experimental-strip-types', CLI, 'init', ...args], {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
 }
 
 test('hatch init --dry-run prints the template and writes nothing', withTempDir((dir) => {
   const r = init(['--dry-run'], dir);
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout, configTemplate().text);
+  assertMinimal(r.stdout);
   assert.throws(() => readFileSync(join(dir, CONFIG_FILE_NAME)));
 }));
 
@@ -185,7 +203,7 @@ test('hatch init writes at the git root from a subdirectory', withTempDir((dir) 
   mkdirSync(join(dir, 'a', 'b'), { recursive: true });
   const r = init([], join(dir, 'a', 'b'));
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(readFileSync(join(dir, CONFIG_FILE_NAME), 'utf8'), configTemplate().text);
+  assertMinimal(readFileSync(join(dir, CONFIG_FILE_NAME), 'utf8'));
 }));
 
 test('hatch init: an existing file is kept without --force (exit 5), replaced with it', withTempDir((dir) => {
@@ -198,7 +216,7 @@ test('hatch init: an existing file is kept without --force (exit 5), replaced wi
 
   const forced = init(['--dir', dir, '--force'], dir);
   assert.equal(forced.status, 0, forced.stderr);
-  assert.equal(readFileSync(file, 'utf8'), configTemplate().text);
+  assertMinimal(readFileSync(file, 'utf8'));
 }));
 
 test('hatch init --config-version outside the range: exit 5, the side to update', withTempDir((dir) => {
@@ -210,4 +228,5 @@ test('hatch init --config-version outside the range: exit 5, the side to update'
 test('an older schema written gets one line saying so; the newest none', () => {
   assert.equal(olderSchemaNote(CONFIG_VERSION), undefined);
   assert.equal(olderSchemaNote(CONFIG_VERSION - 1), `wrote config schema v${CONFIG_VERSION - 1}; the newest is v${CONFIG_VERSION}`);
+  assert.equal(olderSchemaNote(CONFIG_VERSION - 1, true), `printed config schema v${CONFIG_VERSION - 1}; the newest is v${CONFIG_VERSION}`);
 });

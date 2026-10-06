@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { FORMAT_MIN, FORMAT_VERSION, HEADER_FIELDS } from '../../src/core/header.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -61,12 +62,12 @@ test('P6: CHANGELOG.md has the entry of the version package.json names', () => {
 test('P6: the newest CHANGELOG entry states the ranges the code has now', () => {
   const changelog = read('CHANGELOG.md');
   const newest = changelog.slice(changelog.indexOf('\n## '));
-  const line = /\*\*Protocol (\d+)–(\d+) · config schema (\d+)–(\d+)\*\*/.exec(newest);
+  const line = /\*\*Protocol (\d+)–(\d+) · config schema (\d+)–(\d+) · patch format (\d+)–(\d+)\*\*/.exec(newest);
   assert.ok(line !== null, 'the newest entry opens with its ranges');
   assert.deepEqual(
     line.slice(1).map(Number),
-    [PROTOCOL_MIN, PROTOCOL_VERSION, CONFIG_MIN, CONFIG_VERSION],
-    'protocol M–N and config M–N in the newest entry match src/',
+    [PROTOCOL_MIN, PROTOCOL_VERSION, CONFIG_MIN, CONFIG_VERSION, FORMAT_MIN, FORMAT_VERSION],
+    'protocol, config and patch format M–N in the newest entry match src/',
   );
 });
 
@@ -102,13 +103,13 @@ test('C1: every config schema in the range has its own frozen JSON Schema, holdi
     });
   for (let v = CONFIG_MIN; v <= CONFIG_VERSION; v++) {
     const file = `schemas/hatch.config.v${v}.schema.json`;
-    const schema = json(file) as { $id: string; properties: { version: Record<string, unknown>; generate: Record<string, unknown> } };
+    const schema = json(file) as { $id: string; properties: { version: Record<string, unknown> } };
     assert.ok(schema.$id.endsWith(`/schemas/hatch.config.v${v}.schema.json`), `${file}: $id names this file`);
     assert.ok(schemaUrl(v).endsWith(`/schemas/hatch.config.v${v}.schema.json`), `v${v}: the template points at this file`);
     assert.equal(schema.properties.version['minimum'], v, `${file}: checks v${v} only`);
     assert.equal(schema.properties.version['maximum'], v, `${file}: checks v${v} only`);
     assert.deepEqual(
-      leaves(schema.properties.generate, 'generate').sort(),
+      leaves(schema as unknown as Record<string, unknown>).filter((p) => p !== '$schema' && p !== 'version').sort(),
       fieldsOf(v).map((f) => f.path).sort(),
       `${file}: exactly the keys of v${v}`,
     );
@@ -117,13 +118,14 @@ test('C1: every config schema in the range has its own frozen JSON Schema, holdi
   const newest = json(`schemas/hatch.config.v${CONFIG_VERSION}.schema.json`) as Record<string, Record<string, unknown>>;
   const root = json('hatch.config.schema.json') as Record<string, Record<string, unknown>>;
   assert.deepEqual(root['properties']!['generate'], newest['properties']!['generate']);
+  assert.deepEqual(root['properties']!['upstream'], newest['properties']!['upstream']);
 });
 
-test('R8/R9: protocol 4 is additive — configTemplate arrived without raising the minimum', async () => {
+test('R5: protocol 4 answers a new error kind (NoChanges), so it serves no client older than 4', async () => {
   const response = await handle({ id: 1, method: 'version' });
   assert.ok(response.ok);
   const result = response.result as { protocol: number; protocolMin: number };
-  assert.ok(result.protocol >= 4 && result.protocolMin <= 2, `served ${result.protocolMin}–${result.protocol}`);
+  assert.ok(result.protocol >= 4 && result.protocolMin >= 4, `served ${result.protocolMin}–${result.protocol}`);
 });
 
 test('P7: a released config schema is read from its release tag, which is a released version', () => {
@@ -173,4 +175,17 @@ test('C6: every flag of `generate` has a config key, or is exempt by name in VER
   assert.deepEqual(missing, [], 'a config key under generate (C2: schema + 1), or an exemption in C6 with its reason');
   const stale = [...exempt].filter((flag) => !flags.includes(flag));
   assert.deepEqual(stale, [], 'every flag C6 exempts still exists');
+});
+
+test('H4: the header fields in VERSIONING.md are the code\'s, in the same order — new ones only at the end', () => {
+  const versioning = read('VERSIONING.md');
+  const from = versioning.indexOf('### Patch header');
+  assert.ok(from !== -1, 'VERSIONING.md has "### Patch header"');
+  const to = versioning.indexOf('\n### ', from + 1);
+  const rows = [...versioning.slice(from, to).matchAll(/^\| (\d+) \| `([^`]+)` \|/gm)];
+  assert.deepEqual(
+    rows.map((r) => [Number(r[1]), r[2]]),
+    HEADER_FIELDS.map((name, i) => [i + 1, name]),
+    'a field is added as the last row of the table and the last name of HEADER_FIELDS, nowhere else',
+  );
 });

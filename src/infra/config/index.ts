@@ -1,5 +1,6 @@
 export {
   CONFIG_FILE_NAME,
+  configCandidates,
   findConfigFile,
   formatConfig,
   loadConfig,
@@ -13,6 +14,7 @@ export {
   CONFIG_MIN,
   CONFIG_VERSION,
   basesOnGit,
+  gitSourceOf,
   configRange,
   DEFAULT_SETTINGS,
   FIELDS,

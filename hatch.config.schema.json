@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/Danil-Varakin/hatchTs/main/hatch.config.schema.json",
   "title": "Hatch configuration",
-  "description": "Project policy for `hatch generate`. Only the generate side is configurable: a .md patch is a public contract and must mean the same thing on every machine, so nothing here changes how `apply` reads an existing patch.",
+  "description": "Project policy for `hatch generate`. Only the generate side is configurable: a .hatch patch is a public contract and must mean the same thing on every machine, so nothing here changes how `apply` reads an existing patch.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -12,25 +12,28 @@
     "version": {
       "description": "Config schema version: a whole number from minimum to maximum below, the range this hatch reads (CONFIG_MIN..CONFIG_VERSION in the code). Newer than maximum: update hatch; older than minimum: move the file to the current schema. See VERSIONING.md.",
       "type": "integer",
-      "minimum": 1,
+      "minimum": 2,
       "maximum": 2
+    },
+    "upstream": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "description": "The root of the code the project patches, from this file's directory: \"..\" for a project inside it, \"upstream\" for one inside the project, \"../upstream/src\" beside it, \".\" for patches kept in a tree of their own in one repository. With it a patch is <generate.out>/<path of the file from the upstream>.hatch and its Target is that path; generate.out must name a directory. Schema 2."
     },
     "generate": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "out": {
-          "description": "Default place for the generated .md: a file path is taken as is, a directory (existing, or ending with a slash) gets <name of --in>.md inside it. null — next to --in.",
+          "description": "Default place for the generated .hatch: a file path (it must end in .hatch) is taken as is, a directory (existing, ending with a slash, or a name without an extension) gets <name of --in>.hatch inside it; a relative path is measured from the repository root. null — next to --in. With \"upstream\" it is the root of the patch tree, from the config file's directory: <out>/<path of the file from the upstream>.hatch.",
           "type": [
             "string",
             "null"
           ],
           "minLength": 1
-        },
-        "mirror": {
-          "type": "boolean",
-          "default": false,
-          "description": "Keep patches in a tree of their own: the .md goes to <out>/<path of the file inside the repository>.md, and missing directories are created. Requires \"out\" to name a directory; a relative one is taken from the repository root. Paths are measured from the nearest ancestor holding .git, so a file outside any repository is an error."
         },
         "language": {
           "description": "Default language; null — inferred from the extension of --in.",
@@ -124,7 +127,7 @@
         "base": {
           "type": "object",
           "additionalProperties": false,
-          "description": "The old version `generate` compares against, out of git — the coordinates of --head / --branch / --commit. Naming any of them is the ask for git. Any git flag replaces all three for that run; --in-old ignores them. Schema 2.",
+          "description": "The old version `generate` compares against, out of git — the coordinates of --head / --branch / --commit. Naming any of them is the ask for git. Any git flag replaces the coordinates for that run; --in-old ignores them. Schema 2.",
           "properties": {
             "head": {
               "type": "boolean",
@@ -146,6 +149,15 @@
               ],
               "minLength": 1,
               "description": "Which commit: any revision git understands — a sha, a tag, HEAD~3 (--commit). null — the last one of the branch."
+            },
+            "eol": {
+              "type": "string",
+              "enum": [
+                "repository",
+                "worktree"
+              ],
+              "default": "repository",
+              "description": "The line endings of the old version read out of git (--eol): \"repository\" as git stores it; \"worktree\" as the file on disk has them — for core.autocrlf, where the two differ. Schema 2."
             }
           }
         }

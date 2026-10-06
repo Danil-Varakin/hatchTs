@@ -1,23 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 
-const CLI = fileURLToPath(new URL('../../src/cli/index.ts', import.meta.url));
+const CLI = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
 const PKG = fileURLToPath(new URL('../../package.json', import.meta.url));
 
 function run(args: string[]): { status: number; stdout: string; stderr: string } {
-  try {
-    const stdout = execFileSync('node', ['--experimental-strip-types', CLI, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string };
-    return { status: err.status ?? -1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-  }
+  const r = spawnSync('node', ['--experimental-strip-types', CLI, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { status: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
 }
 
 test('bare invocation prints the usage and succeeds', () => {
@@ -86,4 +81,21 @@ test('the dispatcher lists exactly the commands it can load', async () => {
     const r = run([name, '--help']);
     assert.equal(r.status, 0, `${name} --help failed: ${r.stderr}`);
   }
+});
+
+test('apply --eol: checked always, and refused with no version out of git to apply it to', () => {
+  const bad = run(['apply', '-m', 'a.hatch', '-i', 'a.cc', '--dry-run', '--eol', 'crlf']);
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /--eol crlf: one of repository, worktree/);
+
+  const alone = run(['apply', '-m', 'a.hatch', '-i', 'a.cc', '--dry-run', '--eol', 'worktree']);
+  assert.equal(alone.status, 1);
+  assert.match(alone.stderr, /--eol sets the line endings of a version read out of git, and none is named/);
+});
+
+test('apply: a patch is a .hatch file — a .md is refused before it is read', () => {
+  const r = run(['apply', '-m', 'p.md', '-i', 'a.cc', '--dry-run']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /a patch is a \.hatch file/);
+  assert.match(r.stderr, /git mv x\.md x\.hatch/);
 });

@@ -8,19 +8,14 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
-    env:
-      HATCH_GRAMMAR_CACHE: ${{ github.workspace }}/.grammars
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-
       - run: npm ci
 
       - name: version matches the tag
@@ -41,7 +36,63 @@ jobs:
       - name: pack
         run: npm pack
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: hatch-*.tgz
+
+  apply-bin:
+    # Node's single executables are built on the platform they run on: one job each.
+    # No Intel Mac (decided by the author).
+    needs: check
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-latest, suffix: linux-x64 }
+          - { runner: ubuntu-24.04-arm, suffix: linux-arm64 }
+          - { runner: macos-latest, suffix: darwin-arm64 }
+          - { runner: windows-latest, suffix: win-x64.exe }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+
+      - name: build
+        run: npm run build:apply-bin
+
+      - name: apply goldens through the binary
+        shell: bash
+        run: node test/golden/run-binary.mjs "build/hatch-apply-${GITHUB_REF_NAME#v}-${{ matrix.suffix }}"
+
+      - name: hatch-apply tests through the binary
+        shell: bash
+        run: HATCH_APPLY_BIN="build/hatch-apply-${GITHUB_REF_NAME#v}-${{ matrix.suffix }}" node --test --experimental-strip-types test/unit/hatch-apply.test.ts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hatch-apply-${{ matrix.suffix }}
+          path: build/hatch-apply-*-${{ matrix.suffix }}
+
+  publish:
+    needs: [check, apply-bin]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-release
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        working-directory: dist-release
+        run: sha256sum hatch-* > SHA256SUMS && cat SHA256SUMS
+
       - name: publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" hatch-*.tgz --generate-notes --verify-tag
+        run: gh release create "$GITHUB_REF_NAME" dist-release/* --generate-notes --verify-tag

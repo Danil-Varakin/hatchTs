@@ -1,48 +1,24 @@
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { MatchPattern, Step, Gap, Anchor, Hunk } from '../core/ast.ts';
 import type { LanguageAdapter, SourceMap, BlockSpan, MapCache } from '../lang/source-map.ts';
 import { mapFor } from '../lang/source-map.ts';
 import { matchPattern } from '../core/matcher.ts';
 import { cutOf, patchHunk } from '../core/patcher.ts';
 import { printPattern } from '../core/hatch-printer.ts';
-import { AmbiguityError, MatchError } from '../core/errors.ts';
+import { AmbiguityError, MatchError, SynthesisError, firstLineOf } from '../core/errors.ts';
 import { changeSegments } from './diff.ts';
 import type { ChangeSegment } from './diff.ts';
+import { resolveLimits } from './limits.ts';
+import type { PartialLimits, SynthLimits } from './limits.ts';
+
+export { DEFAULT_SYNTH_LIMITS, resolveLimits } from './limits.ts';
+export type { PartialLimits, SynthLimits } from './limits.ts';
 
 export type SynthEvent =
   | { kind: 'segment'; index: number; total: number; seg: ChangeSegment }
   | { kind: 'attempt'; pattern: MatchPattern; result: 'unique' | 'ambiguous' | 'no-match'; matches: number }
   | { kind: 'hunk'; pattern: MatchPattern; patch: string };
 export type Tracer = (event: SynthEvent) => void;
-
-export interface SynthLimits {
-  readonly minParents: number;
-  readonly maxParents: number | 'all';
-  readonly parentDetailBase: number;
-  readonly minSiblings: number;
-  readonly maxSiblings: number;
-  readonly siblingDetailBase: number;
-  readonly parentsRequired: boolean;
-}
-
-export const DEFAULT_SYNTH_LIMITS: SynthLimits = {
-  minParents: 1,
-  maxParents: 'all',
-  parentDetailBase: 0,
-  minSiblings: 0,
-  maxSiblings: 8,
-  siblingDetailBase: 0,
-  parentsRequired: false,
-} as const;
-
-export type PartialLimits = { [K in keyof SynthLimits]?: SynthLimits[K] | undefined };
-
-export function resolveLimits(patch: PartialLimits | undefined): SynthLimits {
-  const out = { ...DEFAULT_SYNTH_LIMITS };
-  for (const [key, value] of Object.entries(patch ?? {})) {
-    if (value !== undefined) Object.assign(out, { [key]: value });
-  }
-  return Object.freeze(out);
-}
 
 export interface SynthOptions {
   bridgeGap?: number;
@@ -89,8 +65,41 @@ export function synthesize(
   adapter: LanguageAdapter,
   options: SynthOptions = {},
 ): Hunk[] {
-  const { bridgeGap = 0, exact = false, trace, maps } = options;
-  const limits = resolveLimits(options.limits);
+  const steps = synthesisSteps(oldSource, newSource, adapter, options);
+  for (;;) {
+    const step = steps.next();
+    if (step.done === true) return step.value;
+  }
+}
+
+/** The same synthesis, handing the event loop back after every change: a service stays
+ *  able to read and answer other requests while it runs, and `signal` stops it there —
+ *  throwing the signal's reason. One change is the unit: the matcher is not interrupted
+ *  inside it. */
+export async function synthesizeAsync(
+  oldSource: string,
+  newSource: string,
+  adapter: LanguageAdapter,
+  options: SynthOptions & { readonly signal?: AbortSignal | undefined } = {},
+): Promise<Hunk[]> {
+  const steps = synthesisSteps(oldSource, newSource, adapter, options);
+  for (;;) {
+    options.signal?.throwIfAborted();
+    const step = steps.next();
+    if (step.done === true) return step.value;
+    await nextTurn();
+  }
+}
+
+/** Synthesis one change at a time: it yields after each hunk, and returns them all. */
+function* synthesisSteps(
+  oldSource: string,
+  newSource: string,
+  adapter: LanguageAdapter,
+  options: SynthOptions,
+): Generator<void, Hunk[], void> {
+  const { bridgeGap = 0, exact = false } = options;
+  const setup = setupOf(adapter, newSource, options);
   const segments = changeSegments(oldSource, newSource, bridgeGap);
   const hunks: Hunk[] = [];
 
@@ -98,22 +107,22 @@ export function synthesize(
   let rowShift = 0;
 
   for (const [index, originalSegment] of segments.entries()) {
-    trace?.({ kind: 'segment', index, total: segments.length, seg: originalSegment });
+    setup.trace?.({ kind: 'segment', index, total: segments.length, seg: originalSegment });
     const segment: ChangeSegment = { ...originalSegment, oldStart: originalSegment.oldStart + rowShift };
 
-    const context = makeHunkContext(segment, currentSource, adapter, newSource.endsWith('\n'), exact, limits, trace, maps);
+    const context = makeHunkContext(segment, currentSource, setup);
     const resolved = resolveHunk(context);
 
     hunks.push({ match: resolved.pattern, patch: resolved.patch });
     currentSource = resolved.appliedSource;
     rowShift += segment.added.length - segment.removed.length;
+    yield;
   }
 
   const reproduced = exact ? currentSource === newSource : sameIgnoringSpace(currentSource, newSource, adapter);
   if (!reproduced) {
-    throw new Error(
-      `synth: result differs from new (${hunks.length} hunk(s), ${exact ? 'verbatim' : 'normalized'} check)`,
-    );
+    const because = `${hunks.length} hunk(s) applied give another text (${exact ? 'verbatim' : 'normalized'} check)`;
+    throw new SynthesisError(`the hunks do not give the new version: ${because} — a fault of synthesis`, 'unreproduced', because);
   }
   return hunks;
 }
@@ -129,24 +138,34 @@ export function synthesizeOne(
   adapter: LanguageAdapter,
   options: SynthOptions = {},
 ): Hunk {
-  const { exact = false, trace, maps } = options;
-  const context = makeHunkContext(
-    segment, source, adapter, target.endsWith('\n'), exact, resolveLimits(options.limits), trace, maps,
-  );
-  const resolved = resolveHunk(context);
+  const resolved = resolveHunk(makeHunkContext(segment, source, setupOf(adapter, target, options)));
   return { match: resolved.pattern, patch: resolved.patch };
 }
 
-function makeHunkContext(
-  segment: ChangeSegment,
-  source: string,
-  adapter: LanguageAdapter,
-  newEndsWithNewline: boolean,
-  requireExact: boolean,
-  limits: SynthLimits,
-  trace: Tracer | undefined,
-  maps: MapCache | undefined,
-): HunkContext {
+/** What every hunk of one synthesis is made with. */
+interface HunkSetup {
+  readonly adapter: LanguageAdapter;
+  /** whether the version the changes lead towards ends with a line break */
+  readonly targetEndsWithNewline: boolean;
+  readonly requireExact: boolean;
+  readonly limits: SynthLimits;
+  readonly trace: Tracer | undefined;
+  readonly maps: MapCache | undefined;
+}
+
+function setupOf(adapter: LanguageAdapter, target: string, options: SynthOptions): HunkSetup {
+  return {
+    adapter,
+    targetEndsWithNewline: target.endsWith('\n'),
+    requireExact: options.exact ?? false,
+    limits: resolveLimits(options.limits),
+    trace: options.trace,
+    maps: options.maps,
+  };
+}
+
+function makeHunkContext(segment: ChangeSegment, source: string, setup: HunkSetup): HunkContext {
+  const { adapter, targetEndsWithNewline, requireExact, limits, trace, maps } = setup;
   const lineStartOffsets = getLineStartOffsets(source);
   const lineCount = lineStartOffsets.length - 1;
   const firstChangedRowIndex = segment.oldStart - 1;
@@ -163,7 +182,7 @@ function makeHunkContext(
   const canonEnd = map.toCanonPos(changeEndOffset);
 
   const endsFile = changeEndOffset === source.length;
-  const terminator = endsFile && !newEndsWithNewline ? '' : '\n';
+  const terminator = endsFile && !targetEndsWithNewline ? '' : '\n';
   const addedBlock = segment.added.length > 0 ? segment.added.join('\n') + terminator : '';
   const intendedSource = source.slice(0, changeStartOffset) + addedBlock + source.slice(changeEndOffset);
 
@@ -226,7 +245,21 @@ function resolveHunk(context: HunkContext): ResolvedHunk {
     context.trace?.({ kind: 'hunk', pattern: fallback.pattern, patch: fallback.patch });
     return fallback;
   }
-  throw bestFailure ?? new AmbiguityError('synth: could not anchor the change with available context', []);
+  throw anchorFailure(context.segment, bestFailure);
+}
+
+/** No candidate stood: the most informative of their failures, told as what it is — a
+ *  change `generate` could not anchor, not a `.hatch` that failed to apply. No candidate
+ *  at all is `no-match`: no pattern lands there, and none fitted twice. Exported for its
+ *  test. */
+export function anchorFailure(segment: ChangeSegment, failure: unknown): SynthesisError {
+  const because = failure === undefined ? 'no pattern could be built around it' : firstLineOf(failure);
+  return new SynthesisError(
+    `could not anchor the change at line ${segment.newStart} of the new version — ${because}`,
+    failure instanceof AmbiguityError ? 'ambiguous' : 'no-match',
+    because,
+    segment.newStart,
+  );
 }
 
 function moreInformative(current: unknown, next: unknown): unknown {

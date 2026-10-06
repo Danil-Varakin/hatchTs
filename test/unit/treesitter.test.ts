@@ -7,7 +7,7 @@ import { cppAdapter } from '../../src/lang/cpp/index.ts';
 
 const cpp = async () => loadGrammar('cpp-test', await resolveGrammar(cppAdapter.grammar));
 
-function blockSpans(src: string, tree: ReturnType<typeof parse>): [number, number][] {
+function blockSpans(tree: ReturnType<typeof parse>): [number, number][] {
   const spans: [number, number][] = [];
   for (const n of walk(tree)) {
     if (n.isNamed && n.firstChild?.type === '{' && n.lastChild?.type === '}') {
@@ -22,7 +22,7 @@ test('parse + walk: nested C++ blocks by the first-{ / last-} rule', async () =>
   const src = 'namespace a { class B { void f(){ x(); } }; }';
   const tree = parse(g, src);
   try {
-    const spans = blockSpans(src, tree);
+    const spans = blockSpans(tree);
     assert.equal(spans.length, 3);
     const inner = spans[spans.length - 1]!;
     assert.equal(src.slice(inner[0], inner[1]), '{ x(); }');
@@ -36,7 +36,7 @@ test('strings, chars and comments raise no false blocks', async () => {
   const src = 'void g() { auto s = "{"; char c = \'}\'; /* } */ }';
   const tree = parse(g, src);
   try {
-    assert.equal(blockSpans(src, tree).length, 1);
+    assert.equal(blockSpans(tree).length, 1);
   } finally {
     tree.delete();
   }

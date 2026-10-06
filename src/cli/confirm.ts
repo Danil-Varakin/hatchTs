@@ -47,12 +47,17 @@ export function asker(deps: AskerDeps): Ask {
   };
 }
 
-/** The asker a command run from a shell gets. Both ends must be a terminal: a question
- *  written into a redirected stderr would be answered blind. */
+/** A person at a terminal, who can both see a question and answer it: both ends must be
+ *  a terminal — a question written into a redirected stderr would be answered blind. */
+export function atTerminal(): boolean {
+  return process.stdin.isTTY === true && process.stderr.isTTY === true;
+}
+
+/** The asker a command run from a shell gets. */
 export function terminalAsker(yes: boolean, note: (message: string) => void, answers: Answers): Ask {
   return asker({
     yes,
-    interactive: process.stdin.isTTY === true && process.stderr.isTTY === true,
+    interactive: atTerminal(),
     note,
     prompt: (text) => answers.next(text),
   });

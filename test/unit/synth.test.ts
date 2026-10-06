@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { synthesize } from '../../src/generate/synth.ts';
+import { anchorFailure, synthesize, synthesizeAsync } from '../../src/generate/synth.ts';
+import { AmbiguityError, MatchError } from '../../src/core/errors.ts';
 import type { SynthEvent } from '../../src/generate/synth.ts';
 import { applyAll } from '../../src/core/apply.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
@@ -326,5 +327,29 @@ test('structure from rung zero: even a self-unique edit still carries a parent',
   assert.match(printPattern(hunks[0]!.match), /void b\(\)/);
   assert.equal(applyAll(oldStr, hatchFile(hunks), cppAdapter).source, newStr);
   const drifted = 'void a() {\n  keep();\n}\nvoid b() {\n  keep();\n}\nvoid c() {\n  target = 1;\n}\n';
-  assert.throws(() => applyAll(drifted, hatchFile(hunks), cppAdapter));
+  assert.throws(() => applyAll(drifted, hatchFile(hunks), cppAdapter), MatchError);
+});
+
+test('synthesizeAsync: the same hunks; a signal stops it between two changes, with its reason', async () => {
+  await cppAdapter.init();
+  const old = Array.from({ length: 6 }, (_, i) => `int f${i}(int a) {\n  return ${i};\n}\n`).join('');
+  const neu = old.replace(/return (\d+);/g, 'return $1 + 1;');
+  assert.deepEqual(await synthesizeAsync(old, neu, cppAdapter), synthesize(old, neu, cppAdapter));
+
+  const control = new AbortController();
+  let segments = 0;
+  const trace = (e: SynthEvent): void => {
+    if (e.kind === 'segment' && ++segments === 3) control.abort(new Error('stop here'));
+  };
+  await assert.rejects(synthesizeAsync(old, neu, cppAdapter, { signal: control.signal, trace }), /stop here/);
+  assert.equal(segments, 3, 'the change under way is finished, the next one is not started');
+});
+
+test('synth: a change no candidate could be built around is no-match, not ambiguous — nothing fitted twice', () => {
+  const segment = { oldStart: 3, newStart: 4, removed: ['  x();'], added: [] };
+  const none = anchorFailure(segment, undefined);
+  assert.equal(none.reason, 'no-match');
+  assert.match(none.message, /could not anchor the change at line 4 .* no pattern could be built around it/);
+  assert.equal(anchorFailure(segment, new AmbiguityError('ambiguous match', [1, 2])).reason, 'ambiguous');
+  assert.equal(anchorFailure(segment, new MatchError('no match', 0, 0)).reason, 'no-match');
 });

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, statSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import {
   createLogger,
@@ -10,7 +10,6 @@ import {
   renderError,
   resolveLogPath,
   logHeader,
-  DEFAULT_LOG_DIR,
 } from '../../src/infra/log.ts';
 import { MatchError, AmbiguityError, ParseError } from '../../src/core/errors.ts';
 
@@ -32,8 +31,8 @@ test('a place that is not a directory IS the file name', () => {
 
 test('no place → the default directory, under the current one', () => {
   const path = resolveLogPath(undefined, 'generate', new Date('2026-08-24T10:20:30Z'), 7);
-  assert.ok(path.includes(DEFAULT_LOG_DIR), path);
-  assert.ok(path.endsWith('2026-08-24T10-20-30-generate-7.log'), path);
+  // README: "omitted means ./hatch-logs/"
+  assert.equal(resolve(path), join(process.cwd(), 'hatch-logs', '2026-08-24T10-20-30-generate-7.log'));
 });
 
 test('every run gets its own file: same second, different pid', () => {

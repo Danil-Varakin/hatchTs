@@ -1,0 +1,14 @@
+Ring buffer: one more state — a hand-written patch: no header, prose before the hunks.
+
+# match c
+    ...
+    #define STATES(X) \
+      X(IDLE, 0)      \
+    >>>
+      X(BUSY, 1)      \
+    ...
+# end
+# patch
+
+      X(WAIT, 4)      \
+# end

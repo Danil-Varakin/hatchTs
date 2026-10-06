@@ -1,51 +1,58 @@
 import { statSync } from 'node:fs';
-import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { ConfigError } from '../core/errors.ts';
 import { findRepoRoot } from './fs.ts';
+import { patchTreeRoot, upstreamTarget, withUpstream } from './project.ts';
+import type { Project, UpstreamProject } from './project.ts';
+
+/** The file name of a patch: the code's own name and this. */
+export const PATCH_EXTENSION = '.hatch';
 
 export interface OutPathInput {
   readonly inPath: string;
   readonly out: string | null;
-  readonly mirror?: boolean;
+  /** a project with an upstream: the patch tree is `<project root>/<out>/<Target>.hatch` */
+  readonly project?: Project | undefined;
   readonly suffix?: string;
 }
 
 export interface OutPath {
   readonly path: string | undefined;
-  readonly repoRoot?: string;
+  /** with an upstream: the file's path from the upstream root — the patch's `Target` */
+  readonly target?: string;
 }
 
 export function resolveOutPath(input: OutPathInput): OutPath {
   const inPath = resolve(input.inPath);
-  const name = `${basename(inPath)}${input.suffix ?? '.md'}`;
+  const name = `${basename(inPath)}${input.suffix ?? PATCH_EXTENSION}`;
 
-  if (input.mirror === true) return mirrored(input, inPath, name);
+  const upstream = withUpstream(input.project);
+  if (upstream !== undefined) return inUpstream(upstream, input.out, inPath);
   if (input.out === null) return { path: join(dirname(inPath), name) };
   if (input.out === '-') return { path: undefined };
 
   const target = isAbsolute(input.out) ? input.out : join(anchorFor(inPath), input.out);
-  return { path: namesDirectory(input.out, target) ? join(target, name) : target };
-}
-
-function mirrored(input: OutPathInput, inPath: string, name: string): OutPath {
-  if (input.out === null || input.out === '-') {
-    throw new ConfigError('generate.mirror needs generate.out to be a directory');
-  }
-
-  const repoRoot = findRepoRoot(dirname(inPath));
-  if (repoRoot === undefined) {
+  if (namesDirectory(input.out, target)) return { path: join(target, name) };
+  // A file named outright: for a patch it must be one `apply` and `pair` take back.
+  if (input.suffix === undefined && extname(target).toLowerCase() !== PATCH_EXTENSION) {
     throw new ConfigError(
-      `generate.mirror measures paths from the repository root, and no directory with .git was found above ${dirname(inPath)}`,
+      `generate.out (--out) names the file ${target}: a patch is a ${PATCH_EXTENSION} file — ` +
+        `name it ${basename(target, extname(target))}${PATCH_EXTENSION}, or give a directory`,
     );
   }
+  return { path: target };
+}
 
-  const within = relative(repoRoot, inPath);
-  if (within.startsWith('..') || isAbsolute(within)) {
-    throw new ConfigError(`generate.mirror: ${inPath} is outside its repository root ${repoRoot}`);
+/** With an upstream `out` is the root of a tree that repeats the upstream's: the config
+ *  loader has made sure it names a directory. */
+function inUpstream(project: UpstreamProject, out: string | null, inPath: string): OutPath {
+  if (out === null || out === '-') {
+    throw new ConfigError('upstream keeps the patches in a tree of their own: generate.out must name a directory', project.configFile);
   }
-
-  const root = isAbsolute(input.out) ? input.out : join(repoRoot, input.out);
-  return { path: join(root, dirname(within), name), repoRoot };
+  const target = upstreamTarget(project, inPath);
+  // one patch named outright (`--out x.hatch`) instead of its place in the tree
+  if (!/[/\\]$/.test(out) && extname(out).toLowerCase() === PATCH_EXTENSION) return { path: patchTreeRoot(project, out), target };
+  return { path: join(patchTreeRoot(project, out), ...target.split('/')) + PATCH_EXTENSION, target };
 }
 
 function anchorFor(inPath: string): string {

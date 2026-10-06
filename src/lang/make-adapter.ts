@@ -25,8 +25,8 @@ export function makeAdapter(rules: LanguageRules): LanguageAdapter {
     normalize: rules.normalize,
     grammar: rules.grammar,
 
-    async init(options: InitOptions = {}): Promise<void> {
-      const input = await resolveGrammar(rules.grammar, options, rules.name);
+    async init(_options: InitOptions = {}): Promise<void> {
+      const input = await resolveGrammar(rules.grammar, rules.name);
       const key = `${rules.grammar.file}@${rules.grammar.version ?? rules.grammar.sha256 ?? 'local'}`;
       grammar = await loadGrammar(key, input);
     },

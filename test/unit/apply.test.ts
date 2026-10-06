@@ -39,13 +39,12 @@ test('applyAll: the second hunk leans on what the first inserted, in order', asy
 
 // ── CLI end-to-end ────────────────────────────────
 
-const CLI = fileURLToPath(new URL('../../src/cli/apply.ts', import.meta.url));
-const GEN = fileURLToPath(new URL('../../src/cli/generate.ts', import.meta.url));
+const HATCH = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
 
 /** Both streams, whatever the exit: a warning printed on the way to success is part of
  *  what a run says, and has to be there to be checked. */
 function runCli(args: string[]): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync('node', ['--experimental-strip-types', CLI, ...args], {
+  const r = spawnSync('node', ['--experimental-strip-types', HATCH, 'apply', ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -56,7 +55,7 @@ test('CLI apply: success is exit 0 and a written file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
-    const md = join(dir, 'p.md');
+    const md = join(dir, 'p.hatch');
     const out = join(dir, 'out.cc');
     writeFileSync(src, 'void f(){ a(); b(); }');
     writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
@@ -73,13 +72,19 @@ test('CLI apply --verify: a clean fit is exit 0 and nothing written', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
-    const md = join(dir, 'p.md');
+    const md = join(dir, 'p.hatch');
     writeFileSync(src, 'void f(){ a(); b(); }');
     writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
 
-    const r = runCli(['--match', md, '--in', src, '--verify']);
+    // no base out of git and nobody at a terminal to say the disk is clean: refused
+    const asked = runCli(['--match', md, '--in', src, '--verify']);
+    assert.equal(asked.status, 1, asked.stderr);
+    assert.match(asked.stderr, /--verify needs a clean base/);
+
+    const r = runCli(['--match', md, '--in', src, '--verify', '--base-from-disk']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stdout, /verify: ok/);
+    assert.equal(runCli(['--match', md, '--in', src, '--verify', '--yes']).status, 0, '--yes answers the question');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -89,7 +94,7 @@ test('CLI apply: no match is exit 3 (MatchError)', () => {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-'));
   try {
     const src = join(dir, 'src.cc');
-    const md = join(dir, 'p.md');
+    const md = join(dir, 'p.hatch');
     writeFileSync(src, 'void f(){ a(); }');
     writeFileSync(md, hatchMd([{ match: '... nope(); >>> ...', patch: 'X();' }]));
 
@@ -105,7 +110,7 @@ test('CLI apply: --out as a directory keeps the name, and directories are create
   const dir = mkdtempSync(join(tmpdir(), 'hatch-apply-out-'));
   try {
     const src = join(dir, 'in.cc');
-    const md = join(dir, 'p.md');
+    const md = join(dir, 'p.hatch');
     writeFileSync(src, 'void f() {\n  a();\n}\n');
     writeFileSync(md, hatchMd([{ match: '... a(); >>> ...', patch: 'X();' }]));
 
@@ -130,7 +135,7 @@ test('CLI apply: --out as a directory keeps the name, and directories are create
 // tells which one was read.
 
 /** A patch that fits only the version holding `line`: it inserts X(); right after it. */
-function patchAfter(repo: Repo, line: string, name = 'p.md'): string {
+function patchAfter(repo: Repo, line: string, name = 'p.hatch'): string {
   const md = join(repo.dir, name);
   writeFileSync(md, hatchMd([{ match: `... ${line} >>> ...`, patch: 'X();' }]));
   return md;
@@ -215,9 +220,9 @@ test('CLI apply: writing a git version over --in never throws local edits away',
 
     // the working file (version 4) differs from HEAD (version 2): refused, left alone
     const lossy = runCli(['--match', md, '--in', repo.inPath, '--head', '--out', repo.inPath]);
-    assert.notEqual(lossy.status, 0);
-    assert.match(lossy.stderr, /--out is --in itself, and .* holds changes that HEAD:src\/core\/f\.cc does not/);
-    assert.match(lossy.stderr, /write the result elsewhere, or drop the git flags/);
+    assert.equal(lossy.status, 1);
+    assert.match(lossy.stderr, /the result would go over .*f\.cc, which holds changes that HEAD:src\/core\/f\.cc does not/);
+    assert.match(lossy.stderr, /write the result elsewhere \(--out\), or patch the file as it is on disk \(no git coordinate\)/);
     assert.equal(readFileSync(repo.inPath, 'utf8'), version(4));
 
     // the same text on disk as in HEAD: nothing to lose, the write goes ahead
@@ -236,7 +241,7 @@ test('CLI apply: --out spelled in another case is --in all the same on a case-in
       return;
     }
     const r = runCli(['--match', patchAfter(repo, 'int a = 2;'), '--in', repo.inPath, '--head', '--out', upper]);
-    assert.notEqual(r.status, 0);
+    assert.equal(r.status, 1);
     assert.match(r.stderr, /holds changes that HEAD:src\/core\/f\.cc does not/);
     assert.equal(readFileSync(repo.inPath, 'utf8'), version(4));
   });
@@ -246,8 +251,8 @@ test('CLI apply: in place over --in is fine when the result IS the working file'
   withRepo('hatch-apply-noop-', (repo) => {
     // a patch made from HEAD to the working file, applied back to HEAD: the result is the
     // working file itself, so writing it there loses nothing
-    const md = join(repo.dir, 'back.md');
-    execFileSync('node', ['--experimental-strip-types', GEN, '--in', repo.inPath, '--head', '--out', md,
+    const md = join(repo.dir, 'back.hatch');
+    execFileSync('node', ['--experimental-strip-types', HATCH, 'generate', '--in', repo.inPath, '--head', '--out', md,
       '--language', 'cpp'], { stdio: ['ignore', 'pipe', 'pipe'] });
     const r = runCli(['--match', md, '--in', repo.inPath, '--head', '--out', repo.inPath]);
     assert.equal(r.status, 0, r.stderr);
@@ -277,7 +282,7 @@ test('CLI apply: git refusals and slips are answered as in generate', () => {
     ];
     for (const [args, expected] of cases) {
       const r = runCli([...base, ...args]);
-      assert.notEqual(r.status, 0, args.join(' '));
+      assert.equal(r.status, 1, args.join(' '));
       assert.match(r.stderr, expected, args.join(' '));
     }
   });
@@ -297,7 +302,7 @@ test('CLI apply --yes: the loss of local edits is agreed in advance, and said ou
 test('CLI apply: with no terminal to ask, the loss is refused and the way round is named', () => {
   withRepo('hatch-apply-pipe-', (repo) => {
     const r = runCli(['--match', patchAfter(repo, 'int a = 2;'), '--in', repo.inPath, '--head', '--out', repo.inPath]);
-    assert.notEqual(r.status, 0);
+    assert.equal(r.status, 1);
     assert.match(r.stderr, /not a terminal, so nobody can answer: stopping \(pass --yes to go ahead\)/);
     assert.equal(readFileSync(repo.inPath, 'utf8'), version(4), 'left alone');
   });
@@ -307,7 +312,7 @@ test('CLI apply --yes: a commit off the named branch is patched all the same', (
   withRepo('hatch-apply-offbranch-', (repo) => {
     const md = patchAfter(repo, 'int a = 3;');
     const base = ['--match', md, '--in', repo.inPath, '--branch', repo.branch, '--commit', repo.s, '--verify'];
-    assert.notEqual(runCli(base).status, 0, 'without --yes: refused');
+    assert.equal(runCli(base).status, 1, 'without --yes: refused');
     const r = runCli([...base, '-y']);
     assert.equal(r.status, 0, r.stderr);
     assert.match(r.stderr, /warning: commit .* is not on branch/);

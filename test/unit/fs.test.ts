@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, linkSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { replacesFile, writeFileAtomic } from '../../src/infra/fs.ts';
+import { pathWithin, replacesFile, writeFileAtomic } from '../../src/infra/fs.ts';
+import { targetFor } from '../../src/infra/pair.ts';
 
 function inDir(body: (dir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'hatch-fs-'));
@@ -86,4 +87,19 @@ test('writeFileAtomic: through a symlink the file is written and the link stays 
     writeFileAtomic(dangling, 'fresh');
     assert.equal(readFileSync(join(dir, 'made.cc'), 'utf8'), 'fresh', 'a link to nothing yet: the file is created');
   });
+});
+
+test('pathWithin: inside, the root itself, outside — a name that merely starts with two dots is inside', () => {
+  const root = mkdtempSync(join(tmpdir(), 'hatch-within-'));
+  try {
+    assert.equal(pathWithin(root, join(root, 'a', 'b.c')), join('a', 'b.c'));
+    assert.equal(pathWithin(root, root), '');
+    assert.equal(pathWithin(root, join(root, '..hidden.c')), '..hidden.c');
+    assert.equal(pathWithin(root, join(root, '..', 'x.c')), undefined);
+    assert.equal(pathWithin(root, dirname(root)), undefined);
+    // the Target of a patch next to such a file names it, as it names any other
+    assert.equal(targetFor(join(root, '..hidden.c.hatch'), join(root, '..hidden.c')), '..hidden.c');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

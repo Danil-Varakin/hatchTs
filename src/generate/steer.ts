@@ -1,7 +1,10 @@
 import type { Hunk, MatchPattern, Step } from '../core/ast.ts';
-import { AmbiguityError, MatchError } from '../core/errors.ts';
-import { parseHatchFile } from '../core/hatch-parser.ts';
-import { resolveHunks } from '../core/resolve.ts';
+import { SynthesisError, firstLineOf } from '../core/errors.ts';
+import { MATCH_HEADING, NOTE_HEADING, parseHatchFile } from '../core/hatch-parser.ts';
+import { resolveHunks, spanThrough } from '../core/resolve.ts';
+import { planHunk } from '../core/apply.ts';
+import { applyEdit } from '../core/patcher.ts';
+import { mapFor } from '../lang/source-map.ts';
 import type { Span } from '../core/resolve.ts';
 import { checkHeading } from '../lang/adapter.ts';
 import type { LanguageAdapter, MapCache } from '../lang/source-map.ts';
@@ -24,7 +27,7 @@ import type { PartialLimits, Tracer } from './synth.ts';
 /** What the person says about a hunk synthesis offers. */
 export type Verdict =
   | 'keep'
-  /** leave this change out of the .md; the next hunks are built without it */
+  /** leave this change out of the patch; the next hunks are built without it */
   | 'skip'
   /** not this hunk — offered the editor next (`offerEdit`); refused, the run stops */
   | 'decline';
@@ -37,7 +40,7 @@ export interface Steering {
    *  that does not stand: go (back) to the editor? `false` stops the run, and nothing
    *  is written. `why` is the reason, to show. */
   readonly offerEdit: (why: string) => Promise<boolean>;
-  /** The .md so far — a note on top — to the editor, and back as edited. */
+  /** The patch so far — a note on top — to the editor, and back as edited. */
   readonly edit: (text: string) => Promise<string>;
 }
 
@@ -61,14 +64,14 @@ export interface Steered {
 }
 
 export async function steerSynthesis(request: SteerRequest, steering: Steering): Promise<Steered> {
-  const { oldText, newText, adapter, label, bridgeGap, exact, trace, maps } = request;
-  let hunks: readonly Hunk[] = [];
+  const { oldText, newText, adapter, bridgeGap, exact, trace, maps } = request;
+  let state: Laid = { hunks: [], current: oldText, settled: [] };
   let target = newText;
 
   for (;;) {
-    const { applied: current, links } = resolveHunks(oldText, { hunks: [...hunks], language: label }, adapter, maps);
-    const settled = links.flatMap((l) => (l.final !== undefined ? [l.final] : []));
-    const pending = changeSegments(current, target, bridgeGap).filter((s) => !touches(s, current, settled));
+    const { hunks, current, settled } = state;
+    const offsets = getLineStartOffsets(current);
+    const pending = changeSegments(current, target, bridgeGap).filter((s) => !touches(s, offsets, settled));
     if (pending.length === 0) {
       return { hunks, reproducesNew: exact ? current === newText : sameIgnoringSpace(current, newText, adapter) };
     }
@@ -82,24 +85,54 @@ export async function steerSynthesis(request: SteerRequest, steering: Steering):
     try {
       candidate = synthesizeOne(segment, current, target, adapter, { bridgeGap, exact, limits: request.limits, trace, maps });
     } catch (e) {
-      if (!(e instanceof MatchError || e instanceof AmbiguityError)) throw e;
-      const why = `hunk ${number}: the change at line ${segment.oldStart} could not be anchored — ${firstLine(e)}`;
+      if (!(e instanceof SynthesisError)) throw e;
+      const why = `hunk ${number}: the change at line ${segment.oldStart} could not be anchored — ${e.because}`;
       if (!(await steering.offerEdit(why))) throw e;
-      hunks = await editUntilItStands([...hunks, template(segment, current)], why, segment, request, steering);
+      state = replayed(await editUntilItStands([...hunks, template(segment, current)], why, segment, request, steering), request);
       continue;
     }
 
     const verdict = await verdictOn(candidate, number, total, steering);
     if (verdict === 'keep') {
-      hunks = [...hunks, candidate];
+      state = laidOn(state, candidate, request);
     } else if (verdict === 'skip') {
-      target = leftOut(segment, current, target);
+      target = leftOut(segment, target);
     } else {
       const why = `hunk ${number}: declined`;
       if (!(await steering.offerEdit(why))) throw new Error(`${why} — nothing was written`);
-      hunks = await editUntilItStands([...hunks, candidate], why, segment, request, steering);
+      state = replayed(await editUntilItStands([...hunks, candidate], why, segment, request, steering), request);
     }
   }
+}
+
+// ── the state: the hunks so far, and what they made of the old version ──────────
+
+interface Laid {
+  readonly hunks: readonly Hunk[];
+  /** the old version with every hunk laid, in order */
+  readonly current: string;
+  /** where each hunk's text is in `current` — what it wrote is settled */
+  readonly settled: readonly Span[];
+}
+
+/** One hunk more, laid on `current` — the text it was made against, where it lands and
+ *  only there (synthesis checked that): the same as replaying every hunk over the old
+ *  version, for the price of one. */
+function laidOn(state: Laid, hunk: Hunk, request: SteerRequest): Laid {
+  const { adapter, maps } = request;
+  const edit = planHunk(state.current, mapFor(adapter, state.current, maps), hunk, adapter);
+  return {
+    hunks: [...state.hunks, hunk],
+    current: applyEdit(state.current, edit),
+    settled: [...state.settled.map((span) => spanThrough(span, edit)), { start: edit.start, end: edit.start + edit.text.length }],
+  };
+}
+
+/** Hunks a person wrote: replayed over the old version from the start — `check` saw each
+ *  of them land. */
+function replayed(hunks: readonly Hunk[], request: SteerRequest): Laid {
+  const { applied, links } = resolveHunks(request.oldText, { hunks: [...hunks], language: request.label }, request.adapter, request.maps);
+  return { hunks, current: applied, settled: links.flatMap((l) => (l.final !== undefined ? [l.final] : [])) };
 }
 
 async function verdictOn(hunk: Hunk, number: number, total: number, steering: Steering): Promise<Verdict> {
@@ -117,7 +150,7 @@ async function verdictOn(hunk: Hunk, number: number, total: number, steering: St
 
 // ── the editor round trip ────────────────────────────────────────────────────────
 
-/** The .md goes to the editor until what comes back parses and every hunk of it lands on
+/** The patch goes to the editor until what comes back parses and every hunk of it lands on
  *  the old version, in order. Each time it does not, the reason goes on top and the
  *  person is asked again; saying no stops the run. */
 async function editUntilItStands(
@@ -145,13 +178,13 @@ function check(text: string, request: SteerRequest): readonly Hunk[] | string {
   try {
     file = parseHatchFile(text);
   } catch (e) {
-    return `the edited .md does not parse: ${firstLine(e)}`;
+    return `the edited patch does not parse: ${firstLineOf(e)}`;
   }
   if (file.language !== undefined) {
     try {
       checkHeading(file.language, request.adapter);
     } catch (e) {
-      return firstLine(e);
+      return firstLineOf(e);
     }
   }
   const { links } = resolveHunks(request.oldText, file, request.adapter, request.maps);
@@ -182,9 +215,12 @@ function note(reason: string, segment: ChangeSegment): string {
   ].join('\n');
 }
 
+/** The hunks of an edited text without the prose above them: from the first heading —
+ *  a hunk's `# note` comes before its `# match` and is part of it. */
 function bodyOf(edited: string): string {
-  const at = edited.search(/^#{1,6}[ \t]*match\b/im);
-  return at === -1 ? edited : edited.slice(at);
+  const lines = edited.split(/\r?\n/);
+  const at = lines.findIndex((line) => MATCH_HEADING.test(line) || NOTE_HEADING.test(line));
+  return at === -1 ? edited : lines.slice(at).join('\n');
 }
 
 // ── a hunk to start from when synthesis found none ───────────────────────────────
@@ -240,9 +276,9 @@ function literal(raw: string): Step['anchor'] {
 
 // ── what is left to do ───────────────────────────────────────────────────────────
 
-/** Whether a change lies in text a hunk already wrote. */
-function touches(segment: ChangeSegment, current: string, settled: readonly Span[]): boolean {
-  const offsets = getLineStartOffsets(current);
+/** Whether a change lies in text a hunk already wrote. `offsets`: where each line of the
+ *  current text starts. */
+function touches(segment: ChangeSegment, offsets: readonly number[], settled: readonly Span[]): boolean {
   const lineAt = (k: number): number => offsets[Math.min(k, offsets.length - 1)]!;
   const start = lineAt(segment.oldStart - 1);
   const end = lineAt(segment.oldStart - 1 + segment.removed.length);
@@ -252,12 +288,8 @@ function touches(segment: ChangeSegment, current: string, settled: readonly Span
 }
 
 /** The target with one change taken back: its lines as the current text has them. */
-function leftOut(segment: ChangeSegment, current: string, target: string): string {
+function leftOut(segment: ChangeSegment, target: string): string {
   const lines = target.split('\n');
   lines.splice(segment.newStart - 1, segment.added.length, ...segment.removed);
   return lines.join('\n');
-}
-
-function firstLine(e: unknown): string {
-  return String(e instanceof Error ? e.message : e).split('\n')[0] ?? '';
 }

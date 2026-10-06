@@ -4,12 +4,13 @@ export interface GrammarSource {
   readonly package?: string;
   readonly version?: string;
   readonly sha256?: string;
-  readonly url?: string;
+  /** absolute: this file instead of the search (tests, a grammar of one's own) */
   readonly path?: string;
 }
 
+/** Nothing to choose any more: grammars ship inside hatch and are never downloaded
+ *  (`infra/grammar-store.ts`). Kept so a caller's `init({})` reads as before. */
 export interface InitOptions {
-  readonly allowDownload?: boolean | undefined;
   readonly log?: ((message: string) => void) | undefined;
 }
 

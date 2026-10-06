@@ -100,6 +100,33 @@ const CASES: readonly Case[] = [
     source: { branch: R.branch, commit: R.a, path: 'nope.cc' }, error: [/--repo-path nope\.cc/] },
 ];
 
+/** The message as the CLI prints it: the core names no flag, `cli/command.ts` puts it
+ *  in front. */
+function asTheCliSaysIt(e: GitError): string {
+  return e.flag !== undefined ? `${e.flag} ${e.message}` : e.message;
+}
+
+test('git source: X2 — every refusal says why in detail.reason; X3 — the message names no flag', async () => {
+  const cases = [
+    [{ branch: 'nope' }, 'no-such-branch'],
+    [{ commit: 'nope' }, 'no-such-commit'],
+    [{ path: 'nope.cc' }, 'no-such-file'],
+    [{ path: 'src/core' }, 'not-a-file'],
+    [{ branch: 'v1.0' }, 'not-a-branch'],
+    [{ branch: R.branch, commit: R.s }, 'not-on-branch'],
+    [{ path: '../../etc/passwd' }, 'outside-repository'],
+  ] as const;
+  for (const [source, reason] of cases) {
+    await assert.rejects(() => fileFromGit(source, R.inPath), (e: unknown) => {
+      assert.ok(e instanceof GitError);
+      assert.equal(e.reason, reason, JSON.stringify(source));
+      assert.equal(e.detail()!['reason'], reason);
+      assert.doesNotMatch(e.message, /^--/, 'no flag in front: the service has none');
+      return true;
+    });
+  }
+});
+
 for (const c of CASES) {
   test(`git source — ${c.name}`, async () => {
     if (c.text !== undefined) {
@@ -111,7 +138,7 @@ for (const c of CASES) {
       () => fileFromGit(c.source, R.inPath),
       (e: unknown) => {
         assert.ok(e instanceof GitError, `expected GitError, got ${String(e)}`);
-        for (const fragment of c.error ?? []) assert.match(e.message, fragment);
+        for (const fragment of c.error ?? []) assert.match(asTheCliSaysIt(e), fragment);
         return true;
       },
     );
@@ -260,7 +287,8 @@ test('git source: a coordinate that starts with - is refused before git reads it
   ] as const) {
     await assert.rejects(() => fileFromGit(source, R.inPath), (e: unknown) => {
       assert.ok(e instanceof GitError, JSON.stringify(source));
-      assert.match(e.message, said);
+      assert.match(asTheCliSaysIt(e), said);
+      assert.equal(e.reason, 'bad-coordinate');
       return true;
     });
   }

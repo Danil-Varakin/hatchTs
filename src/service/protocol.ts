@@ -1,17 +1,15 @@
-import type { HunkLink } from '../core/resolve.ts';
-import type { PartialLimits } from '../generate/synth.ts';
-import type { GenerateSettings } from '../infra/config/index.ts';
-
-export type { HunkLink, LinkFailure, LinkStatus, ResolveResult, Span } from '../core/resolve.ts';
-export type { PartialLimits, SynthLimits } from '../generate/synth.ts';
-export type { GenerateSettings } from '../infra/config/index.ts';
+// The wire, spelled out. Every type a client sees is written here, field by field — none
+// is borrowed from the core, so a change inside the core cannot change the protocol
+// unnoticed (VERSIONING.md R2): test/unit/protocol-types.test.ts holds each one equal to
+// the core type it is filled from, and a difference fails the typecheck until the
+// protocol is changed here on purpose — with its number and its row in VERSIONING.md.
 
 // A RANGE, announced in `version`: this hatch speaks PROTOCOL_VERSION and still serves,
 // unchanged, every client written for PROTOCOL_MIN or later. Every change to the wire
 // raises PROTOCOL_VERSION (once per release); only a change an older client would trip
 // over raises PROTOCOL_MIN with it. Rules: VERSIONING.md.
-export const PROTOCOL_VERSION = 3;
-export const PROTOCOL_MIN = 2;
+export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_MIN = 4;
 
 export interface RequestMessage {
   readonly id: number;
@@ -26,20 +24,119 @@ export interface ServiceError {
   readonly detail?: Readonly<Record<string, unknown>>;
 }
 
+/** `elapsedMs`: how long the request took, from its arrival to the reply — for a
+ *  client's log and its "slow" hint. Protocol 4. */
 export type ResponseMessage =
-  | { readonly id: number; readonly ok: true; readonly result: unknown }
-  | { readonly id: number; readonly ok: false; readonly error: ServiceError };
+  | { readonly id: number; readonly ok: true; readonly result: unknown; readonly elapsedMs: number }
+  | { readonly id: number; readonly ok: false; readonly error: ServiceError; readonly elapsedMs: number };
 
 export interface ProgressMessage {
   readonly method: 'progress';
   readonly params: { readonly id: number; readonly done: number; readonly total: number };
 }
 
+// ── shared shapes ──────────────────────────────────────────────────────────────
+
+/** `{ start, end }` — offsets in UTF-16 units, `end` exclusive. */
+export interface Span {
+  readonly start: number;
+  readonly end: number;
+}
+
+export type LinkStatus = 'ok' | 'no-match' | 'ambiguous' | 'error';
+
+/** Why a hunk did not land: the facts of the core's error. */
+export interface LinkFailure {
+  readonly kind: string;
+  readonly message: string;
+  readonly mdLine?: number;
+  readonly failedStepIndex?: number;
+  readonly totalSteps?: number;
+  readonly origPos?: number;
+  readonly anchorText?: string;
+  readonly candidates?: readonly number[];
+}
+
+/** One hunk of a patch, where it lands: in the base and in the patched text. */
+export interface HunkLink {
+  readonly index: number;
+  readonly status: LinkStatus;
+  /** lines of the `.hatch` from `# match` to its `# end`, counted from 1 */
+  readonly mdSpan?: readonly [number, number];
+  /** the hunk's `# note` text, when it has one. Protocol 4. */
+  readonly note?: string;
+  /** lines of the `.hatch` from `# note` to its `# end`. Protocol 4. */
+  readonly noteSpan?: readonly [number, number];
+  readonly base?: Span;
+  readonly final?: Span;
+  readonly finalText?: string;
+  readonly dependsOnEarlier: boolean;
+  readonly failure?: LinkFailure;
+}
+
+/** The core's answer for a whole patch: its hunks, and the text with all of them laid. */
+export interface ResolveResult {
+  readonly links: readonly HunkLink[];
+  readonly applied: string;
+}
+
+/** How much context a synthesized hunk may carry. */
+export interface SynthLimits {
+  readonly minParents: number;
+  readonly maxParents: number | 'all';
+  readonly parentDetailBase: number;
+  readonly minSiblings: number;
+  readonly maxSiblings: number;
+  readonly siblingDetailBase: number;
+  readonly parentsRequired: boolean;
+}
+
+export type PartialLimits = { [K in keyof SynthLimits]?: SynthLimits[K] | undefined };
+
+export type GitEol = 'repository' | 'worktree';
+
+/** The settings `generate` applies — the config's, with the request's over them. */
+export interface GenerateSettings extends SynthLimits {
+  readonly upstream: string | null;
+  readonly out: string | null;
+  readonly language: string | null;
+  readonly exact: boolean;
+  readonly bridgeGap: number;
+  readonly baseHead: boolean;
+  readonly baseBranch: string | null;
+  readonly baseCommit: string | null;
+  readonly baseEol: GitEol;
+}
+
+/** A warning about one hunk, at the line of the patch it is about. Protocol 4. */
+export interface HunkWarning {
+  /** the hunk, counted from 1 */
+  readonly hunk: number;
+  /** the line of the `.hatch`, counted from 1 */
+  readonly mdLine: number;
+  readonly message: string;
+}
+
+/** Why `pair` names no file. A client may switch on it. */
+export type PairReason =
+  | 'no-out'
+  | 'outside-upstream'
+  | 'flat-out'
+  | 'outside-out'
+  | 'not-a-patch-name'
+  | 'unsafe-target'
+  | 'two-patches'
+  | 'newer-format'
+  | 'older-format'
+  | 'bad-header';
+
 // ── params ───────────────────────────────────────────────────────────────────────
 
 export interface LanguageParams {
   readonly language?: string;
   readonly path?: string;
+  /** accepted and ignored since protocol 4: grammars ship inside hatch, nothing is
+   *  downloaded */
   readonly allowDownload?: boolean;
 }
 
@@ -54,6 +151,9 @@ export interface GitSourceParams {
   readonly branch?: string;
   readonly commit?: string;
   readonly repoPath?: string;
+  /** Not a coordinate: the line endings of what is read — `repository` (the default),
+   *  as git stores it; `worktree`, those of the file at `params.path` on disk. Protocol 4. */
+  readonly eol?: GitEol;
 }
 
 /** The version a method works from — the OLD one for `generate`, the one to patch for
@@ -63,22 +163,86 @@ export interface BaseParams {
   readonly baseGit?: GitSourceParams;
 }
 
-export interface GenerateParams extends LanguageParams, BaseParams {
-  readonly newText: string;
+/** What a request may set over the project's config — `generate`'s own params, and
+ *  `config`/`pair`'s `overrides`: the same names, read by the same code. */
+export interface SettingsParams {
+  readonly language?: string;
   readonly exact?: boolean;
   readonly bridgeGap?: number;
   readonly limits?: PartialLimits;
   readonly out?: string;
-  readonly mirror?: boolean;
+  /** absolute: the config to use, no search — for a project beside its upstream.
+   *  Protocol 4. */
+  readonly configPath?: string;
+}
+
+export interface GenerateParams extends LanguageParams, BaseParams, SettingsParams {
+  readonly newText: string;
+}
+
+/** `config`/`pair`: the settings a `generate` with these params would use. The base as
+ *  `generate` takes it, without the text: `baseGit`, or `base: "text"` for "the client
+ *  sends `baseText`". Protocol 4. */
+export interface OverridesParams extends SettingsParams {
+  readonly baseGit?: GitSourceParams;
+  readonly base?: 'text';
+}
+
+export interface ConfigParams {
+  /** absolute — a file of code, or a .hatch (then the base is that of the file it patches) */
+  readonly path: string;
+  /** absolute: the config to use, no search (as in `overrides`). Protocol 4. */
+  readonly configPath?: string;
+  readonly overrides?: OverridesParams;
+}
+
+export interface PairParams {
+  /** absolute — a file of code, or a .hatch */
+  readonly path: string;
+  /** the patch's text, when the client has it unsaved; else it is read from `path` */
+  readonly patch?: string;
+  /** absolute: the config to use, no search (as in `overrides`). Protocol 4. */
+  readonly configPath?: string;
+  readonly overrides?: OverridesParams;
 }
 
 export interface ResolveParams extends LanguageParams, BaseParams {
-  readonly md: string;
+  /** the text of the `.hatch`; with a `path` that is a `.hatch` it may be left out and
+   *  is read from that file */
+  readonly patch?: string;
+  /** as for `generate`: the config whose `generate.base` is taken when none is sent */
+  readonly configPath?: string;
 }
 
 export type ApplyParams = ResolveParams;
 
+/** Takes back a request still running. Protocol 4. */
+export interface CancelParams {
+  /** the `id` of that request */
+  readonly id: number;
+}
+
+/** The text of a new hatch.config.json. The service writes nothing: the client asks
+ *  the user, writes the file and decides about overwriting. Protocol 4. */
+export interface ConfigTemplateParams {
+  /** absolute; the repository root is found from it */
+  readonly path: string;
+  /** the config schema to write, within `version().configSchemaMin..configSchema`;
+   *  the newest when left out */
+  readonly version?: number;
+  /** initial values, in the paths of the config: `{ generate: { out: "patches/" } }` or
+   *  `{ "generate.out": "patches/" }` */
+  readonly settings?: Readonly<Record<string, unknown>>;
+}
+
 // ── results ──────────────────────────────────────────────────────────────────────
+
+export interface CancelResult {
+  /** `true`: the request was running and is told to stop. `generate` then answers
+   *  `Cancelled` at its next change — or as usual, if it had none left; the other methods
+   *  answer as usual. `false`: no request with that id is running. */
+  readonly cancelled: boolean;
+}
 
 export interface VersionResult {
   readonly hatch: string;
@@ -101,25 +265,127 @@ export interface AppliedConfig {
 }
 
 export interface GenerateResult {
-  readonly md: string;
+  /** the `.hatch`, header first (`Hatch`, `Target` with a `path`, `Generated-From` for a git base, `Generated-By`, `Grammar`) */
+  readonly patch: string;
   /** `<revision>:<path>` when the base came out of git, null when it was sent as text. */
   readonly baseSpec: string | null;
   readonly language: string | undefined;
   readonly warnings: readonly string[];
+  /** the warnings about one hunk, with the patch line each is about. Protocol 4. */
+  readonly warningsAt: readonly HunkWarning[];
   readonly hunks: readonly HunkLink[];
   readonly reproducesNew: boolean;
   readonly outPath: string | null;
+  /** a file is at `outPath` already. Protocol 4. */
+  readonly outExists: boolean;
+  /** the `Target` that file names (null for none): when it is not this patch's, the
+   *  client asks before writing over another file's patch. Protocol 4. */
+  readonly outTarget: string | null;
   readonly config: AppliedConfig;
 }
 
-export interface ResolveResultMessage {
+/** The header of the patch as read: the format and the fields hatch knows. Protocol 4. */
+export interface PatchHeader {
+  readonly format: number;
+  readonly target?: string | undefined;
+  readonly generatedFrom?: string | undefined;
+  readonly generatedBy?: string | undefined;
+  readonly grammar?: string | undefined;
+}
+
+/** What `resolve` and `apply` answer about the patch itself, beside the hunks. Protocol 4. */
+interface PatchFacts {
+  readonly header: PatchHeader;
+  /** the file the patch was laid on, absolute — `path`, or the file `Target` names when
+   *  `path` is the patch */
+  readonly code: string | null;
+  /** as in `generate`: the warnings about a hunk, each at its patch line */
+  readonly warningsAt: readonly HunkWarning[];
+}
+
+export interface ResolveResultMessage extends PatchFacts {
   readonly hunks: readonly HunkLink[];
   /** `<revision>:<path>` when the base came out of git, null when it was sent as text. */
   readonly baseSpec: string | null;
+  /** The base out of git, the text `hunks` offsets count in; absent when the base was
+   *  sent as text. Protocol 4. */
+  readonly baseText?: string;
 }
 
-export interface ApplyResultMessage {
+export interface ApplyResultMessage extends PatchFacts {
   readonly text: string;
   readonly hunks: readonly HunkLink[];
   readonly baseSpec: string | null;
 }
+
+export interface ConfigTemplateResult {
+  readonly text: string;
+  /** the schema version written */
+  readonly version: number;
+  /** where the core itself looks for the config from `path`: the repository root, or
+   *  the directory of `path` outside a repository */
+  readonly suggestedPath: string;
+  /** whether a file is already there */
+  readonly exists: boolean;
+  /** every schema this hatch reads, oldest first, each with one line of what it holds */
+  readonly versions: readonly { readonly version: number; readonly summary: string }[];
+}
+
+/** Where `generate` would take its base from. Protocol 4. */
+export type BaseInfo =
+  | { readonly kind: 'text' }
+  | {
+      readonly kind: 'git';
+      /** as `baseSpec`: `<revision>:<path>` */
+      readonly spec: string;
+      /** the full hash of the commit the revision names now */
+      readonly sha: string;
+      readonly eol: GitEol;
+    }
+  | {
+      /** the base the settings name in git cannot be read now — the file is not in that
+       *  revision yet, the branch does not exist: `generate` would fail with `error` */
+      readonly kind: 'unavailable';
+      readonly error: ServiceError;
+    };
+
+export interface ConfigResult extends AppliedConfig {
+  /** the schema version the config file names; null without a file */
+  readonly schemaVersion: number | null;
+  /** the repository root around `path` by the core's rules, or null */
+  readonly repoRoot: string | null;
+  /** the directory of the config file, or null without one. Protocol 4. */
+  readonly projectRoot: string | null;
+  /** the root of the code the project patches (`upstream`, absolute), or null. Protocol 4. */
+  readonly upstreamRoot: string | null;
+  /** the `Target` of the pair: what the patch of this file names, or what this patch
+   *  names; null when there is none. Protocol 4. */
+  readonly target: string | null;
+  /** null: `generate` would refuse for want of a base — none sent, none in the config;
+   *  `unavailable`: a git base is named but cannot be read (protocol 4) */
+  readonly base: BaseInfo | null;
+  /** absolute paths whose change may change this answer; nothing is watched here */
+  readonly watch: readonly string[];
+}
+
+export type PairResult =
+  | {
+      /** `path` is code */
+      readonly kind: 'code';
+      /** where `generate` puts its .hatch — `outPath` — or null, with `reason` */
+      readonly patchPath: string | null;
+      readonly exists: boolean;
+      readonly how: 'upstream' | 'beside' | 'out' | null;
+      readonly reason?: PairReason;
+      /** `two-patches`: both patches of the one file */
+      readonly patchPaths?: readonly string[];
+    }
+  | {
+      /** `path` is a .hatch */
+      readonly kind: 'patch';
+      /** the file it patches, absolute, or null, with `reason` */
+      readonly code: string | null;
+      readonly exists: boolean;
+      readonly how: 'target' | 'upstream' | 'beside' | 'out' | null;
+      readonly reason?: PairReason;
+    };

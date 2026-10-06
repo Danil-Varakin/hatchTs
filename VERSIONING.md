@@ -4,19 +4,20 @@ These rules are binding. A change that breaks one is not merged until the rule i
 followed or the rule itself is changed here first, in its own commit, with the reason.
 `test/unit/versioning.test.ts` checks the parts a machine can check.
 
-hatch carries **three independent numbers** and two compatibility surfaces without one:
+hatch carries **four independent numbers** and two compatibility surfaces without one:
 
 | what | where it lives | who depends on it |
 |---|---|---|
 | package version | `package.json`, `package-lock.json`, git tag `vX.Y.Z` | users, the release workflow |
 | protocol range | `PROTOCOL_MIN`..`PROTOCOL_VERSION`, `src/service/protocol.ts`; announced by `version`; described in [PROTOCOL.md](./PROTOCOL.md) | service clients (the VS Code extension) |
 | config schema range | `CONFIG_MIN`..`CONFIG_VERSION`, `src/infra/config/schema.ts`; `hatch.config.schema.json` | `hatch.config.json` files committed to projects |
-| the `.md` patch format | `core/hatch-parser.ts`, `test/golden/` | every patch anyone has written |
+| patch format range | `FORMAT_MIN`..`FORMAT_VERSION`, `src/core/header.ts`; the `Hatch:` line of every `.hatch`; `core/hatch-parser.ts`, `test/golden/` | every patch anyone has written |
 | the CLI | `src/cli/` | scripts and CI jobs |
+| `hatch-apply` | the release files `hatch-apply-X.Y.Z-<os>-<arch>`, `src/bin/hatch-apply.ts` | the build scripts of projects |
 
-Protocol and config are **ranges, never single numbers**: a hatch serves every client
-and reads every config from the minimum to the maximum. A range is what lets an older
-client or an older config keep working after the number moves.
+Protocol, config and patch format are **ranges, never single numbers**: a hatch serves
+every client and reads every config and every patch from the minimum to the maximum. A
+range is what lets an older client, config or patch keep working after the number moves.
 
 ## 1. Package version
 
@@ -28,15 +29,17 @@ client or an older config keep working after the number moves.
 - **P3.** Breaking, for the package: a CLI flag removed, renamed or given another
   meaning; the same input now refused where it succeeded, or succeeding differently
   (unless the old outcome was a bug); an exit code changed; a `.md` an older release
-  wrote no longer applies the same (F1); `PROTOCOL_MIN` or `CONFIG_MIN` raised; an
+  wrote no longer applies the same (F1), or `FORMAT_MIN` raised; `PROTOCOL_MIN` or `CONFIG_MIN` raised; an
   export of `src/index.ts` removed or changed; the minimum Node (`engines`) or the
-  minimum git raised; a language name or a file extension no longer accepted (a `.md`
+  minimum git raised; a platform dropped from the `hatch-apply` files of a release, or
+  the name of those files changed (`hatch-apply-X.Y.Z-<os>-<arch>`, scripts download
+  them by name); a language name or a file extension no longer accepted (a `.hatch`
   headed `# match mm` must keep applying); a grammar pin changed so that an apply golden
   changes (F3).
 - **P4.** A release that moves the protocol or config range is at least a minor bump.
 - **P5.** The version is raised in a commit of its own, `package.json` and
   `package-lock.json` together — `npm version minor|patch` does both.
-- **P6.** Every release has its `CHANGELOG.md` entry before the tag: the three numbers,
+- **P6.** Every release has its `CHANGELOG.md` entry before the tag: the four numbers,
   then what changed, breaking changes first.
 - **P7.** A version that went out is never re-cut: a pushed tag is not moved, deleted
   and re-pushed, or reused. A mistake is fixed by the next patch release.
@@ -88,20 +91,59 @@ field of params and results, error kinds and their `detail`, and every validatio
 - **C4.** One bump per release, frozen on release — as R3.
 - **C5.** Outside the range the message names the side: newer — update hatch; older —
   move the file to the current schema.
+- **C6.** Every `generate` option the core supports has a config key under `generate`,
+  shipped in the same release as the option — a flag, a protocol param or both. *(Why:
+  what a project settles once — how much context a hunk carries, what it is compared
+  against — must not have to be retyped on every run or taught to every client
+  separately.)* Exempt, because they name one run and not the project: the files of
+  that run (`--in`, `--in-old`, `baseText`, `newText`, `path`, `--repo-path`), where the
+  config itself comes from (`--config`, `--no-config`, `--print-config`), how the run
+  talks to a person (`--agreement`, `--yes`, `--help`, `--debug`, `--log`) and
+  permission to download (`--download-grammars`, `allowDownload`). A new exemption is
+  added here, with its reason, before the option ships without a key. A key follows C2:
+  schema + 1.
 
-## 4. What has no number
+## 4. The patch format, and what has no number
 
-- **F1. The `.md` format.** Every `.md` a released hatch wrote must parse and apply the
-  same in every later release. `test/golden/*/apply/` holds this: an apply golden whose
-  expected result changes is a breaking change unless the old result was a bug, and the
-  commit says which. `test/golden/*/generate/` is different — it records the form
-  `generate` prints; changing that form breaks no existing patch, so it is not breaking,
-  but it is a visible change and goes into the CHANGELOG.
-- **F3. Grammar pins.** A grammar is part of how a `.md` applies: a new version can
+- **F1. The patch format.** A patch is a `.hatch` file. Every `.hatch` a released hatch
+  wrote must parse and apply the same in every later release. `test/golden/*/apply/`
+  holds this: an apply golden whose expected result changes is a breaking change unless
+  the old result was a bug, and the commit says which. `test/golden/*/generate/` is
+  different — it records the form `generate` prints; changing that form breaks no
+  existing patch, so it is not breaking, but it is a visible change and goes into the
+  CHANGELOG. *(Changed 2026-10-02: hatch 0.1–0.3 wrote patches as `.md`, with an
+  optional `<!-- hatch: target=… -->` line. From 0.4 a `.md` is not a patch anywhere,
+  `apply` included, and the line is not read — decided by the author: no one uses hatch
+  yet, so the break reaches no one, and a patch that looks like Markdown is reformatted
+  by Markdown tools and taken for a patch where it is a README. Not repeated: from 0.4 on
+  F1 holds for `.hatch` without exception.)*
+- **H1.** A `.hatch` opens with a header of `Name: value` lines up to the first blank
+  line; the first is `Hatch: N`, the format number. A file with no header is format 1.
+  hatch reads every patch whose `N` is in `[FORMAT_MIN, FORMAT_VERSION]` and writes
+  `FORMAT_VERSION`.
+- **H2.** The number rises only when the syntax of the hunks changes. A new header field
+  does not raise it: fields hatch does not know are read past. A change an older hatch
+  would read wrongly rather than refuse is a new number; one it cannot read at all
+  (`FORMAT_MIN` raised) is breaking (P3).
+- **H3.** Outside the range the message names the side: newer — update hatch; older —
+  regenerate the patch. One bump per release, frozen on release — as R3.
+- **H4.** The fields hatch knows have fixed places — `HEADER_FIELDS` in
+  `src/core/header.ts`, the table "Patch header" in §6: line 1 is `Hatch`, the rest
+  follow in that order, each at most once; a field left out keeps the rest in order.
+  `generate` writes in that order and `apply` refuses a known field out of it. A new
+  field is **appended**: the last place in the list, the last row of the table — never
+  between two fields that exist. A field is never moved, renamed or given to another
+  meaning; one no longer written keeps its place and its name is not reused. Fields
+  hatch does not know may stand anywhere after `Hatch` and are read past (H2), so a
+  header a newer hatch wrote still reads in an older one.
+- **F3. Grammar pins.** A grammar is part of how a `.hatch` applies: a new version can
   shape the tree differently and move where a hunk lands. Every change of a pin in
-  `src/lang/*/index.ts` runs the apply goldens; one whose expected result changes makes
+  `src/lang/*/index.ts` runs the apply goldens, through the package and through every
+  `hatch-apply` binary; one whose expected result changes makes
   the change breaking (P3), unless the old result was a bug, and the commit says which.
-- **F2. The CLI.** A flag may be added in any minor release. Removing, renaming or
+- **F2. The CLI.** `hatch` and `hatch-apply` alike: the commands, flags and exit codes
+  of `hatch-apply` are a CLI, and its flags are a subset of `hatch apply`'s with the same
+  meaning. A flag may be added in any minor release. Removing, renaming or
   changing one is breaking (P3), and goes through one minor release first where the old
   spelling still works and warns. A flag that never shipped in a release may still be
   renamed freely.
@@ -109,25 +151,35 @@ field of params and results, error kinds and their `detail`, and every validatio
 ## 5. Releasing
 
 1. Everything for the release is committed on `dev`, and `CHANGELOG.md` has its entry
-   with the three numbers (P6). The tables below are up to date (R10).
+   with the four numbers (P6). The tables below are up to date (R10). A header field
+   added in this release is the last row of "Patch header" and the last name in
+   `HEADER_FIELDS` (H4), with this release in its "since" column.
+   A config schema version shipping for the first time gets its row in
+   `SCHEMA_RELEASED_IN` (`src/infra/config/template.ts`) with this release's tag: from
+   then on a written config's `"$schema"` points at that tag, which never moves (P7),
+   so the released schema file cannot change under anyone.
 2. `npm run check` is green.
 3. The version bump, alone in its commit (P5):
    `npm version minor -m "поднята версия"` (or `patch`, by P2).
 4. `git push origin dev`, then a pull request `dev` → `main`, merged.
 5. `git push origin vX.Y.Z` — the tag starts `.github/workflows/release.yml`, which
-   checks the tag against `package.json`, runs typecheck and tests, packs and publishes
-   the GitHub Release. Nothing goes to the npm registry.
+   checks the tag against `package.json`, runs typecheck and tests, packs, builds
+   `hatch-apply` for every platform (linux-x64, linux-arm64, darwin-arm64, win-x64),
+   runs the apply goldens through each binary, writes `SHA256SUMS` and publishes the
+   GitHub Release with all of it. Nothing goes to the npm registry.
 
 ## 6. Compatibility
 
 ### Releases
 
-| hatch | date | protocol M–N | config M–N | |
-|---|---|---|---|---|
-| 0.1.0 | 2026-08-27 | — no service | 1–1 | first release |
-| 0.1.1 | 2026-08-27 | — no service | 1–1 | fix |
-| 0.2.0 | 2026-09-24 | 2–2 | 1–1 | the service arrives |
-| 0.3.0 | 2026-09-28 | 2–3 | 1–1 | apply from git, hand-written hunks, CRLF, PROTOCOL.md |
+| hatch | date | protocol M–N | config M–N | format M–N | |
+|---|---|---|---|---|---|
+| 0.1.0 | 2026-08-27 | — no service | 1–1 | — a patch was a `.md` | first release |
+| 0.1.1 | 2026-08-27 | — no service | 1–1 | — a patch was a `.md` | fix |
+| 0.2.0 | 2026-09-24 | 2–2 | 1–1 | — a patch was a `.md` | the service arrives |
+| 0.3.0 | 2026-09-28 | 2–3 | 1–1 | — a patch was a `.md` | apply from git, hand-written hunks, CRLF, PROTOCOL.md |
+| 0.4.0 | — | — | — | — | tagged, and that is all: the check of the release failed, nothing was published. The number stays burned (P7) |
+| 0.4.1 | 2026-10-06 | 4–4 | 2–2 | 1–1 | the 0.4 line as it went out: a patch is a `.hatch` with a header; a project over its upstream; `hatch-apply`; the grammars inside |
 
 ### Protocol
 
@@ -136,33 +188,58 @@ field of params and results, error kinds and their `detail`, and every validatio
 | 1 | never released | — | lived only inside `dev`; named two contracts (R2) |
 | 2 | 0.2.0 | first | `version`, `generate`, `resolve`, `apply`; `generate` takes `baseText` or `baseGit`, answers `baseSpec`; `params.path` must be absolute |
 | 3 | 0.3.0 | additive, M = 2 | `resolve`/`apply` take `baseGit` and answer `baseSpec`; `version` announces `protocolMin` and `configSchemaMin`; every file extension is also a language name (`languages` grows); `generate` writes the language's own name into `# match`; `baseGit.branch` finds a branch that shares its name with a tag; `language: ""` means none in every method; a patch lands in a CRLF base with CRLF lines — a fix, the old mixed endings were the bug |
+| 4 | 0.4.1 | **breaking, M = 4** (R5) | `configTemplate`: the text of a new `hatch.config.json` for a schema version and settings, `suggestedPath`, `exists`, `versions`; a `ConfigError` about keys outside the schema carries `detail.version` and `detail.keys` — a key a schema dropped with the schemas that had it (`generate.mirror`: `since: 1, until: 1`), not `since: null`; `generate` with neither `baseText` nor `baseGit` takes the config's `generate.base` (refused before); `config.settings` grows `baseHead`, `baseBranch`, `baseCommit`, `baseEol`; methods `config` (the settings `generate` would apply, the base resolved, `watch`) and `pair` (code ↔ `.hatch`, `how: "target"`, `reason` when none); `generate` answers a `.hatch` with its header (`Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`); `warningsAt`; `baseGit.eol`; `resolve`/`apply` with no base take `generate.base`; `resolve` answers `baseText` for a git base; hunks in `resolve`/`apply` carry `note`, `noteSpan` from a `# note` block; `cancel { id }` and the error kind `Cancelled`; `config` answers an unreadable git base as `base.kind: "unavailable"`; `pair` reasons `newer-format`, `older-format`, `bad-header` (all `unsafe-target` before); a line that is JSON but no request object, and a param of the wrong type, answer `BadRequest` (the first ended the service, the second answered `TypeError`); `SynthesisError` `reason: "no-match"` when no candidate could be built (`ambiguous` before); a line ends at `\n` alone — a request holding U+2028 or U+2029 inside a string was cut in two and answered with two `BadRequest`s, `id: 0` (a fix: the transport always said one JSON object per line) |
+| 4 | 0.4.1 | the breaking part (R5) | `generate` with no changes fails with the new kind `NoChanges` (exit 7) instead of `ParseError` — a new error kind a client could notice, so `protocolMin` rises to 4. `generate` that cannot anchor a change fails with the new kind `SynthesisError` (exit 8) instead of `MatchError`/`AmbiguityError`. Replies come as requests finish, no longer in their order. `generate`'s `md` is a `.hatch`: it opens with the header, with or without a `path`. The field `md` is renamed `patch` in `generate`, `resolve`, `apply`, `pair`. The config of a file may be one whose `upstream` claims it; `configPath`; `pair` `how: "upstream"` (no `mirror`), reasons `outside-upstream`, `two-patches`; `generate` answers `outExists`, `outTarget`; `config` answers `upstreamRoot`; the param `mirror` is gone. `resolve`/`apply` take the patch's own path (code by `Target`, base from its config) and answer `code`, `header`, `warningsAt`; `config` answers `projectRoot`, `target`; `configPath` on every method; `GitError` `detail.reason`; messages name no CLI flag; every reply carries `elapsedMs`. `allowDownload` is accepted and ignored: the grammars ship inside hatch. No client of protocols 2–3 was ever released; the notice S2 asked for was removed with it |
 
 ### Config schema
 
 | N | first release | kind | what changed |
 |---|---|---|---|
 | 1 | 0.1.0 | first | `generate`: `out`, `language`, `exact`, `bridgeGap`, `parents`, `siblings` |
-| 1 | 0.2.0 | **added without a bump** | `generate.mirror` — before these rules; by C2 it would be schema 2. A config using it, read by hatch 0.1.x, fails with "unknown key" rather than "update hatch". Left as released (P7) |
+| 1 | 0.2.0 | **added without a bump** | `generate.mirror` — before these rules; by C2 it would be schema 2. A config using it, read by hatch 0.1.x, fails with "unknown key" rather than "update hatch". Left as released (P7); marked `unbumpedIn` in `FIELDS` and in the v1 summary |
+| 2 | 0.4.1 | **breaking, M = 2** (C3) | `generate.base`: `head`, `branch`, `commit` — the old version out of git, as `--head` / `--branch` / `--commit` (C6); `generate.base.eol` (`--eol`); `upstream` (top level): the root of the code the project patches, from the config file — `generate.out` is then the root of the patch tree; `generate.mirror` removed (`"upstream": "."` takes its place), so schema 1 is read no longer |
+
+### Patch format
+
+| N | first release | kind | what changed |
+|---|---|---|---|
+| 1 | 0.4.1 | first | `.hatch` with the header `Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`; the hunks as the `.md` of 0.1–0.3 wrote them |
+
+### Patch header
+
+The order of the header, one row per field (H4). New fields are added as new rows at the
+end.
+
+| # | field | since | what |
+|---|---|---|---|
+| 1 | `Hatch` | format 1, 0.4.1 | the format number; always the first line |
+| 2 | `Target` | format 1, 0.4.1 | the file the patch is for, relative with `/` |
+| 3 | `Generated-From` | format 1, 0.4.1 | the git blob of the base, when it came out of git |
+| 4 | `Generated-By` | format 1, 0.4.1 | `hatch <version>` |
+| 5 | `Grammar` | format 1, 0.4.1 | `<package>@<version>` of the grammar |
 
 ### Clients
 
 | client | version | protocol it speaks | |
 |---|---|---|---|
-| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, unreleased | 2–3 | range check as R8 |
+| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, unreleased | 4–4 | range check as R8; relies on `configTemplate`, `config`, `pair`, `configPath`, `resolve`/`apply` by the patch's path — protocol 4 |
 
 ## 7. Support
 
 - **S1.** Before 1.0.0 fixes ship only in the next release from `dev`; there are no
   patch releases of an older minor. From 1.0.0: fixes go to the latest minor (§8),
   security fixes to the latest and the previous one.
-- **S2.** `PROTOCOL_MIN` or `CONFIG_MIN` rises only in a release that is allowed to break
-  (P2: a minor before 1.0.0, a major from it), and the release before it says so in its
-  `CHANGELOG.md` entry: which number rises, and what to update.
+- ~~**S2.**~~ *Removed 2026-09-29.* It asked for a raise of `PROTOCOL_MIN` or
+  `CONFIG_MIN` to be announced in the CHANGELOG of the release before. *(Why: protocol
+  4 raises `PROTOCOL_MIN` by R5 with no client of protocols 2–3 ever released — the one
+  client, the VS Code extension, ships together with it — so the notice had no one to
+  reach.)* A raise still needs a release allowed to break (P2, P3) and says in its own
+  entry what to update. The number stays free: it is not reused.
 - **S3.** A client version that speaks the new protocol ships before, or together with,
   the hatch that raises `PROTOCOL_MIN`; the Clients table in §6 is updated with it.
 - **S4.** A Node version is dropped only after its end of life, only in a release that is
-  allowed to break, and announced one release ahead as in S2. The same holds for the
-  minimum git.
+  allowed to break, and announced in the `CHANGELOG.md` entry of the release before.
+  The same holds for the minimum git.
 
 ## 8. Patch releases from 1.0.0
 

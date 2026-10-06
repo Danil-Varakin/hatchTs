@@ -19,9 +19,6 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: [22, 24]
 
-    env:
-      HATCH_GRAMMAR_CACHE: ${{ github.workspace }}/.grammars
-
     steps:
       - uses: actions/checkout@v4
 
@@ -33,10 +30,10 @@ jobs:
       - name: install
         run: npm ci
 
-      - name: grammars
+      - name: grammar cache
         uses: actions/cache@v4
         with:
-          path: ${{ github.workspace }}/.grammars
+          path: grammars
           key: grammars-${{ hashFiles('src/lang/*/index.ts') }}
 
       - name: grammars
@@ -59,4 +56,34 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: npm pack --dry-run
+      # the grammars ship inside the package: the archive must hold every one
+      - name: npm pack holds the grammars
+        shell: bash
+        run: |
+          npm pack --dry-run --json > pack.json
+          node -e "const f=require('./pack.json')[0].files.map(x=>x.path); for (const g of ['tree-sitter-cpp.wasm','tree-sitter-python.wasm']) if (!f.includes('grammars/'+g)) { console.error('missing grammars/'+g); process.exit(1) }"
+
+  apply-bin:
+    # hatch-apply bundles the engine into one file: an import that does not bundle, or a
+    # runtime that looks for a file beside its JS, is caught here rather than at release
+    name: hatch-apply (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: grammar cache
+        uses: actions/cache@v4
+        with:
+          path: grammars
+          key: grammars-${{ hashFiles('src/lang/*/index.ts') }}
+      - name: build
+        run: npm run build:apply-bin
+      - name: apply goldens through the binary
+        run: node test/golden/run-binary.mjs build/hatch-apply-*-linux-x64
+      - name: hatch-apply tests through the binary
+        shell: bash
+        run: HATCH_APPLY_BIN="$(ls build/hatch-apply-*-linux-x64)" node --test --experimental-strip-types test/unit/hatch-apply.test.ts

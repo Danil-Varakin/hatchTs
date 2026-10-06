@@ -7,7 +7,7 @@ import { synthesize } from '../../src/generate/synth.ts';
 import { printHatchFile } from '../../src/generate/printer.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { resolveHunks } from '../../src/core/resolve.ts';
-import { AmbiguityError, MatchError } from '../../src/core/errors.ts';
+import { SynthesisError } from '../../src/core/errors.ts';
 import { cppAdapter } from '../../src/lang/cpp/index.ts';
 
 // The person is played by the test: what they answer, and what they type into the
@@ -89,6 +89,20 @@ test('steer: a declined hunk goes to the editor; what comes back — patch body 
   assert.equal(result.reproducesNew, false);
 });
 
+test('steer: a # note written in the editor stays with its hunk — in the hunks and in the printed patch', async () => {
+  const { run } = await steer(OLD, NEW, {
+    verdicts: ['decline', 'keep'],
+    offers: [true],
+    edits: [(text) => text.replace(/^# match cpp$/m, '# note\nwhy a2: the old name is gone upstream\n# end\n# match cpp')],
+  });
+  const result = await run;
+  assert.equal(result.hunks[0]!.note?.text, 'why a2: the old name is gone upstream');
+  const printed = printHatchFile(result.hunks, 'cpp');
+  assert.match(printed, /^# note\nwhy a2: the old name is gone upstream\n# end\n# match cpp$/m);
+  assert.equal(parseHatchFile(printed).hunks[0]!.note?.text, 'why a2: the old name is gone upstream');
+  assert.equal(applied(OLD, result.hunks), NEW);
+});
+
 test('steer: declined and no editor wanted — the run stops, nothing is written', async () => {
   const { run } = await steer(OLD, NEW, { verdicts: ['decline'], offers: [false] });
   await assert.rejects(run, /hunk 1: declined — nothing was written/);
@@ -104,8 +118,8 @@ test('steer: an edit that does not stand is shown with its reason, and edited ag
     ],
   });
   const result = await run;
-  assert.match(asked[1]!, /the edited \.md does not parse/);
-  assert.match(shown[1]!, /the edited \.md does not parse/, 'the reason is on top of the next edit');
+  assert.match(asked[1]!, /the edited patch does not parse/);
+  assert.match(shown[1]!, /the edited patch does not parse/, 'the reason is on top of the next edit');
   assert.ok(!shown[1]!.includes('hunk 1: declined'), 'the old reason is replaced');
   assert.equal(applied(OLD, result.hunks), NEW.replace('a2();', 'a3();'));
 });
@@ -147,7 +161,7 @@ const BY_HAND = [
 
 test('steer: a change synthesis cannot anchor is offered to the editor, and a hand hunk takes its place', async () => {
   await cppAdapter.init();
-  assert.throws(() => synthesize(TWIN_OLD, TWIN_NEW, cppAdapter), (e) => e instanceof MatchError || e instanceof AmbiguityError);
+  assert.throws(() => synthesize(TWIN_OLD, TWIN_NEW, cppAdapter), (e) => e instanceof SynthesisError);
   const { run, asked, shown } = await steer(TWIN_OLD, TWIN_NEW, { offers: [true], edits: [() => BY_HAND] });
   const result = await run;
   assert.match(asked[0]!, /hunk 1: the change at line \d+ could not be anchored/);
@@ -168,5 +182,5 @@ test('steer: the editor shows EVERY hunk so far, not only the one that failed', 
 
 test('steer: a change that cannot be anchored, and no editor wanted — the synthesis error itself', async () => {
   const { run } = await steer(TWIN_OLD, TWIN_NEW, { offers: [false] });
-  await assert.rejects(run, (e) => e instanceof MatchError || e instanceof AmbiguityError);
+  await assert.rejects(run, (e) => e instanceof SynthesisError);
 });

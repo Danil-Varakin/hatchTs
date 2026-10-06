@@ -1,9 +1,7 @@
-#!/usr/bin/env node
 import { HatchError } from '../core/errors.ts';
 import { renderError } from '../infra/log.ts';
 import { configRange } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
-import { invokedDirectly } from '../infra/entry.ts';
 
 interface Command {
   readonly summary: string;
@@ -13,21 +11,22 @@ interface Command {
 // A Map, not an object literal: the command name is whatever was typed, and an object
 // answers `constructor`, `toString` and `__proto__` with what it inherits.
 const COMMANDS: ReadonlyMap<string, Command> = new Map([
-  ['apply', { summary: 'apply .md instructions to a source file', load: () => import('./apply.ts') }],
+  ['apply', { summary: 'apply a .hatch patch to a source file', load: () => import('./apply.ts') }],
   [
     'generate',
-    { summary: 'synthesize .md instructions from two versions of a file', load: () => import('./generate.ts') },
+    { summary: 'synthesize a .hatch patch from two versions of a file', load: () => import('./generate.ts') },
   ],
   [
     'grammars',
     {
-      summary: 'put the tree-sitter grammars in place (the only command that goes online)',
+      summary: 'does nothing since 0.4: grammars ship inside hatch (removed in 0.5)',
       load: () => import('./grammars.ts'),
     },
   ],
+  ['init', { summary: 'write a hatch.config.json for the project', load: () => import('./init.ts') }],
 ]);
 
-const USAGE = `hatch — structural patch instructions in Markdown
+const USAGE = `hatch — structural patches: found by the shape of the code, not by line numbers
 
   hatch <command> [options]
 
@@ -39,7 +38,7 @@ ${[...COMMANDS]
   hatch <command> --help    options for that command
   hatch --version           version of hatch and of the config schema
 
-Exit codes: 0 ok · 1 usage · 2 .md parse · 3 no match · 4 ambiguous · 5 config · 6 grammar`;
+Exit codes: 0 ok · 1 usage · 2 patch parse · 3 no match · 4 ambiguous · 5 config · 6 grammar · 7 no changes · 8 cannot anchor`;
 
 export async function main(argv: readonly string[]): Promise<void> {
   const [first, ...rest] = argv;
@@ -82,8 +81,4 @@ export async function main(argv: readonly string[]): Promise<void> {
 function version(): string {
   const pkg = packageIdentity();
   return `${pkg.name} ${pkg.version} (config schema ${configRange()})`;
-}
-
-if (invokedDirectly(import.meta.url)) {
-  await main(process.argv.slice(2));
 }

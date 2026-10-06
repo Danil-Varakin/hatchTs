@@ -6,8 +6,11 @@ import type {
   MatchPattern,
   Hunk,
   HatchFile,
+  Note,
+  HatchHeader,
 } from './ast.ts';
 import { ParseError } from './errors.ts';
+import { headerFields, parseHeader } from './header.ts';
 
 function freshGap(): Gap {
   return { mode: { op: 'tight' } };
@@ -162,11 +165,60 @@ function feedOperator(op: string, mdLine: number, builder: PatternBuilder): void
   }
 }
 
-const MATCH_HEADING = /^#{1,6}[ \t]*match:?(?:[ \t]+(\S+))?[ \t]*$/i;
-const PATCH_HEADING = /^#{1,6}[ \t]*patch:?[ \t]*$/i;
-const END_HEADING = /^#{1,6}[ \t]*end[ \t]*$/i;
+// The headings of the format, the one spelling of each: the printer, the warnings and the
+// editor round trip find them with these, never with a copy.
+export const MATCH_HEADING = /^#{1,6}[ \t]*match:?(?:[ \t]+(\S+))?[ \t]*$/i;
+export const PATCH_HEADING = /^#{1,6}[ \t]*patch:?[ \t]*$/i;
+export const END_HEADING = /^#{1,6}[ \t]*end[ \t]*$/i;
+export const NOTE_HEADING = /^#{1,6}[ \t]*note:?[ \t]*$/i;
 
-const GUTTER = '    ';
+// The body of a note is prose, not payload: no gutter, any column. Only the headings
+// of the format are refused inside it — a stray one means the note was never closed.
+function readNote(lines: string[], start: number): { note: Note; next: number } {
+  const body: string[] = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (END_HEADING.test(line)) {
+      while (body.length > 0 && body[0]!.trim() === '') body.shift();
+      while (body.length > 0 && body[body.length - 1]!.trim() === '') body.pop();
+      return { note: { text: body.join('\n'), mdSpan: [start + 1, i + 1] }, next: i + 1 };
+    }
+    if (MATCH_HEADING.test(line) || PATCH_HEADING.test(line) || NOTE_HEADING.test(line)) {
+      throw new ParseError(
+        `the note block is not closed: '${line.trim()}' found where '# end' was expected`,
+        i + 1,
+        "close the note with '# end' before the next heading",
+      );
+    }
+    body.push(line.trimEnd());
+  }
+  throw new ParseError('the note block is not closed', start + 1, "every block ends with a '# end' line in column 0");
+}
+
+// Before the first `# match` is free prose, and was so in every release: a note is
+// recognized there only as a closed `# note` … `# end` with nothing but blank lines
+// after it, so no preamble an older hatch read past starts failing now (F1).
+function preambleNote(lines: string[], firstMatch: number): Note | undefined {
+  let k = firstMatch - 1;
+  while (k >= 0 && lines[k]!.trim() === '') k--;
+  if (k < 0 || !END_HEADING.test(lines[k]!)) return undefined;
+  for (let h = k - 1; h >= 0; h--) {
+    const line = lines[h]!;
+    if (NOTE_HEADING.test(line)) {
+      try {
+        const { note, next } = readNote(lines, h);
+        return next === k + 1 ? note : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    if (END_HEADING.test(line) || PATCH_HEADING.test(line)) return undefined;
+  }
+  return undefined;
+}
+
+/** Every payload line of a block carries it; stripped on read, added on print. */
+export const GUTTER = '    ';
 
 interface Block {
   body: string[];
@@ -206,7 +258,7 @@ function bodyLineError(line: string, mdLine: number, kind: 'match' | 'patch'): P
         "block with '# end'; the language goes into the heading: '# match cpp'",
     );
   }
-  if (MATCH_HEADING.test(line) || PATCH_HEADING.test(line)) {
+  if (MATCH_HEADING.test(line) || PATCH_HEADING.test(line) || NOTE_HEADING.test(line)) {
     return new ParseError(
       `the ${kind} block is not closed: '${line.trim()}' found where '# end' was expected`,
       mdLine,
@@ -220,22 +272,38 @@ function bodyLineError(line: string, mdLine: number, kind: 'match' | 'patch'): P
   );
 }
 
-export function parseHatchFile(md: string): HatchFile {
-  const lines = md.split(/\r?\n/);
+export function parseHatchFile(text: string): HatchFile {
+  const parsedHeader = parseHeader(text);
+  const header: HatchHeader = { format: parsedHeader.format, ...headerFields(parsedHeader) };
+  const lines = text.split(/\r?\n/);
   const hunks: Hunk[] = [];
   let language: string | undefined;
 
   let i = 0;
   while (i < lines.length && !MATCH_HEADING.test(lines[i]!)) i++;
+  let note = preambleNote(lines, i);
 
   while (i < lines.length) {
+    if (NOTE_HEADING.test(lines[i]!)) {
+      if (note !== undefined) {
+        throw new ParseError(
+          `a second note for one hunk (the first one is on the line ${note.mdSpan[0]})`,
+          i + 1,
+          "a hunk has at most one '# note'; merge the two",
+        );
+      }
+      const read = readNote(lines, i);
+      note = read.note;
+      i = read.next;
+      continue;
+    }
     const head = lines[i]!.match(MATCH_HEADING);
     if (head === null) {
       if (lines[i]!.trim() !== '') {
         throw new ParseError(
-          'text between hunks is not supported',
+          'text between hunks must be in a note block',
           i + 1,
-          "after '# end' only blank lines are allowed; put the commentary before the first '# match'",
+          "put the comment into '# note' … '# end' right before the '# match' it is about",
         );
       }
       i++;
@@ -246,11 +314,11 @@ export function parseHatchFile(md: string): HatchFile {
     const lang = head[1];
     if (lang !== undefined) {
       if (language === undefined) language = lang;
-      else if (language !== lang) {
+      else if (language.toLowerCase() !== lang.toLowerCase()) {
         throw new ParseError(
           `match block declares language '${lang}', but the file already uses '${language}'`,
           hunkStart,
-          'one .md file — one language; split the hunks into separate files',
+          'one patch — one language; split the hunks into separate files',
         );
       }
     }
@@ -273,19 +341,30 @@ export function parseHatchFile(md: string): HatchFile {
       scanLineInto(raw, matchBlock.firstLine + k, builder);
     }
 
-    hunks.push({
+    const hunk: Hunk = {
       match: builder.finish(),
       patch: patchBlock.body.join('\n'),
       mdSpan: [hunkStart, patchBlock.endLine],
-    });
+    };
+    if (note !== undefined) hunk.note = note;
+    note = undefined;
+    hunks.push(hunk);
     i = patchBlock.next;
+  }
+
+  if (note !== undefined) {
+    throw new ParseError(
+      "a note with no hunk after it: '# match' is expected",
+      note.mdSpan[0],
+      "a '# note' belongs to the '# match' that follows it",
+    );
   }
 
   if (hunks.length === 0) {
     throw new ParseError('no match/patch pairs were found in the file.', 1);
   }
 
-  const file: HatchFile = { hunks };
+  const file: HatchFile = { header, hunks };
   if (language !== undefined) file.language = language;
   return file;
 }

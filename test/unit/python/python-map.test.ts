@@ -26,11 +26,9 @@ const at = (needle: string): number => {
   return i;
 };
 
-let map: SourceMap;
-test('build the Python map (init once)', async () => {
-  await pythonAdapter.init();
-  map = pythonAdapter.buildMap(SRC);
-});
+// built once, before any test: each test reads it, none depends on another having run
+await pythonAdapter.init();
+const map: SourceMap = pythonAdapter.buildMap(SRC);
 
 test('the colon is the opening token: after `if a:` the cursor is INSIDE the body', () => {
   const ifStart = at('if a:');

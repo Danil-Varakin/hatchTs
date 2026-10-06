@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 
 import { synthesize } from '../../src/generate/synth.ts';
 import { printHatchFile } from '../../src/generate/printer.ts';
+import { printHeader } from '../../src/core/header.ts';
 import { parseHatchFile } from '../../src/core/hatch-parser.ts';
 import { applyAll } from '../../src/core/apply.ts';
+import { AmbiguityError, MatchError, SynthesisError } from '../../src/core/errors.ts';
 import { adapterForLanguage } from '../../src/lang/adapter.ts';
 import type { LanguageAdapter } from '../../src/lang/source-map.ts';
 
@@ -58,27 +60,39 @@ for (const language of languages) {
 
     for (const n of numbers) {
       const oldFile = files.find((f) => f.startsWith(`test${n}.old.`))!;
-      const newFile = files.find((f) => f.startsWith(`test${n}.new.`))!;
+      const newFile = files.find((f) => f.startsWith(`test${n}.new.`));
+      if (newFile === undefined) {
+        test(`golden ${language}/generate/${n}`, () => assert.fail(`${oldFile} has no test${n}.new.* beside it`));
+        continue;
+      }
       const oldStr = readFileSync(join(generateDir, oldFile), 'utf8');
       const newStr = readFileSync(join(generateDir, newFile), 'utf8');
-      const goldenPath = join(generateDir, `test${n}.md`);
+      const goldenPath = join(generateDir, `test${n}.hatch`);
 
       test(`golden ${language}/generate/${n}${describe(oldStr)}`, async () => {
         const adapter = await adapterFor(language);
 
         if (knownGap(oldStr)) {
+          // a gap is synthesis saying it cannot anchor the change — a crash is no gap
           assert.throws(
             () => synthesize(oldStr, newStr, adapter),
-            'this case synthesizes now — remove the KNOWN-GAP marker and commit the golden .md',
+            (e: unknown) => e instanceof SynthesisError,
+            'this case synthesizes now — remove the KNOWN-GAP marker and commit the golden .hatch',
           );
           return;
         }
 
-        // the heading `generate` writes: the language's own name, not the extension
-        const md = printHatchFile(synthesize(oldStr, newStr, adapter), adapter.name);
+        // what `generate` writes: the header, then the heading in the language's own name.
+        // Not `Generated-By` — it would change every golden on every release — and no
+        // `Generated-From`: the old version is a file here, not a git blob.
+        const header = printHeader({
+          target: `test/golden/${language}/generate/${newFile}`,
+          grammar: `${adapter.grammar.package}@${adapter.grammar.version}`,
+        });
+        const md = header + printHatchFile(synthesize(oldStr, newStr, adapter), adapter.name);
 
         const applied = applyAll(oldStr, parseHatchFile(md), adapter).source;
-        assert.equal(applied, newStr, 'applying the generated .md did not reproduce the new file');
+        assert.equal(applied, newStr, 'applying the generated patch did not reproduce the new file');
 
         if (UPDATE) {
           writeFileSync(goldenPath, md);
@@ -87,7 +101,7 @@ for (const language of languages) {
         assert.ok(
           existsSync(goldenPath),
           `no golden for ${language}/generate/${n}: run \`UPDATE_GOLDEN=1 npm test\`, ` +
-            'read the produced .md, and commit it only if it is what you meant',
+            'read the produced .hatch, and commit it only if it is what you meant',
         );
         assert.equal(
           md,
@@ -101,18 +115,21 @@ for (const language of languages) {
   if (isDir(applyDir)) {
     const files = readdirSync(applyDir);
     const numbers = files
-      .map((f) => /^test(\d+)\.md$/.exec(f)?.[1])
+      .map((f) => /^test(\d+)\.hatch$/.exec(f)?.[1])
       .filter(Boolean)
       .map(Number)
       .sort((a, b) => a - b);
 
     for (const n of numbers) {
       const sourceFile = files.find(
-        (f) => f.startsWith(`test${n}.`) && !f.endsWith('.md') && !f.startsWith(`test${n}.expected.`),
+        (f) => f.startsWith(`test${n}.`) && !f.endsWith('.hatch') && !f.startsWith(`test${n}.expected.`),
       );
-      if (sourceFile === undefined) continue;
+      if (sourceFile === undefined) {
+        test(`golden ${language}/apply/${n}`, () => assert.fail(`test${n}.hatch has no test${n}.<ext> source beside it`));
+        continue;
+      }
       const source = readFileSync(join(applyDir, sourceFile), 'utf8');
-      const md = readFileSync(join(applyDir, `test${n}.md`), 'utf8');
+      const md = readFileSync(join(applyDir, `test${n}.hatch`), 'utf8');
 
       const expectedPath = join(applyDir, `test${n}.expected${extname(sourceFile)}`);
 
@@ -121,11 +138,19 @@ for (const language of languages) {
         const run = (): string => applyAll(source, parseHatchFile(md), adapter).source;
 
         if (mustRefuse(source)) {
-          assert.throws(run, 'these instructions applied, and they must not');
+          // refused as a patch is refused — no place, or two; a crash is no refusal
+          assert.throws(
+            run,
+            (e: unknown) => e instanceof MatchError || e instanceof AmbiguityError,
+            'these instructions applied, and they must not',
+          );
           return;
         }
         const result = run();
         assert.notEqual(result, source, 'the patch applied but changed nothing');
+        // a header names this golden's own source; only a hand-written patch has none
+        const target = parseHatchFile(md).header?.target;
+        if (target !== undefined) assert.equal(target, `test/golden/${language}/apply/${sourceFile}`, 'Target names the source');
 
         if (UPDATE) {
           writeFileSync(expectedPath, result);

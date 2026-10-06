@@ -29,6 +29,10 @@ export interface HunkLink {
   readonly index: number;
   readonly status: LinkStatus;
   readonly mdSpan?: readonly [number, number];
+  /** the hunk's `# note` text, when it has one. Protocol 4. */
+  readonly note?: string;
+  /** lines of the `.hatch` from `# note` to its `# end`. Protocol 4. */
+  readonly noteSpan?: readonly [number, number];
   readonly base?: Span;
   readonly final?: Span;
   readonly finalText?: string;
@@ -84,6 +88,8 @@ interface Draft {
 
 function project(draft: Draft, staged: readonly (Edit | null)[], applied: string): HunkLink {
   const mdSpan = draft.hunk.mdSpan;
+  const note = draft.hunk.note;
+  const noted = note !== undefined ? { note: note.text, noteSpan: note.mdSpan } : {};
   if (draft.edit === null) {
     const failure = draft.failure;
     return {
@@ -91,6 +97,7 @@ function project(draft: Draft, staged: readonly (Edit | null)[], applied: string
       status: failure === undefined ? 'error' : statusOf(failure.kind),
       dependsOnEarlier: false,
       ...(mdSpan !== undefined ? { mdSpan } : {}),
+      ...noted,
       ...(failure !== undefined ? { failure } : {}),
     };
   }
@@ -121,6 +128,7 @@ function project(draft: Draft, staged: readonly (Edit | null)[], applied: string
     final: { start: finalStart, end: finalEnd },
     finalText: applied.slice(finalStart, finalEnd),
     ...(mdSpan !== undefined ? { mdSpan } : {}),
+    ...noted,
   };
 }
 
@@ -129,6 +137,12 @@ function backThrough(pos: number, edit: Edit): number {
   const writtenEnd = edit.start + edit.text.length;
   if (pos >= writtenEnd) return pos - edit.text.length + (edit.end - edit.start);
   return edit.start; // inside what the edit wrote — the baseline has no such place
+}
+
+/** Where `span` of the text before `edit` is after it — the projection `resolve` does
+ *  for `final`, for a caller that lays hunks one at a time (`generate/steer.ts`). */
+export function spanThrough(span: Span, edit: Edit): Span {
+  return { start: forwardThrough(span.start, edit), end: forwardThrough(span.end, edit) };
 }
 
 function forwardThrough(pos: number, edit: Edit): number {

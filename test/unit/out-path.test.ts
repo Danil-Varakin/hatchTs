@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 
 import { resolveOutPath } from '../../src/infra/out-path.ts';
 import { ensureParent } from '../../src/infra/fs.ts';
+import type { Project } from '../../src/infra/project.ts';
 import { ConfigError, PathError } from '../../src/core/errors.ts';
 
 function repo(): string {
@@ -21,8 +22,8 @@ const IN = (root: string): string => join(root, 'chromium_src', 'browser', 'core
 test('without --out the patch lands next to its file', () => {
   const root = repo();
   try {
-    const { path } = resolveOutPath({ inPath: IN(root), out: null, mirror: false });
-    assert.equal(path, `${IN(root)}.md`);
+    const { path } = resolveOutPath({ inPath: IN(root), out: null });
+    assert.equal(path, `${IN(root)}.hatch`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -32,17 +33,17 @@ test('a plain --out: a directory receives the name, any other path is used as is
   const root = repo();
   try {
     assert.equal(
-      resolveOutPath({ inPath: IN(root), out: join(root, 'patch.md') }).path,
-      join(root, 'patch.md'),
+      resolveOutPath({ inPath: IN(root), out: join(root, 'patch.hatch') }).path,
+      join(root, 'patch.hatch'),
     );
     assert.equal(
       resolveOutPath({ inPath: IN(root), out: `${join(root, 'flat')}/` }).path,
-      join(root, 'flat', 'apdate.cc.md'),
+      join(root, 'flat', 'apdate.cc.hatch'),
     );
     mkdirSync(join(root, 'existing'));
     assert.equal(
       resolveOutPath({ inPath: IN(root), out: join(root, 'existing') }).path,
-      join(root, 'existing', 'apdate.cc.md'),
+      join(root, 'existing', 'apdate.cc.hatch'),
     );
     assert.equal(resolveOutPath({ inPath: IN(root), out: '-' }).path, undefined);
   } finally {
@@ -50,16 +51,16 @@ test('a plain --out: a directory receives the name, any other path is used as is
   }
 });
 
-test('a relative --out is measured from the repository root even without mirroring', () => {
+test('a relative --out is measured from the repository root', () => {
   const root = repo();
   const cwd = process.cwd();
   try {
     process.chdir(tmpdir());
     assert.equal(
       resolveOutPath({ inPath: IN(root), out: 'out/' }).path,
-      join(root, 'out', 'apdate.cc.md'),
+      join(root, 'out', 'apdate.cc.hatch'),
     );
-    assert.equal(resolveOutPath({ inPath: IN(root), out: 'out/one.md' }).path, join(root, 'out', 'one.md'));
+    assert.equal(resolveOutPath({ inPath: IN(root), out: 'out/one.hatch' }).path, join(root, 'out', 'one.hatch'));
   } finally {
     process.chdir(cwd);
     rmSync(root, { recursive: true, force: true });
@@ -75,7 +76,7 @@ test('outside a repository a relative --out falls back to the input file, never 
     process.chdir(tmpdir());
     assert.equal(
       resolveOutPath({ inPath: join(loose, 'src', 'a.cc'), out: 'out/' }).path,
-      join(loose, 'src', 'out', 'a.cc.md'),
+      join(loose, 'src', 'out', 'a.cc.hatch'),
     );
   } finally {
     process.chdir(cwd);
@@ -83,7 +84,7 @@ test('outside a repository a relative --out falls back to the input file, never 
   }
 });
 
-test('the suffix is the caller\'s: apply writes a source file, generate a .md', () => {
+test('the suffix is the caller\'s: apply writes a source file, generate a .hatch', () => {
   const root = repo();
   try {
     assert.equal(
@@ -95,71 +96,61 @@ test('the suffix is the caller\'s: apply writes a source file, generate a .md', 
   }
 });
 
-test('mirroring rebuilds the path inside the repository under --out', () => {
-  const root = repo();
-  try {
-    const { path, repoRoot } = resolveOutPath({ inPath: IN(root), out: 'patches', mirror: true });
-    assert.equal(path, join(root, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.md'));
-    assert.equal(repoRoot, root);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
+// ── with an upstream (infra/project.ts) ──────────────────────────────────────────
 
-test('a relative --out is measured from the repository root, not the current directory', () => {
+/** A project whose config is at `configDir`, patching the code under `upstreamRoot`. */
+function project(configDir: string, upstreamRoot: string): Project {
+  return { configFile: join(configDir, 'hatch.config.json'), projectRoot: configDir, upstreamRoot };
+}
+
+test('upstream: the tree under <config dir>/<out> repeats the path from the upstream root', () => {
   const root = repo();
   const cwd = process.cwd();
   try {
     process.chdir(tmpdir());
-    const { path } = resolveOutPath({ inPath: IN(root), out: 'patches', mirror: true });
-    assert.equal(path, join(root, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.md'));
+    // "upstream": "." — the one-repository tree that generate.mirror used to give
+    const one = resolveOutPath({ inPath: IN(root), out: 'patches', project: project(root, root) });
+    assert.equal(one.path, join(root, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.hatch'));
+    assert.equal(one.target, 'chromium_src/browser/core/apdate.cc');
+    // Brave: the config in a subdirectory, the upstream its parent
+    const brave = join(root, 'brave');
+    mkdirSync(brave);
+    const inside = resolveOutPath({ inPath: IN(root), out: 'patches', project: project(brave, root) });
+    assert.equal(inside.path, join(brave, 'patches', 'chromium_src', 'browser', 'core', 'apdate.cc.hatch'));
+    // an absolute out receives the same tail; a .hatch named outright is that file
+    const elsewhere = join(tmpdir(), 'hatch-out-abs');
+    assert.equal(
+      resolveOutPath({ inPath: IN(root), out: elsewhere, project: project(brave, root) }).path,
+      join(elsewhere, 'chromium_src', 'browser', 'core', 'apdate.cc.hatch'),
+    );
+    assert.equal(resolveOutPath({ inPath: IN(root), out: 'one.hatch', project: project(brave, root) }).path, join(brave, 'one.hatch'));
   } finally {
     process.chdir(cwd);
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('an absolute --out receives the same mirrored tail', () => {
-  const root = repo();
-  const elsewhere = mkdtempSync(join(tmpdir(), 'hatch-patches-'));
-  try {
-    const { path } = resolveOutPath({ inPath: IN(root), out: elsewhere, mirror: true });
-    assert.equal(path, join(elsewhere, 'chromium_src', 'browser', 'core', 'apdate.cc.md'));
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(elsewhere, { recursive: true, force: true });
-  }
-});
-
-test('mirroring without an output root is refused', () => {
+test('upstream: no tree without a directory, and no patch for a file outside the upstream', () => {
   const root = repo();
   try {
-    assert.throws(() => resolveOutPath({ inPath: IN(root), out: null, mirror: true }), ConfigError);
-    assert.throws(() => resolveOutPath({ inPath: IN(root), out: '-', mirror: true }), ConfigError);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
-test('a file outside any repository is an error, not a guess', () => {
-  const loose = mkdtempSync(join(tmpdir(), 'hatch-loose-'));
-  try {
-    writeFileSync(join(loose, 'a.cc'), 'void a(){}\n');
+    const p = project(root, join(root, 'chromium_src'));
+    assert.throws(() => resolveOutPath({ inPath: IN(root), out: null, project: p }), ConfigError);
+    assert.throws(() => resolveOutPath({ inPath: IN(root), out: '-', project: p }), ConfigError);
+    writeFileSync(join(root, 'top.cc'), 'void a(){}\n');
     assert.throws(
-      () => resolveOutPath({ inPath: join(loose, 'a.cc'), out: 'patches', mirror: true }),
-      (e: unknown) => e instanceof ConfigError && /no directory with \.git/.test(e.message),
+      () => resolveOutPath({ inPath: join(root, 'top.cc'), out: 'patches', project: p }),
+      (e: unknown) => e instanceof ConfigError && /outside upstream/.test(e.message),
     );
   } finally {
-    rmSync(loose, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('the file at the repository root mirrors to the root of the output tree', () => {
+test('--out naming a file that is not .hatch is refused', () => {
   const root = repo();
   try {
-    writeFileSync(join(root, 'top.cc'), 'void a(){}\n');
-    const { path } = resolveOutPath({ inPath: join(root, 'top.cc'), out: 'patches', mirror: true });
-    assert.equal(path, join(root, 'patches', 'top.cc.md'));
+    assert.throws(() => resolveOutPath({ inPath: IN(root), out: 'p.md' }), /a patch is a \.hatch file/);
+    assert.equal(resolveOutPath({ inPath: IN(root), out: 'p.md', suffix: '' }).path, join(root, 'p.md'), 'apply writes code');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -170,11 +161,11 @@ test('a name without an extension is a directory, one with an extension is a fil
   try {
     assert.equal(
       resolveOutPath({ inPath: IN(root), out: 'patches' }).path,
-      join(root, 'patches', 'apdate.cc.md'),
+      join(root, 'patches', 'apdate.cc.hatch'),
       'patches is a directory, not a file called that',
     );
-    assert.equal(resolveOutPath({ inPath: IN(root), out: 'one.md' }).path, join(root, 'one.md'));
-    assert.equal(resolveOutPath({ inPath: IN(root), out: 'deep/one.md' }).path, join(root, 'deep', 'one.md'));
+    assert.equal(resolveOutPath({ inPath: IN(root), out: 'one.hatch' }).path, join(root, 'one.hatch'));
+    assert.equal(resolveOutPath({ inPath: IN(root), out: 'deep/one.hatch' }).path, join(root, 'deep', 'one.hatch'));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -185,7 +176,7 @@ test('a file sitting where a directory is needed is named, not reported as EEXIS
   try {
     writeFileSync(join(root, 'patches'), 'x');
     assert.throws(
-      () => ensureParent(join(root, 'patches', 'chromium_src', 'a.cc.md')),
+      () => ensureParent(join(root, 'patches', 'chromium_src', 'a.cc.hatch')),
       (e: unknown) =>
         e instanceof PathError &&
         e.exitCode === 1 &&
@@ -200,7 +191,7 @@ test('a file sitting where a directory is needed is named, not reported as EEXIS
 test('ensureParent creates the whole chain when nothing blocks it', () => {
   const root = repo();
   try {
-    ensureParent(join(root, 'a', 'b', 'c', 'x.md'));
+    ensureParent(join(root, 'a', 'b', 'c', 'x.hatch'));
     assert.ok(statSync(join(root, 'a', 'b', 'c')).isDirectory());
   } finally {
     rmSync(root, { recursive: true, force: true });

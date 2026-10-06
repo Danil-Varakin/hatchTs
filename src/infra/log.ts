@@ -1,6 +1,7 @@
-import { mkdirSync, openSync, writeSync, closeSync, statSync } from 'node:fs';
+import { mkdirSync, openSync, writeSync, closeSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { HatchError, MatchError, AmbiguityError, ParseError } from '../core/errors.ts';
+import { AmbiguityError, GitError, HatchError, MatchError, ParseError } from '../core/errors.ts';
+import { isDirectory } from './fs.ts';
 
 // ── where a log file goes ────────────────────────────────────────────────────────
 
@@ -21,14 +22,6 @@ export function resolveLogPath(
 
 function stamp(now: Date): string {
   return now.toISOString().replace(/:/g, '-').replace(/\..+$/, '');
-}
-
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 // ── the logger ───────────────────────────────────────────────────────────────────
@@ -121,15 +114,19 @@ function writeLine(fd: number, line: string): void {
 export interface ErrorContext {
   readonly source?: string | undefined;
   readonly sourcePath?: string | undefined;
-  readonly mdPath?: string | undefined;
+  /** the patch an error in it is about */
+  readonly patchPath?: string | undefined;
 }
 
 export function renderError(e: unknown, ctx: ErrorContext = {}): string {
   if (e instanceof MatchError) return renderMatchError(e, ctx);
   if (e instanceof AmbiguityError) return renderAmbiguityError(e, ctx);
   if (e instanceof ParseError) return renderParseError(e, ctx);
+  // The core names no flags (the service has none): the CLI puts the one a git refusal
+  // is about in front, `--branch nope: no such branch …`.
+  if (e instanceof GitError && e.flag !== undefined) return `${e.name}: ${e.flag} ${e.message}`;
   if (e instanceof HatchError) return `${e.name}: ${e.message}`;
-  return `error: ${(e as Error).message ?? String(e)}`;
+  return `error: ${e instanceof Error ? e.message : String(e)}`;
 }
 
 function renderMatchError(e: MatchError, ctx: ErrorContext): string {
@@ -174,8 +171,7 @@ function renderAmbiguityError(e: AmbiguityError, ctx: ErrorContext): string {
 }
 
 function renderParseError(e: ParseError, ctx: ErrorContext): string {
-  const head = ctx.mdPath === undefined ? `${e.name}: ${e.message}` : `${e.name}: ${ctx.mdPath}: ${e.message}`;
-  return head;
+  return ctx.patchPath === undefined ? `${e.name}: ${e.message}` : `${e.name}: ${ctx.patchPath}: ${e.message}`;
 }
 
 function where(source: string | undefined, offset: number | undefined): { line?: number; suffix: string } {

@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, rmSync } from 'node:fs';
+import { CONFIG_MIN, CONFIG_VERSION } from '../../src/infra/config/index.ts';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
 import { handle } from '../../src/service/handler.ts';
+
+const CLI_PATH = fileURLToPath(new URL('../../src/bin/hatch.ts', import.meta.url));
 import { serve } from '../../src/service/index.ts';
 import { PROTOCOL_VERSION } from '../../src/service/protocol.ts';
 import type { ProgressMessage, ResponseMessage, ServiceError } from '../../src/service/protocol.ts';
@@ -47,6 +50,42 @@ test('service: an unknown method is a refused call, not a crash', async () => {
   assert.match(error.message, /known: version, generate, resolve, apply/);
 });
 
+test('service: a line that is JSON but not a request object is answered, and the service goes on', async () => {
+  for (const line of ['null', '42', '"version"', '[1]']) {
+    const error = failed(await handle(JSON.parse(line)));
+    assert.equal(error.kind, 'BadRequest', line);
+    assert.match(error.message, /a request is a JSON object/, line);
+  }
+  const output: string[] = [];
+  const sink = new Writable({
+    write(chunk, _encoding, done) {
+      output.push(String(chunk));
+      done();
+    },
+  });
+  await serve(Readable.from(['{"id":1,"method":"version"}\nnull\n{"id":2,"method":"version"}\n']), sink);
+  const replies = output.join('').trim().split('\n').map((l) => JSON.parse(l) as ResponseMessage);
+  assert.deepEqual(replies.map((r) => [r.id, r.ok]).sort(), [[0, false], [1, true], [2, true]]);
+});
+
+test('service: a param of the wrong type is a BadRequest naming it, not whatever the code it reaches throws', async () => {
+  const cases: [string, Record<string, unknown>, RegExp][] = [
+    ['generate', { newText: NEW, baseText: BASE, path: 42 }, /params\.path must be a string \(got number\)/],
+    ['generate', { newText: NEW, baseText: BASE, language: 7 }, /params\.language must be a string/],
+    ['generate', { newText: NEW, baseText: BASE, language: 'cpp', limits: 'all' }, /params\.limits must be an object/],
+    ['resolve', { patch: 5, baseText: BASE, language: 'cpp' }, /params\.patch must be a string/],
+    ['config', { path: '/abs/a.cc', overrides: { language: 1 } }, /params\.overrides\.language must be a string/],
+    ['pair', { path: '/abs/a.cc', configPath: 3 }, /params\.configPath must be a string/],
+    ['configTemplate', { path: '/abs', version: '2' }, /params\.version must be a number/],
+    ['cancel', { id: '1' }, /params\.id must be a number/],
+  ];
+  for (const [method, params, expected] of cases) {
+    const error = failed(await handle({ id: 1, method, params }));
+    assert.equal(error.kind, 'BadRequest', `${method} ${JSON.stringify(params)}`);
+    assert.match(error.message, expected);
+  }
+});
+
 test('service: params that are not an object are refused in plain words', async () => {
   const error = failed(await handle({ id: 3, method: 'resolve' }));
   assert.equal(error.kind, 'BadRequest');
@@ -64,14 +103,14 @@ test('service generate: the .md, the hunk coordinates and the reproducibility fl
     }),
   );
 
-  assert.match(String(result['md']), /^# match cpp$/m);
+  assert.match(String(result['patch']), /^# match cpp$/m);
   assert.equal(result['reproducesNew'], true, 'the patch reproduces the new text');
 
   const hunks = result['hunks'] as HunkLink[];
-  assert.ok(hunks.length >= 1);
+  assert.equal(hunks.length, 1, 'one inserted line, one hunk');
   for (const hunk of hunks) {
     assert.equal(hunk.status, 'ok');
-    assert.ok(hunk.mdSpan !== undefined, 'coordinates in the .md');
+    assert.ok(hunk.mdSpan !== undefined, 'coordinates in the .hatch');
     assert.ok(hunk.base !== undefined && hunk.final !== undefined, 'coordinates on both sides');
   }
   assert.ok(NEW.includes(hunks[0]!.finalText!.trim()), 'the inserted text is there in the new file');
@@ -85,7 +124,7 @@ test('service generate: the language comes from path when none is given', async 
       params: { baseText: BASE, newText: NEW, path: join(tmpdir(), 'chrome', 'browser', 'feature_list.cc') },
     }),
   );
-  assert.match(String(result['md']), /^# match cpp$/m);
+  assert.match(String(result['patch']), /^# match cpp$/m);
 });
 
 // ── generate: the base named in git instead of sent ──────────────────────────
@@ -108,7 +147,7 @@ test('service generate: baseGit {} is the last commit of the branch we are on', 
     const result = ok(await generateGit(repo, { baseGit: {} }));
     assert.equal(result['baseSpec'], 'HEAD:src/core/f.cc');
     assert.equal(result['reproducesNew'], true);
-    assert.match(String(result['md']), /int a = 4;/);
+    assert.match(String(result['patch']), /int a = 4;/);
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
   }
@@ -157,6 +196,28 @@ test('service generate: exactly one base — neither and both are refused', asyn
   }
 });
 
+test('service generate: no base sent — the one generate.base names in the config (schema 2)', async () => {
+  const repo = buildRepo('hatch-svc-cfgbase-');
+  try {
+    writeFileSync(
+      join(repo.dir, 'hatch.config.json'),
+      JSON.stringify({ version: 2, generate: { base: { commit: repo.a } } }),
+    );
+    const fromConfig = ok(await generateGit(repo, {}));
+    assert.equal(fromConfig['baseSpec'], `${repo.a}:src/core/f.cc`);
+    const config = fromConfig['config'] as { origins: Record<string, string> };
+    assert.match(config.origins['generate.base.commit']!, /^config /);
+
+    // A base in the request replaces the config's whole, and the origins say so.
+    const sent = ok(await generateGit(repo, { baseGit: { branch: 'side' } }));
+    assert.equal(sent['baseSpec'], 'side:src/core/f.cc');
+    const origins = (sent['config'] as { origins: Record<string, string> }).origins;
+    assert.equal(origins['generate.base.commit'], 'flag params.baseGit');
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true });
+  }
+});
+
 test('service generate: baseGit without a path cannot know which repository, and says so', async () => {
   const error = failed(
     await handle({ id: 32, method: 'generate', params: { newText: NEW, language: 'cpp', baseGit: {} } }),
@@ -189,12 +250,19 @@ test('service generate: a git refusal crosses the wire as GitError, with the rev
     const error = failed(await generateGit(repo, { baseGit: { branch: 'nope' } }));
     assert.equal(error.kind, 'GitError');
     assert.equal(error.exitCode, 1);
-    assert.match(error.message, /--branch nope: no such branch/);
-    assert.equal(error.detail?.['revision'], 'nope');
+    // X3: the service has no flags, so the message names none
+    assert.match(error.message, /^nope: no such branch/);
+    // X2: why, for the client to switch on
+    assert.deepEqual(error.detail, { reason: 'no-such-branch', revision: 'nope' });
 
     const off = failed(await generateGit(repo, { baseGit: { branch: repo.branch, commit: repo.s } }));
     assert.equal(off.kind, 'GitError');
     assert.match(off.message, /is not on branch/);
+    assert.equal(off.detail?.['reason'], 'not-on-branch');
+
+    // the CLI says the same with the flag in front
+    const cli = spawnSync(process.execPath, ['--experimental-strip-types', CLI_PATH, 'generate', '--in', repo.inPath, '--branch', 'nope', '--no-config'], { encoding: 'utf8' });
+    assert.match(cli.stderr, /--branch nope: no such branch/);
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
   }
@@ -204,7 +272,7 @@ test('service resolve and apply: the base named in git, and the reply says what 
   const repo = buildRepo('hatch-svc-apply-');
   try {
     const md = hatchMd([{ match: '... int a = 2; >>> ...', patch: 'X();' }]);
-    const params = { md, path: repo.inPath, language: 'cpp', baseGit: {} };
+    const params = { patch: md, path: repo.inPath, language: 'cpp', baseGit: {} };
 
     const applied = ok(await handle({ id: 40, method: 'apply', params }));
     assert.equal(applied['baseSpec'], 'HEAD:src/core/f.cc');
@@ -214,7 +282,7 @@ test('service resolve and apply: the base named in git, and the reply says what 
     assert.equal(resolved['baseSpec'], `${repo.b}:src/core/f.cc`);
     assert.equal((resolved['hunks'] as HunkLink[])[0]!.status, 'ok');
 
-    const sent = ok(await handle({ id: 42, method: 'apply', params: { md, baseText: version(2), language: 'cpp' } }));
+    const sent = ok(await handle({ id: 42, method: 'apply', params: { patch: md, baseText: version(2), language: 'cpp' } }));
     assert.equal(sent['baseSpec'], null);
   } finally {
     rmSync(repo.dir, { recursive: true, force: true });
@@ -226,11 +294,11 @@ test('service apply: the same one-base rule, and a pipe has nobody to ask', asyn
   try {
     const md = hatchMd([{ match: '... int a = 2; >>> ...', patch: 'X();' }]);
     const both = failed(await handle({ id: 43, method: 'apply',
-      params: { md, path: repo.inPath, language: 'cpp', baseText: 'x', baseGit: {} } }));
+      params: { patch: md, path: repo.inPath, language: 'cpp', baseText: 'x', baseGit: {} } }));
     assert.match(both.message, /exactly one base/);
 
     const off = failed(await handle({ id: 44, method: 'resolve',
-      params: { md, path: repo.inPath, language: 'cpp', baseGit: { branch: repo.branch, commit: repo.s } } }));
+      params: { patch: md, path: repo.inPath, language: 'cpp', baseGit: { branch: repo.branch, commit: repo.s } } }));
     assert.equal(off.kind, 'GitError', 'refused: there is no terminal on a pipe to agree');
     assert.match(off.message, /is not on branch/);
   } finally {
@@ -279,7 +347,7 @@ async function generated(params: Record<string, unknown>): Promise<Record<string
 }
 
 test('service generate: hatch.config.json is found upwards from the file and applied', async () => {
-  const p = project('{"version":1,"generate":{"bridgeGap":3,"siblings":{"min":2}}}');
+  const p = project('{"version":2,"generate":{"bridgeGap":3,"siblings":{"min":2}}}');
   try {
     const result = await generated({ path: p.file });
     const config = result['config'] as { file: string; settings: Record<string, unknown>; origins: Record<string, string> };
@@ -294,7 +362,7 @@ test('service generate: hatch.config.json is found upwards from the file and app
 });
 
 test('service generate: a sent param beats the config, as a flag beats the file', async () => {
-  const p = project('{"version":1,"generate":{"bridgeGap":3}}');
+  const p = project('{"version":2,"generate":{"bridgeGap":3}}');
   try {
     const result = await generated({ path: p.file, bridgeGap: 0 });
     const config = result['config'] as { settings: Record<string, unknown>; origins: Record<string, string> };
@@ -307,7 +375,7 @@ test('service generate: a sent param beats the config, as a flag beats the file'
 });
 
 test('service generate: a RELATIVE path is refused, not silently stripped of its config', async () => {
-  const p = project('{"version":1,"generate":{"bridgeGap":3}}');
+  const p = project('{"version":2,"generate":{"bridgeGap":3}}');
   try {
     const error = failed(
       await handle({ id: 40, method: 'generate', params: { baseText: BASE, newText: NEW, path: 'a.cc' } }),
@@ -324,7 +392,7 @@ test('service resolve: a relative path is refused there too', async () => {
     await handle({
       id: 41,
       method: 'resolve',
-      params: { md: hatchMd([{ match: '...\n>>>\n  one();\n...' }]), baseText: BASE, path: 'a.cc' },
+      params: { patch: hatchMd([{ match: '...\n>>>\n  one();\n...' }]), baseText: BASE, path: 'a.cc' },
     }),
   );
   assert.equal(error.kind, 'BadRequest');
@@ -332,7 +400,7 @@ test('service resolve: a relative path is refused there too', async () => {
 });
 
 test('service generate: a broken config refuses the CALL and names the file in detail', async () => {
-  const p = project('{"version":1,"generate":{"nosuchkey":1}}');
+  const p = project('{"version":2,"generate":{"nosuchkey":1}}');
   try {
     const error = failed(
       await handle({
@@ -353,7 +421,7 @@ test('service generate: a broken config refuses the CALL and names the file in d
 
 test('service resolve: the language is read from the # match heading, no path needed', async () => {
   const md = hatchMd([{ match: '... one(); >>> ...', patch: 'two();' }]);
-  const result = ok(await handle({ id: 7, method: 'resolve', params: { md, baseText: BASE } }));
+  const result = ok(await handle({ id: 7, method: 'resolve', params: { patch: md, baseText: BASE } }));
 
   const hunks = result['hunks'] as HunkLink[];
   assert.equal(hunks.length, 1);
@@ -363,7 +431,7 @@ test('service resolve: the language is read from the # match heading, no path ne
 
 test('service resolve: a broken anchor keeps the call fine and marks the hunk failed', async () => {
   const md = hatchMd([{ match: '... nosuchcall(); >>> ...', patch: 'X();' }]);
-  const result = ok(await handle({ id: 8, method: 'resolve', params: { md, baseText: BASE } }));
+  const result = ok(await handle({ id: 8, method: 'resolve', params: { patch: md, baseText: BASE } }));
 
   const hunk = (result['hunks'] as HunkLink[])[0]!;
   assert.equal(hunk.status, 'no-match');
@@ -373,7 +441,7 @@ test('service resolve: a broken anchor keeps the call fine and marks the hunk fa
 
 test('service resolve: an unparsable .md refuses the CALL and gives the line', async () => {
   const error = failed(
-    await handle({ id: 9, method: 'resolve', params: { md: '# match cpp\nno gutter here\n# end\n', baseText: BASE } }),
+    await handle({ id: 9, method: 'resolve', params: { patch: '# match cpp\nno gutter here\n# end\n', baseText: BASE } }),
   );
   assert.equal(error.kind, 'ParseError');
   assert.equal(error.exitCode, 2);
@@ -382,7 +450,7 @@ test('service resolve: an unparsable .md refuses the CALL and gives the line', a
 
 test('service apply: hands back the resulting text along with the coordinates', async () => {
   const md = hatchMd([{ match: '... one(); >>> ...', patch: 'two();' }]);
-  const result = ok(await handle({ id: 10, method: 'apply', params: { md, baseText: BASE } }));
+  const result = ok(await handle({ id: 10, method: 'apply', params: { patch: md, baseText: BASE } }));
 
   assert.ok(String(result['text']).includes('one();two();'), String(result['text']));
   assert.equal((result['hunks'] as HunkLink[]).length, 1);
@@ -390,7 +458,7 @@ test('service apply: hands back the resulting text along with the coordinates', 
 
 // ── the pipe end to end ───────────────────────────────────────────────────────
 
-test('serve: one JSON line in, one line out, in order', async () => {
+test('serve: one JSON line in, one line out, matched by id', async () => {
   const lines: string[] = [];
   const input = readableOf([
     JSON.stringify({ id: 1, method: 'version' }),
@@ -403,15 +471,69 @@ test('serve: one JSON line in, one line out, in order', async () => {
 
   const answers = lines.map((l) => JSON.parse(l) as ResponseMessage);
   assert.deepEqual(
-    answers.map((a) => a.id),
-    [1, 0, 2],
+    answers.map((a) => a.id).sort(),
+    [0, 1, 2],
     'the blank line is skipped and the junk gets an answer with id 0',
   );
-  assert.equal(answers[1]!.ok, false);
+  assert.equal(answers.find((a) => a.id === 0)!.ok, false);
+});
+
+// A generate of one change per function: long enough to be caught running.
+const MANY_OLD = Array.from({ length: 40 }, (_, i) => `int f${i}(int a) {\n  return ${i};\n}\n`).join('');
+const MANY_NEW = MANY_OLD.replace(/return (\d+);/g, 'return $1 + 1;');
+const longGenerate = (id: number): string =>
+  JSON.stringify({ id, method: 'generate', params: { baseText: MANY_OLD, newText: MANY_NEW, language: 'cpp' } });
+
+function repliesOf(lines: readonly string[]): Map<number, ResponseMessage> {
+  const replies = lines.map((l) => JSON.parse(l) as ResponseMessage | ProgressMessage).filter((m) => !('method' in m));
+  return new Map((replies as ResponseMessage[]).map((r) => [r.id, r]));
+}
+
+test('serve: a reply goes out when it is ready — a quick request is not held behind a generate', async () => {
+  const lines: string[] = [];
+  await serve(readableOf([longGenerate(1), JSON.stringify({ id: 2, method: 'version' })]), writableTo(lines));
+
+  const order = lines.map((l) => JSON.parse(l) as ResponseMessage | ProgressMessage).filter((m) => !('method' in m));
+  assert.deepEqual(order.map((r) => (r as ResponseMessage).id), [2, 1]);
+  assert.ok(order.every((r) => (r as ResponseMessage).ok), lines.join('\n'));
+});
+
+test('serve: cancel stops a running generate, which answers Cancelled; an unknown id is no error', async () => {
+  const lines: string[] = [];
+  await serve(
+    readableOf([
+      longGenerate(1),
+      JSON.stringify({ id: 2, method: 'cancel', params: { id: 1 } }),
+      JSON.stringify({ id: 3, method: 'cancel', params: { id: 99 } }),
+    ]),
+    writableTo(lines),
+  );
+
+  const replies = repliesOf(lines);
+  assert.deepEqual(ok(replies.get(2)!), { cancelled: true });
+  assert.deepEqual(ok(replies.get(3)!), { cancelled: false });
+  const cancelled = failed(replies.get(1)!);
+  assert.equal(cancelled.kind, 'Cancelled');
+  assert.equal(cancelled.exitCode, 1);
+});
+
+test('cancel: params.id must be a number; handled alone, there is nothing to cancel', async () => {
+  assert.equal(failed(await handle({ id: 1, method: 'cancel', params: {} })).kind, 'BadRequest');
+  assert.deepEqual(ok(await handle({ id: 1, method: 'cancel', params: { id: 5 } })), { cancelled: false });
+});
+
+test('serve: started as dist/service/index.js — the way the extension starts it — it serves still', () => {
+  const entry = fileURLToPath(new URL('../../src/service/index.ts', import.meta.url));
+  const stdout = execFileSync('node', ['--experimental-strip-types', entry], {
+    input: `${JSON.stringify({ id: 1, method: 'version' })}\n`,
+    encoding: 'utf8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  assert.equal((JSON.parse(stdout.trim()) as { ok: boolean }).ok, true);
 });
 
 test('serve: the process answers version and writes nothing else to stdout', () => {
-  const entry = fileURLToPath(new URL('../../src/service/index.ts', import.meta.url));
+  const entry = fileURLToPath(new URL('../../src/bin/service.ts', import.meta.url));
   const stdout = execFileSync('node', ['--experimental-strip-types', entry], {
     input: `${JSON.stringify({ id: 1, method: 'version' })}\n`,
     encoding: 'utf8',
@@ -440,29 +562,31 @@ function writableTo(sink: string[]): NodeJS.WritableStream {
   });
 }
 
-test('service generate: outPath follows generate.out and generate.mirror', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'hatch-service-mirror-'));
+test('service generate: outPath follows generate.out and upstream', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hatch-service-tree-'));
   try {
     mkdirSync(join(root, '.git'));
     mkdirSync(join(root, 'chromium_src', 'browser'), { recursive: true });
-    writeFileSync(join(root, 'hatch.config.json'), '{"version":1,"generate":{"out":"patches","mirror":true}}');
+    writeFileSync(join(root, 'hatch.config.json'), '{"version":2,"upstream":".","generate":{"out":"patches"}}');
     const file = join(root, 'chromium_src', 'browser', 'a.cc');
     writeFileSync(file, BASE);
 
     const result = ok(
       await handle({ id: 30, method: 'generate', params: { baseText: BASE, newText: NEW, path: file } }),
     );
-    assert.equal(result['outPath'], join(root, 'patches', 'chromium_src', 'browser', 'a.cc.md'));
+    assert.equal(result['outPath'], join(root, 'patches', 'chromium_src', 'browser', 'a.cc.hatch'));
+    assert.equal(result['outExists'], false);
+    assert.equal(result['outTarget'], null);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('service generate: mirroring without an output root is a call-level failure', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'hatch-service-mirror-'));
+test('service generate: an upstream without an output root is a call-level failure; schema 1 is not read', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'hatch-service-tree-'));
   try {
     mkdirSync(join(root, '.git'));
-    writeFileSync(join(root, 'hatch.config.json'), '{"version":1,"generate":{"mirror":true}}');
+    writeFileSync(join(root, 'hatch.config.json'), '{"version":2,"upstream":"."}');
     const file = join(root, 'a.cc');
     writeFileSync(file, BASE);
 
@@ -470,7 +594,11 @@ test('service generate: mirroring without an output root is a call-level failure
       await handle({ id: 31, method: 'generate', params: { baseText: BASE, newText: NEW, path: file } }),
     );
     assert.equal(error.kind, 'ConfigError');
-    assert.match(error.message, /needs an output root/);
+    assert.match(error.message, /set generate\.out .* to a directory/);
+
+    writeFileSync(join(root, 'hatch.config.json'), '{"version":1,"generate":{"out":"patches"}}');
+    const old = failed(await handle({ id: 32, method: 'generate', params: { baseText: BASE, newText: NEW, path: file } }));
+    assert.match(old.message, /no longer reads .*move the file to v2/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -486,7 +614,7 @@ test('service generate: without a config the patch belongs next to its file', as
     const result = ok(
       await handle({ id: 32, method: 'generate', params: { baseText: BASE, newText: NEW, path: file } }),
     );
-    assert.equal(result['outPath'], `${file}.md`);
+    assert.equal(result['outPath'], `${file}.hatch`);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -497,7 +625,7 @@ test('service generate: a file where a directory has to go is named, not left to
   try {
     mkdirSync(join(root, '.git'));
     writeFileSync(join(root, 'patches'), 'x');
-    writeFileSync(join(root, 'hatch.config.json'), '{"version":1,"generate":{"out":"patches","mirror":true}}');
+    writeFileSync(join(root, 'hatch.config.json'), '{"version":2,"upstream":".","generate":{"out":"patches"}}');
     const file = join(root, 'a.cc');
     writeFileSync(file, BASE);
 
@@ -520,12 +648,62 @@ test('service: language "" is no language — generate and resolve alike go by t
     params: { newText: 'int a = 2;\n', baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
   });
   assert.ok(gen.ok, JSON.stringify(gen));
-  const md = (gen.result as { md: string }).md;
+  const md = (gen.result as { patch: string }).patch;
   assert.match(md, /^# match cpp$/m);
   const res = await handle({
     id: 2,
     method: 'resolve',
-    params: { md: md.replace('# match cpp', '# match'), baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
+    params: { patch: md.replace('# match cpp', '# match'), baseText: 'int a = 1;\n', language: '', path: '/abs/x.cc' },
   });
   assert.ok(res.ok, JSON.stringify(res));
+});
+
+// ── configTemplate (protocol 4) ──────────────────────────────────────────────
+
+test('configTemplate: the text, where the core would look, whether it is there, every version', async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'hatch-svc-cfg-')));
+  try {
+    mkdirSync(join(dir, '.git'));
+    mkdirSync(join(dir, 'src'));
+    writeFileSync(join(dir, 'src', 'a.cpp'), '');
+    const result = ok(
+      await handle({ id: 1, method: 'configTemplate', params: { path: join(dir, 'src', 'a.cpp'), settings: { 'generate.out': 'patches/' } } }),
+    );
+    // PROTOCOL.md: $schema, version, then only the settings sent
+    const written = JSON.parse(String(result['text'])) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(written), ['$schema', 'version', 'generate']);
+    assert.equal(written['version'], CONFIG_VERSION);
+    assert.deepEqual(written['generate'], { out: 'patches/' });
+    assert.equal(result['version'], CONFIG_VERSION);
+    assert.equal(result['suggestedPath'], join(dir, 'hatch.config.json'));
+    assert.equal(result['exists'], false);
+    const versions = result['versions'] as { version: number; summary: string }[];
+    assert.deepEqual(versions.map((v) => v.version), Array.from({ length: CONFIG_VERSION - CONFIG_MIN + 1 }, (_, i) => CONFIG_MIN + i));
+    for (const v of versions) assert.match(v.summary, new RegExp(`^v${v.version}: `));
+
+    writeFileSync(join(dir, 'hatch.config.json'), '{}');
+    const again = ok(await handle({ id: 2, method: 'configTemplate', params: { path: dir } }));
+    assert.equal(again['exists'], true, 'a folder as path works too');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('configTemplate: path must be absolute; a bad key is a ConfigError listing every key', async () => {
+  assert.equal(failed(await handle({ id: 1, method: 'configTemplate', params: { path: 'rel' } })).kind, 'BadRequest');
+  assert.equal(failed(await handle({ id: 1, method: 'configTemplate', params: {} })).kind, 'BadRequest');
+  const error = failed(
+    await handle({ id: 1, method: 'configTemplate', params: { path: tmpdir(), settings: { generate: { a: 1, b: 2 } } } }),
+  );
+  assert.equal(error.kind, 'ConfigError');
+  assert.equal(error.exitCode, 5);
+  assert.deepEqual(error.detail, {
+    version: CONFIG_VERSION,
+    keys: [
+      { path: 'generate.a', since: null, until: null },
+      { path: 'generate.b', since: null, until: null },
+    ],
+  });
+  const newer = failed(await handle({ id: 1, method: 'configTemplate', params: { path: tmpdir(), version: CONFIG_VERSION + 1 } }));
+  assert.match(newer.message, /update hatch/);
 });

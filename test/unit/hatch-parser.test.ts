@@ -208,11 +208,122 @@ test('FAIL: file has no match/patch pairs at all', () => {
   expectParseError('just text, no hatch here\n', 'no match/patch pairs');
 });
 
-test('FAIL: text between hunks', () => {
-  expectParseError(
+test('FAIL: text between hunks — the hint names the note block', () => {
+  const err = expectParseError(
     wrapMatch('foo >>>') + '\nstray commentary\n' + wrapMatch('bar >>>'),
-    'text between hunks',
+    'text between hunks must be in a note block',
   );
+  assert.match(err.hint ?? '', /# note/);
+});
+
+// ── # note … # end: the author's comment on the hunk after it ─────────────────
+
+const HUNK = ['# match c', '    foo >>>', '# end', '# patch', '    X', '# end'];
+
+test('note: attaches to the next hunk, prose in any column, edges trimmed', () => {
+  const file = parseHatchFile(md(
+    ...HUNK, '',
+    '# note', '', 'Why: the driver hangs', '  without WAIT.', '', '# end', '',
+    ...HUNK,
+  ));
+  assert.equal(file.hunks[0]!.note, undefined);
+  assert.deepStrictEqual(file.hunks[1]!.note, {
+    text: 'Why: the driver hangs\n  without WAIT.',
+    mdSpan: [8, 13],
+  });
+  assert.deepStrictEqual(file.hunks[1]!.mdSpan, [15, 20]);
+});
+
+test('note: before the first hunk, after the header', () => {
+  const file = parseHatchFile(md(
+    'Hatch: 1', 'Target: a.c', '', '# note', 'first', '# end', '', ...HUNK,
+  ));
+  assert.deepStrictEqual(file.hunks[0]!.note, { text: 'first', mdSpan: [4, 6] });
+});
+
+// ── the header (core/header.ts, VERSIONING.md H1–H3) ────────────────────────────
+
+test('header: the fields hatch knows, names in any case, unknown ones read past', () => {
+  const file = parseHatchFile(md(
+    'Hatch: 1', 'target: src/a.c', 'Generated-From: 3f2a9c1e', 'GENERATED-BY: hatch 0.4.0',
+    'Grammar: tree-sitter-c@0.23.0', 'X-Reviewed-By: someone', '', ...HUNK,
+  ));
+  assert.deepStrictEqual(file.header, {
+    format: 1,
+    target: 'src/a.c',
+    generatedFrom: '3f2a9c1e',
+    generatedBy: 'hatch 0.4.0',
+    grammar: 'tree-sitter-c@0.23.0',
+  });
+  assert.deepStrictEqual(file.hunks[0]!.mdSpan![0], 8, 'lines are counted from the top of the file');
+});
+
+test('header: none is format 1 — a hand-written patch, or prose before the hunks', () => {
+  assert.deepStrictEqual(parseHatchFile(md(...HUNK)).header, { format: 1 });
+  assert.deepStrictEqual(parseHatchFile(md('Target: a.c', '', ...HUNK)).header, { format: 1 }, 'Hatch must come first');
+  assert.deepStrictEqual(parseHatchFile(md('some prose', '', ...HUNK)).header, { format: 1 });
+});
+
+test('header: a format out of the range names the side to update', () => {
+  assert.match(expectParseError(md('Hatch: 2', '', ...HUNK)).hint ?? '', /update hatch/);
+  assert.match(expectParseError(md('Hatch: 0', '', ...HUNK)).hint ?? '', /regenerate the patch/);
+  expectParseError(md('Hatch: one', '', ...HUNK), 'format number');
+});
+
+test('header: Target out of its root is refused; a line that is no field ends nothing', () => {
+  for (const bad of ['../x.c', 'a/../../x.c', '/etc/passwd', 'C:\\x.c']) {
+    const e = expectParseError(md('Hatch: 1', `Target: ${bad}`, '', ...HUNK), 'Target');
+    assert.equal(e.mdLine, 2, bad);
+  }
+  expectParseError(md('Hatch: 1', 'not a field', '', ...HUNK), "'Name: value'");
+});
+
+test('note: the matcher never sees it — same pattern with or without', () => {
+  const plain = parseHatchFile(md(...HUNK));
+  const noted = parseHatchFile(md('# note', 'foo >>> ...', '# end', ...HUNK));
+  assert.deepStrictEqual(strip(noted.hunks[0]!.match), strip(plain.hunks[0]!.match));
+  assert.equal(noted.hunks[0]!.patch, plain.hunks[0]!.patch);
+});
+
+test('note: a preamble that only looks like a note stays prose (F1)', () => {
+  for (const pre of [
+    ['# Note', 'an old heading, never closed'],
+    ['# note', 'closed', '# end', 'but text follows'],
+    ['# note', 'x', '# patch', 'y', '# end'],
+  ]) {
+    const file = parseHatchFile(md(...pre, '', ...HUNK));
+    assert.equal(file.hunks[0]!.note, undefined, pre.join(' / '));
+  }
+});
+
+test('FAIL: a note with no hunk after it', () => {
+  expectParseError(md(...HUNK, '# note', 'dangling', '# end'), 'no hunk after it');
+});
+
+test('FAIL: two notes for one hunk', () => {
+  expectParseError(
+    md(...HUNK, '# note', 'a', '# end', '# note', 'b', '# end', ...HUNK),
+    'second note',
+  );
+});
+
+test('FAIL: a note not closed before the next heading', () => {
+  expectParseError(md(...HUNK, '# note', 'forgot the end', ...HUNK), 'note block is not closed');
+});
+
+test('FAIL: a note not closed at the end of the file', () => {
+  expectParseError(md(...HUNK, '# note', 'forgot the end'), 'note block is not closed');
+});
+
+test('FAIL: a note between match and patch', () => {
+  expectParseError(
+    md('# match c', '    foo >>>', '# end', '# note', 'x', '# end', '# patch', '    X', '# end'),
+    'patch header is expected',
+  );
+});
+
+test('FAIL: a note heading inside a match block', () => {
+  expectParseError(md('# match c', '    foo >>>', '# note', 'x', '# end'), 'not closed');
 });
 
 test('FAIL: the old fenced format is reported by name, with the fix in the hint', () => {
@@ -291,4 +402,20 @@ test('prose before the first "# match" is ignored', () => {
 test('mdSpan of a hunk spans the "# match" heading and the closing "# end"', () => {
   const file = parseHatchFile(md('# match cpp', '    foo >>>', '# end', '# patch', '    X', '# end'));
   assert.deepStrictEqual(file.hunks[0]!.mdSpan, [1, 6]);
+});
+
+test('header: the known fields in their order, each once; unknown ones anywhere after Hatch', () => {
+  parseHatchFile(md('Hatch: 1', 'X-Note: a', 'Target: a.c', 'X-Other: b', 'Grammar: g', '', ...HUNK));
+  parseHatchFile(md('Hatch: 1', 'Grammar: g', '', ...HUNK)); // a field left out keeps the rest in order
+  const swapped = expectParseError(md('Hatch: 1', 'Generated-By: hatch 0.4.0', 'Target: a.c', '', ...HUNK), 'Target must come before Generated-By');
+  assert.equal(swapped.mdLine, 3);
+  expectParseError(md('Hatch: 1', 'Target: a.c', 'target: b.c', '', ...HUNK), 'twice');
+});
+
+test('one patch, one language — the same name in another case is the same language', () => {
+  const hunk = (heading: string): string => `${heading}\n    ...\n    a();\n    >>>\n    ...\n# end\n# patch\n    b();\n# end\n`;
+  const file = parseHatchFile(`${hunk('# match cpp')}\n${hunk('# match CPP')}`);
+  assert.equal(file.hunks.length, 2);
+  assert.equal(file.language, 'cpp', 'the first spelling is the one kept');
+  assert.throws(() => parseHatchFile(`${hunk('# match cpp')}\n${hunk('# match c')}`), /already uses 'cpp'/);
 });

@@ -50,10 +50,10 @@ const REGISTRY: readonly LanguageAdapter[] = [...new Set(NAMES.values())];
 
 // ...and every extension a language claims in its own folder, spelled without the dot:
 // hatch 0.2.0 and earlier wrote that word into `# match` (`in.mm` → `# match mm`), and
-// every such .md has to apply the same forever, so `apply` reads each one back as the
+// every such patch has to apply the same forever, so `apply` reads each one back as the
 // same language. Derived, not listed: a language that claims an extension gets its name
 // with it, and the two cannot drift apart. The map stays static — built from the
-// adapters imported above, never from a name that arrived in a .md.
+// adapters imported above, never from a name that arrived in a patch.
 const ALIASES: ReadonlyMap<string, LanguageAdapter> = withExtensionWords(NAMES, REGISTRY);
 
 function withExtensionWords(
@@ -105,7 +105,7 @@ export function adapterForFile(path: string): LanguageAdapter {
 
 /** The adapter for a job, from the most explicit source that names a language: the
  *  one named outright (`--language`, `params.language`), else the `# match` heading of
- *  the .md, else the extension of the file. The one order for apply, generate and the
+ *  the patch, else the extension of the file. The one order for apply, generate and the
  *  service; an empty name counts as not named, wherever it comes from. */
 export function pickAdapter(from: {
   readonly language?: string | undefined;
@@ -131,8 +131,8 @@ export function extensionOf(path: string): string {
 
 /** A heading is a promise about the file it will be applied to: `apply` reads
  *  `# match <word>` back through this same registry. A word that leads to another
- *  language — or to none — would make a .md that `apply` refuses or reads wrongly, so it
- *  is refused while the .md is still being written. An empty word writes a bare
+ *  language — or to none — would make a patch that `apply` refuses or reads wrongly, so
+ *  it is refused while the patch is still being written. An empty word writes a bare
  *  `# match`, and `apply` then goes by the extension of the file it is given. */
 export function checkHeading(word: string, adapter: LanguageAdapter): void {
   if (word.trim() === '') return;

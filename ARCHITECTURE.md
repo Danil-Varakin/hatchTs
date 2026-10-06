@@ -38,7 +38,7 @@ delimited by Markdown fences — and chromium raw strings contain fences (embedd
 documentation, markdown in test data). A bare fence inside a patch body closed the
 block early, the file parsed and applied without complaint, and one line silently
 vanished from the output. Lengthening the fence when the payload contains one was
-rejected: it repairs only what *our* printer emits, while a hand-written `.md` —
+rejected: it repairs only what *our* printer emits, while a hand-written `.hatch` —
 the primary input — keeps the trap.
 
 The rule that replaced it is checkable in one sentence, which is the point. Its
@@ -67,7 +67,7 @@ Complexity is split along two physical axes that meet at one narrow contract:
 The test for a correct boundary: *if adding a language forces a change in
 `core/`, the boundary is wrong.* A new language is one new folder under `lang/`,
 plus two lines in the adapter registry (`lang/adapter.ts`, a closed whitelist —
-never a dynamic `import()` of a name taken from an untrusted `.md`).
+never a dynamic `import()` of a name taken from an untrusted `.hatch`).
 
 ```ts
 interface BlockSpan {          // canonical coordinates
@@ -148,8 +148,8 @@ interface MatchPattern { steps: Step[]; }
 interface Hunk { match: MatchPattern; patch: string; mdSpan?: [number, number]; }
 ```
 
-`mdSpan` is where the literal came from in the `.md`, used for error messages. It
-is optional on `Hunk` because a synthesized hunk has no `.md` origin.
+`mdSpan` is where the literal came from in the `.hatch`, used for error messages. It
+is optional on `Hunk` because a synthesized hunk has no `.hatch` origin.
 
 **Marks anchor to "symbol + side."** A mark sits between characters, with a side
 that binds it to one non-whitespace character:
@@ -162,7 +162,7 @@ that binds it to one non-whitespace character:
   `source.length` = **EOF**.
 
 So `A >>> ... B` inserts right after A (left); `A ... >>> B` inserts before B
-(right). In the `.md` the side is readable from the position of the marker
+(right). In the `.hatch` the side is readable from the position of the marker
 relative to `...`. **BOF/EOF are not a separate flag** — they are the degenerate
 boundaries of this rule. Replace ranges follow the same rule: `>>>` gives the
 start, `<<<` the end.
@@ -243,7 +243,7 @@ matcher computes the canon lazily once the adapter is known, caching it per run
   `features {` ≡ `features{`. Whitespace **inside a string literal is data** and is
   kept verbatim, so `Log("a  b")` and `Log("a b")` are different anchors. The
   exception is a literal that spans lines (`R"(…)"`, a docstring, a template
-  literal): a `.md` anchor is a fragment cut on line boundaries and can begin inside
+  literal): a `.hatch` anchor is a fragment cut on line boundaries and can begin inside
   one without knowing it, so those stay transparent. Where a language's string
   literals start and end is declared per language; the scanner is shared
   (`lang/zones.ts`).
@@ -256,14 +256,34 @@ Structure (`buildMap`) comes from tree-sitter for both; only `normalize` differs
 ## The two pipelines share one source of truth
 
 ```
-apply:    .md ─parse→ MatchPattern ┐
+apply:    .hatch ─parse→ MatchPattern ┐
           source ─buildMap→ SourceMap ┘─matcher→ marks ─patcher→ (per hunk) → atomic write
 
-generate: (old,new) ─diff→ segments ─synth→ Hunk[] ─printer→ .md
+generate: (old,new) ─diff→ segments ─synth→ Hunk[] ─printer→ .hatch
 ```
 
 `generate` queries the *same* `SourceMap` that `apply` uses. One source of truth
 about file structure feeds both pipelines, so they cannot drift apart.
+
+The header of a `.hatch` (`Hatch`, `Target`, `Generated-From`, `Generated-By`,
+`Grammar`) lives in `src/core/header.ts`: one table of the fields in their order — the
+reader, the writer and the `HeaderFields` type are all made of it, so a field is added
+in one line, at the end (VERSIONING.md H4) — `readHeader` (the lines as written),
+`parseHeader` (held to the format range `FORMAT_MIN..FORMAT_VERSION` and to a contained
+`Target`), `printHeader`. The parser checks the format and reads the hunks after it
+exactly as before; the matcher never sees the header. `infra/pair.ts` reads `Target`
+back to name a patch's file, and tells a newer or older format and a header that does
+not read from an unsafe `Target`.
+
+Whose a file is — which `hatch.config.json` speaks for it, and where the code a project
+patches lives — is decided in one place, `src/infra/project.ts`. A config may name an
+`upstream`: the root of code the project does not own (the upstream a fork patches), measured
+from the config file. `configFileFor`/`loadProject` find the config (up from the file;
+else one whose upstream claims it; else `$HATCH_CONFIG`, the current directory),
+`upstreamTarget` turns a file into its `Target`, `upstreamCode` a `Target` back into
+the file. `out-path.ts` (where a patch goes), `pair.ts` (both ways), the CLI and the
+service all ask it; none of them computes a project root of its own. Git is not part of
+it: the base of a file is read from the repository nearest that file.
 
 ### diff → atomic segments
 
@@ -314,19 +334,24 @@ and the final check to byte-for-byte.
 
 `generate -a`, and any `generate` at a terminal whose synthesis cannot anchor a change,
 runs the same steps one at a time (`generate/steer.ts`). Its whole state is the list of
-hunks so far: each step replays them over the old version and takes the first change
-still between that text and the new one. A hunk offered is shown and kept, or the
+hunks so far and what they make of the old version: each step takes the first change
+still between that text and the new one. A hunk synthesis made is laid on that text
+once — it was made against it and lands there only — which gives what replaying every
+hunk over the old version would, at the price of one; hunks a person wrote are replayed
+from the old version. A hunk offered is shown and kept, or the
 person is handed the editor with **every** hunk so far; what comes back must parse and
 land on the old version in order, or it goes back with the reason on top. Because the
 next step starts from what the hunks produce, a hunk written by hand — pattern and patch
 body alike — is simply the new state. Text a hunk wrote counts as settled and is not
 offered again, so a body edited on purpose stays edited, and the run ends warning that
-the `.md` does not give the new version. The person comes in from outside (`Steering`:
-review, offer the editor, edit), which keeps the loop testable without a terminal.
+the `.hatch` does not give the new version. A `# note` written in the editor stays with
+its hunk: the printer writes it before the `# match` it is about. The person comes in
+from outside (`Steering`: review, offer the editor, edit), which keeps the loop testable
+without a terminal.
 
 ### Line endings belong to the file
 
-A `.md` carries no line endings of its own: the parser reads `\r\n` and `\n` alike, and
+A `.hatch` carries no line endings of its own: the parser reads `\r\n` and `\n` alike, and
 git or an editor may turn them either way. So the patcher lands a patch with the ending
 of the line the edit starts on — CRLF in a CRLF region, the bytes as they are in LF.
 The line, not the file: a file of mixed endings keeps what each place has.
@@ -349,8 +374,9 @@ The line, not the file: a file of mixed endings keeps what each place has.
   reached (position + which step failed).
 
 Errors carry their CI exit code (`src/core/errors.ts`): `ParseError`→2,
-`MatchError`→3, `AmbiguityError`→4; the base `HatchError` is abstract, and
-anything else exits 1.
+`MatchError`→3, `AmbiguityError`→4, `ConfigError`→5, `GrammarError`→6, `NoChanges`→7,
+`SynthesisError`→8 — `generate` could not anchor a change, told apart from a `.hatch` that
+does not apply; the base `HatchError` is abstract, and anything else exits 1.
 
 ## tree-sitter is the default structure provider
 
@@ -369,3 +395,52 @@ exposes `init(): Promise<void>`, awaited once at CLI startup; `buildMap` is
 synchronous thereafter. libclang/clangd were rejected: they need the project's
 full compile environment (flags, includes), a heavy native dependency, and an
 async server — reintroducing the build-coupling this port exists to remove.
+
+## Grammars ship inside
+
+The grammars are part of the package (`grammars/`, filled at build time by
+`scripts/fetch-grammars.ts` from the pins in `src/lang/*/index.ts`).
+`infra/grammar-store.ts` only finds them — `$HATCH_GRAMMAR_DIR`, then `grammars/` — and
+holds the bytes to the sha256 pin wherever they come from. There is no download and no
+cache at run time, so a run is the same offline, in CI and in `hatch-apply`.
+
+## One engine, three entries
+
+`src/bin/` holds the only files that run anything: `hatch.ts` (the CLI), `service.ts`
+(the JSON-lines service) and `hatch-apply.ts` (the build's tool). Each only calls a
+`main`; no module of the CLI or the service does anything when imported, so the same
+code is a library, a command and — bundled by `scripts/build-apply-bin.mjs` with esbuild
+into one CommonJS file and injected into a copy of Node as a single executable —
+`hatch-apply`. Inside that executable there is no package directory:
+`infra/runtime.ts` is the one place that knows, and hands out its assets (the
+tree-sitter runtime's `.wasm`, the grammars, still held to their pins); the version is a
+constant the build defines. `hatch-apply` runs `cli/apply.ts` in its own mode — no
+questions, a clean base only, a file it patches in place written over rather than kept,
+and not written at all when it already holds the result — and the apply goldens run
+through every binary a release builds (`test/golden/run-binary.mjs`), so the build and
+the editor cannot disagree. Its options are not a list of their own: `binSpec` picks
+them out of `hatch apply`'s (`cli/args.ts` `pickOptions`), so a flag of `hatch-apply` has
+the meaning it has in `hatch apply` by construction (VERSIONING.md F2).
+
+## The service: decoded requests, a wire of its own
+
+`service/handler.ts` keeps its methods in a `Map` — name, the params it knows with their
+types, the function — so a new method is one entry, and "unknown method" lists them
+from the same map. `service/request.ts` decodes a line before any of it is used: a value
+that is not a request object, or a param of the wrong type, is a `BadRequest` naming it,
+never whatever the code it would reach throws; `handle` answers every line and never
+rejects, so one bad line cannot end the process.
+
+The wire types live in `service/protocol.ts`, written out field by field — none is
+borrowed from the core. `test/unit/protocol-types.test.ts` holds each one equal to the
+core type the service fills it from: a change in the core fails the typecheck until the
+protocol is changed on purpose, with its number (VERSIONING.md R2).
+
+## Git: any non-zero exit is a no
+
+`infra/git.ts` makes every simple-git instance with the `errors` plugin set to count any
+non-zero exit as a refusal — by default simple-git calls a task failed only when git
+also wrote to stderr, so `--is-ancestor` or `--quiet` would say "yes" by saying nothing.
+`attempt` turns a refusal into `undefined`; a question that needs a value reads it from
+the output. A base `config` reports is checked by the type of its object (`cat-file -t`),
+not by reading it, and the paths to watch come from one `rev-parse` call.

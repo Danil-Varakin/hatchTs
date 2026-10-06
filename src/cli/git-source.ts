@@ -1,4 +1,5 @@
-import { fileFromGit } from '../infra/git.ts';
+import { GIT_EOLS, fileFromGit } from '../infra/git.ts';
+import type { GitEol } from '../infra/git.ts';
 import type { Ask } from '../infra/ask.ts';
 import type { ArgSpec } from './args.ts';
 
@@ -13,6 +14,7 @@ export interface GitOptions {
   branch?: string;
   commit?: string;
   repoPath?: string;
+  eol?: string;
 }
 
 /** A version of a file: its text, and where it was read from — a path on disk, or
@@ -21,6 +23,8 @@ export interface GitOptions {
 export interface FileVersion {
   readonly text: string;
   readonly spec: string;
+  /** the blob read, for a version out of git */
+  readonly blob?: string;
 }
 
 export const GIT_FLAG_NAMES = '--head / --branch / --commit / --repo-path';
@@ -32,6 +36,7 @@ export const GIT_ARGS = {
     '--branch': 'branch', '-b': 'branch',
     '--commit': 'commit', '-c': 'commit',
     '--repo-path': 'repoPath',
+    '--eol': 'eol',
   },
 } as const satisfies ArgSpec<GitOptions>;
 
@@ -40,7 +45,14 @@ export function asksGit(opts: GitOptions): boolean {
 }
 
 export function readFromGit(opts: GitOptions, inPath: string, ask?: Ask): Promise<FileVersion> {
-  return fileFromGit({ branch: opts.branch, commit: opts.commit, path: opts.repoPath }, inPath, ask);
+  return fileFromGit({ branch: opts.branch, commit: opts.commit, path: opts.repoPath, eol: gitEol(opts.eol) }, inPath, ask);
+}
+
+/** `--eol` as given, checked; left out, undefined — the default is the caller's. */
+export function gitEol(value: string | undefined): GitEol | undefined {
+  if (value === undefined) return undefined;
+  if (GIT_EOLS.includes(value as GitEol)) return value as GitEol;
+  throw new Error(`--eol ${value}: one of ${GIT_EOLS.join(', ')}`);
 }
 
 /** The coordinates explained, for a command's USAGE; "it" is whatever that command
@@ -65,4 +77,9 @@ as of the last commit here". Naming any coordinate is itself the ask for git.
   --repo-path  <path>     which file, named INSIDE THE REPOSITORY (default: the path
                           of --in). A path git knows, not a path on disk: a relative
                           one is measured from the repository root, never from the
-                          current directory`;
+                          current directory
+  --eol <repository|worktree>
+                          the line endings of what is read: as git stores it (the
+                          default), or as the file of --in on disk has them — for a
+                          repository with core.autocrlf, where the two differ. Not
+                          a coordinate: it changes no version, only its line ends`;

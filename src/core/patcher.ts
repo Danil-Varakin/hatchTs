@@ -1,5 +1,7 @@
 import type { SourceMap } from '../lang/source-map.ts';
 import type { MatchMarks } from './matcher.ts';
+import { lineEndAt, toCrlf } from './eol.ts';
+import type { LineEnd } from './eol.ts';
 
 export interface Edit {
   start: number;
@@ -37,25 +39,8 @@ export function patchHunk(
   return { source: applyEdit(source, edit), edit };
 }
 
-// ── line endings ─────────────────────────────────────────────────────────────────
-//
-// A patch body has no line ending of its own: the .md is text, and git (autocrlf,
-// `text=auto`) or an editor may turn its line ends either way on the road — the parser
-// reads `\r\n` and `\n` alike. So the ending is the TARGET's: a bare LF of the patch
-// takes the ending of the line the edit starts on. Only a CRLF line changes anything —
-// in an LF file the patch lands byte for byte as before.
-//
-// The line the edit starts on, not the file as a whole: a file with mixed endings
-// (golden cpp/74 — an LF header over CRLF lines, converted to LF) keeps what each place
-// already has. An edit never starts between `\r` and `\n`: marks sit next to a
-// non-whitespace character, or at BOF/EOF.
+// Line endings: core/eol.ts — the patch takes the ending of the line the edit starts on.
 
-function lineEndAt(source: string, at: number): '\r\n' | '\n' {
-  let nl = source.indexOf('\n', at);
-  if (nl === -1) nl = source.lastIndexOf('\n', at - 1);
-  return nl > 0 && source[nl - 1] === '\r' ? '\r\n' : '\n';
-}
-
-function landed(patch: string, lineEnd: '\r\n' | '\n'): string {
-  return lineEnd === '\n' ? patch : patch.replace(/(?<!\r)\n/g, '\r\n');
+function landed(patch: string, lineEnd: LineEnd): string {
+  return lineEnd === '\n' ? patch : toCrlf(patch);
 }

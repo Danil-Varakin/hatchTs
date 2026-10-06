@@ -15,7 +15,7 @@ const REPO = 'https://raw.githubusercontent.com/Danil-Varakin/hatchTs';
  *  (P7), so the file read from it is frozen by git itself: a v1 config is checked
  *  against v1 as released, whatever `main` holds later. A row is added in the release
  *  that ships the version (VERSIONING.md §5). */
-export const SCHEMA_RELEASED_IN: Readonly<Record<number, string>> = {};
+export const SCHEMA_RELEASED_IN: Readonly<Record<number, string>> = { 2: 'v0.4.0' };
 
 /** The JSON Schema of config schema `version`: from its release tag, or from `main`
  *  while the version is not released yet. */

@@ -5,7 +5,7 @@ from 0.4, patch format range —
 then what changed, breaking changes first. The rules for all three are in
 [VERSIONING.md](./VERSIONING.md); an entry is written before its tag (P6).
 
-## Unreleased
+## 0.4.0 — 2026-10-06
 
 **Protocol 4–4 · config schema 2–2 · patch format 1–1**
 

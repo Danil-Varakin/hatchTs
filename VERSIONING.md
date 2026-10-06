@@ -222,7 +222,7 @@ end.
 
 | client | version | protocol it speaks | |
 |---|---|---|---|
-| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, unreleased | 4–4 | range check as R8; relies on `configTemplate`, `config`, `pair`, `configPath`, `resolve`/`apply` by the patch's path — protocol 4 |
+| VS Code extension (`HatchVSCodeExtension-`) | 0.0.1, 2026-10-06 | 4–4 | range check as R8; relies on `configTemplate`, `config`, `pair`, `configPath`, `resolve`/`apply` by the patch's path — protocol 4 |
 
 ## 7. Support
 

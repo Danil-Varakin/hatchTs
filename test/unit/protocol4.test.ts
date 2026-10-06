@@ -157,11 +157,11 @@ test('config: a linked worktree watches its own HEAD and the common refs', async
     git(R.dir, 'worktree', 'add', '-q', '-b', 'wtb', wt, R.b);
     const inPath = join(realpathSync(wt), 'src', 'core', 'f.cc');
     const c = ok(await call('config', { path: inPath, overrides: { baseGit: {} } }));
-    const root = realpathSync(R.dir);
     const watch = c['watch'] as string[];
     const ownHead = realpathSync(git(wt, 'rev-parse', '--path-format=absolute', '--git-path', 'HEAD'));
     assert.ok(watch.includes(ownHead), `the worktree's own HEAD ${ownHead}: ${JSON.stringify(watch)}`);
-    assert.ok(watch.includes(join(root, '.git', 'refs', 'heads', 'wtb')), JSON.stringify(watch));
+    const branchRef = realpathSync(git(wt, 'rev-parse', '--path-format=absolute', '--git-path', 'refs/heads/wtb'));
+    assert.ok(watch.includes(branchRef), `the branch's ref ${branchRef}: ${JSON.stringify(watch)}`);
     assert.equal(c['repoRoot'], realpathSync(wt));
   } finally {
     rmSync(wt, { recursive: true, force: true });

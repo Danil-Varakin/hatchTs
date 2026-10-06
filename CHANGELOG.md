@@ -5,9 +5,13 @@ from 0.4, patch format range —
 then what changed, breaking changes first. The rules for all three are in
 [VERSIONING.md](./VERSIONING.md); an entry is written before its tag (P6).
 
-## 0.4.0 — 2026-10-06
+## 0.4.1 — 2026-10-06
 
 **Protocol 4–4 · config schema 2–2 · patch format 1–1**
+
+The first release of the 0.4 line: the tag `v0.4.0` was pushed, its check failed on
+Windows and Linux (see Fixed), and nothing was published under it. The number is not
+reused (P7), so everything 0.4.0 would have brought is here.
 
 ### Breaking
 
@@ -289,6 +293,9 @@ then what changed, breaking changes first. The rules for all three are in
   the file named.
 - `apply --eol` was ignored without a git source and never checked; it is checked now,
   and refused when no version out of git is named. The flag has not shipped yet (F2).
+- On Windows, a run writing `--out` over a file another run held open failed with
+  `EPERM` instead of writing it: the rename is tried again for up to two seconds, so
+  each run lands whole and one of them wins — what the write promised everywhere else.
 - The service cut a request in two at U+2028 or U+2029 inside a string — characters
   `JSON.stringify` leaves as they are — and answered two `BadRequest`s with `id: 0`, never
   the request itself (a `generate` waited for ever). A line now ends at `\n` alone, as the

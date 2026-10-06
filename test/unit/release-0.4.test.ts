@@ -229,7 +229,14 @@ test('stage 2: patchTarget — from the upstream wherever the patch goes, stdout
     assert.equal(patchTarget(project, undefined, code), 'src/a.cc', 'no place (stdout), still a Target');
     assert.equal(patchTarget(undefined, join(root, 'p', 'x.hatch'), code), 'src/a.cc');
     assert.equal(patchTarget(undefined, undefined, code), undefined);
-    assert.equal(patchTarget(undefined, join(tmpdir(), 'elsewhere.hatch'), code), undefined, 'a patch outside the repository');
+    const outside = temp('hatch-s2-outside-');
+    try {
+      // the root of a patch outside any repository is its own directory, and the code is
+      // not under it — a Target measured from there would be a path out of the root
+      assert.equal(patchTarget(undefined, join(outside, 'elsewhere.hatch'), code), undefined, 'a patch outside the repository');
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -275,7 +282,7 @@ test('stage 2: apply — refusals around --in, --verify and --base-from-disk', (
     const noIn = hatch(dir, ['apply', '--match', 'p.hatch', '--dry-run']);
     assert.equal(noIn.status, 1, noIn.stderr);
     // no Target and no config: by its name the patch is for `p` beside it, which is not there
-    assert.match(noIn.stderr, /missing --in <file>: the patch is for .*\/p \(by its name and place it would be\), and there is no such file/);
+    assert.match(noIn.stderr, /missing --in <file>: the patch is for .*[\\/]p \(by its name and place it would be\), and there is no such file/);
 
     const noConfig = hatch(dir, ['apply', '--match', 'p.hatch', '--dry-run', '--no-config']);
     assert.equal(noConfig.status, 1, noConfig.stderr);

@@ -178,7 +178,8 @@ field of params and results, error kinds and their `detail`, and every validatio
 | 0.1.1 | 2026-08-27 | — no service | 1–1 | — a patch was a `.md` | fix |
 | 0.2.0 | 2026-09-24 | 2–2 | 1–1 | — a patch was a `.md` | the service arrives |
 | 0.3.0 | 2026-09-28 | 2–3 | 1–1 | — a patch was a `.md` | apply from git, hand-written hunks, CRLF, PROTOCOL.md |
-| 0.4.0 | 2026-10-06 | 4–4 | 2–2 | 1–1 | a patch is a `.hatch` with a header; a project over its upstream; `hatch-apply`; the grammars inside |
+| 0.4.0 | — | — | — | — | tagged, and that is all: the check of the release failed, nothing was published. The number stays burned (P7) |
+| 0.4.1 | 2026-10-06 | 4–4 | 2–2 | 1–1 | the 0.4 line as it went out: a patch is a `.hatch` with a header; a project over its upstream; `hatch-apply`; the grammars inside |
 
 ### Protocol
 
@@ -187,8 +188,8 @@ field of params and results, error kinds and their `detail`, and every validatio
 | 1 | never released | — | lived only inside `dev`; named two contracts (R2) |
 | 2 | 0.2.0 | first | `version`, `generate`, `resolve`, `apply`; `generate` takes `baseText` or `baseGit`, answers `baseSpec`; `params.path` must be absolute |
 | 3 | 0.3.0 | additive, M = 2 | `resolve`/`apply` take `baseGit` and answer `baseSpec`; `version` announces `protocolMin` and `configSchemaMin`; every file extension is also a language name (`languages` grows); `generate` writes the language's own name into `# match`; `baseGit.branch` finds a branch that shares its name with a tag; `language: ""` means none in every method; a patch lands in a CRLF base with CRLF lines — a fix, the old mixed endings were the bug |
-| 4 | 0.4.0 | **breaking, M = 4** (R5) | `configTemplate`: the text of a new `hatch.config.json` for a schema version and settings, `suggestedPath`, `exists`, `versions`; a `ConfigError` about keys outside the schema carries `detail.version` and `detail.keys` — a key a schema dropped with the schemas that had it (`generate.mirror`: `since: 1, until: 1`), not `since: null`; `generate` with neither `baseText` nor `baseGit` takes the config's `generate.base` (refused before); `config.settings` grows `baseHead`, `baseBranch`, `baseCommit`, `baseEol`; methods `config` (the settings `generate` would apply, the base resolved, `watch`) and `pair` (code ↔ `.hatch`, `how: "target"`, `reason` when none); `generate` answers a `.hatch` with its header (`Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`); `warningsAt`; `baseGit.eol`; `resolve`/`apply` with no base take `generate.base`; `resolve` answers `baseText` for a git base; hunks in `resolve`/`apply` carry `note`, `noteSpan` from a `# note` block; `cancel { id }` and the error kind `Cancelled`; `config` answers an unreadable git base as `base.kind: "unavailable"`; `pair` reasons `newer-format`, `older-format`, `bad-header` (all `unsafe-target` before); a line that is JSON but no request object, and a param of the wrong type, answer `BadRequest` (the first ended the service, the second answered `TypeError`); `SynthesisError` `reason: "no-match"` when no candidate could be built (`ambiguous` before); a line ends at `\n` alone — a request holding U+2028 or U+2029 inside a string was cut in two and answered with two `BadRequest`s, `id: 0` (a fix: the transport always said one JSON object per line) |
-| 4 | 0.4.0 | the breaking part (R5) | `generate` with no changes fails with the new kind `NoChanges` (exit 7) instead of `ParseError` — a new error kind a client could notice, so `protocolMin` rises to 4. `generate` that cannot anchor a change fails with the new kind `SynthesisError` (exit 8) instead of `MatchError`/`AmbiguityError`. Replies come as requests finish, no longer in their order. `generate`'s `md` is a `.hatch`: it opens with the header, with or without a `path`. The field `md` is renamed `patch` in `generate`, `resolve`, `apply`, `pair`. The config of a file may be one whose `upstream` claims it; `configPath`; `pair` `how: "upstream"` (no `mirror`), reasons `outside-upstream`, `two-patches`; `generate` answers `outExists`, `outTarget`; `config` answers `upstreamRoot`; the param `mirror` is gone. `resolve`/`apply` take the patch's own path (code by `Target`, base from its config) and answer `code`, `header`, `warningsAt`; `config` answers `projectRoot`, `target`; `configPath` on every method; `GitError` `detail.reason`; messages name no CLI flag; every reply carries `elapsedMs`. `allowDownload` is accepted and ignored: the grammars ship inside hatch. No client of protocols 2–3 was ever released; the notice S2 asked for was removed with it |
+| 4 | 0.4.1 | **breaking, M = 4** (R5) | `configTemplate`: the text of a new `hatch.config.json` for a schema version and settings, `suggestedPath`, `exists`, `versions`; a `ConfigError` about keys outside the schema carries `detail.version` and `detail.keys` — a key a schema dropped with the schemas that had it (`generate.mirror`: `since: 1, until: 1`), not `since: null`; `generate` with neither `baseText` nor `baseGit` takes the config's `generate.base` (refused before); `config.settings` grows `baseHead`, `baseBranch`, `baseCommit`, `baseEol`; methods `config` (the settings `generate` would apply, the base resolved, `watch`) and `pair` (code ↔ `.hatch`, `how: "target"`, `reason` when none); `generate` answers a `.hatch` with its header (`Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`); `warningsAt`; `baseGit.eol`; `resolve`/`apply` with no base take `generate.base`; `resolve` answers `baseText` for a git base; hunks in `resolve`/`apply` carry `note`, `noteSpan` from a `# note` block; `cancel { id }` and the error kind `Cancelled`; `config` answers an unreadable git base as `base.kind: "unavailable"`; `pair` reasons `newer-format`, `older-format`, `bad-header` (all `unsafe-target` before); a line that is JSON but no request object, and a param of the wrong type, answer `BadRequest` (the first ended the service, the second answered `TypeError`); `SynthesisError` `reason: "no-match"` when no candidate could be built (`ambiguous` before); a line ends at `\n` alone — a request holding U+2028 or U+2029 inside a string was cut in two and answered with two `BadRequest`s, `id: 0` (a fix: the transport always said one JSON object per line) |
+| 4 | 0.4.1 | the breaking part (R5) | `generate` with no changes fails with the new kind `NoChanges` (exit 7) instead of `ParseError` — a new error kind a client could notice, so `protocolMin` rises to 4. `generate` that cannot anchor a change fails with the new kind `SynthesisError` (exit 8) instead of `MatchError`/`AmbiguityError`. Replies come as requests finish, no longer in their order. `generate`'s `md` is a `.hatch`: it opens with the header, with or without a `path`. The field `md` is renamed `patch` in `generate`, `resolve`, `apply`, `pair`. The config of a file may be one whose `upstream` claims it; `configPath`; `pair` `how: "upstream"` (no `mirror`), reasons `outside-upstream`, `two-patches`; `generate` answers `outExists`, `outTarget`; `config` answers `upstreamRoot`; the param `mirror` is gone. `resolve`/`apply` take the patch's own path (code by `Target`, base from its config) and answer `code`, `header`, `warningsAt`; `config` answers `projectRoot`, `target`; `configPath` on every method; `GitError` `detail.reason`; messages name no CLI flag; every reply carries `elapsedMs`. `allowDownload` is accepted and ignored: the grammars ship inside hatch. No client of protocols 2–3 was ever released; the notice S2 asked for was removed with it |
 
 ### Config schema
 
@@ -196,13 +197,13 @@ field of params and results, error kinds and their `detail`, and every validatio
 |---|---|---|---|
 | 1 | 0.1.0 | first | `generate`: `out`, `language`, `exact`, `bridgeGap`, `parents`, `siblings` |
 | 1 | 0.2.0 | **added without a bump** | `generate.mirror` — before these rules; by C2 it would be schema 2. A config using it, read by hatch 0.1.x, fails with "unknown key" rather than "update hatch". Left as released (P7); marked `unbumpedIn` in `FIELDS` and in the v1 summary |
-| 2 | 0.4.0 | **breaking, M = 2** (C3) | `generate.base`: `head`, `branch`, `commit` — the old version out of git, as `--head` / `--branch` / `--commit` (C6); `generate.base.eol` (`--eol`); `upstream` (top level): the root of the code the project patches, from the config file — `generate.out` is then the root of the patch tree; `generate.mirror` removed (`"upstream": "."` takes its place), so schema 1 is read no longer |
+| 2 | 0.4.1 | **breaking, M = 2** (C3) | `generate.base`: `head`, `branch`, `commit` — the old version out of git, as `--head` / `--branch` / `--commit` (C6); `generate.base.eol` (`--eol`); `upstream` (top level): the root of the code the project patches, from the config file — `generate.out` is then the root of the patch tree; `generate.mirror` removed (`"upstream": "."` takes its place), so schema 1 is read no longer |
 
 ### Patch format
 
 | N | first release | kind | what changed |
 |---|---|---|---|
-| 1 | 0.4.0 | first | `.hatch` with the header `Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`; the hunks as the `.md` of 0.1–0.3 wrote them |
+| 1 | 0.4.1 | first | `.hatch` with the header `Hatch`, `Target`, `Generated-From`, `Generated-By`, `Grammar`; the hunks as the `.md` of 0.1–0.3 wrote them |
 
 ### Patch header
 
@@ -211,11 +212,11 @@ end.
 
 | # | field | since | what |
 |---|---|---|---|
-| 1 | `Hatch` | format 1, 0.4.0 | the format number; always the first line |
-| 2 | `Target` | format 1, 0.4.0 | the file the patch is for, relative with `/` |
-| 3 | `Generated-From` | format 1, 0.4.0 | the git blob of the base, when it came out of git |
-| 4 | `Generated-By` | format 1, 0.4.0 | `hatch <version>` |
-| 5 | `Grammar` | format 1, 0.4.0 | `<package>@<version>` of the grammar |
+| 1 | `Hatch` | format 1, 0.4.1 | the format number; always the first line |
+| 2 | `Target` | format 1, 0.4.1 | the file the patch is for, relative with `/` |
+| 3 | `Generated-From` | format 1, 0.4.1 | the git blob of the base, when it came out of git |
+| 4 | `Generated-By` | format 1, 0.4.1 | `hatch <version>` |
+| 5 | `Grammar` | format 1, 0.4.1 | `<package>@<version>` of the grammar |
 
 ### Clients
 

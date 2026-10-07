@@ -161,14 +161,13 @@ test('apply: "a file that already holds the result is not written at all (alread
   assert.equal(readFileSync(join(dir, 'a.cc'), 'utf8'), PATCHED);
 }));
 
-test('apply --download-grammars: "does nothing since 0.4 … and warns"', inTemp('hatch-dlg-', (dir) => {
+test('F2: apply --download-grammars is gone — it warned through 0.4', inTemp('hatch-dlg-', (dir) => {
   writeFileSync(join(dir, 'a.cc'), SRC);
   writeFileSync(join(dir, 'p.hatch'), INSERT);
-  const plain = hatch(dir, ['apply', '--match', 'p.hatch', '--in', 'a.cc', '--out', '-', '--no-config']);
-  const flagged = hatch(dir, ['apply', '--match', 'p.hatch', '--in', 'a.cc', '--out', '-', '--no-config', '--download-grammars']);
-  assert.equal(flagged.status, 0, flagged.stderr);
-  assert.equal(flagged.stdout, plain.stdout, 'the same result');
-  assert.match(flagged.stderr, /grammars ship inside hatch/);
+  const r = hatch(dir, ['apply', '--match', 'p.hatch', '--in', 'a.cc', '--out', '-', '--no-config', '--download-grammars']);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unknown argument: --download-grammars/);
+  assert.doesNotMatch(hatch(dir, ['apply', '--help']).stdout, /download-grammars/, 'and out of the help');
 }));
 
 test('apply --log <dir>/: "every run gets its own file, mode 0600" — two runs at once', inTemp('hatch-log-', async (dir) => {

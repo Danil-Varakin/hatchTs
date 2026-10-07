@@ -1,7 +1,6 @@
-import { statSync } from 'node:fs';
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path';
 import { ConfigError } from '../core/errors.ts';
-import { findRepoRoot } from './fs.ts';
+import { kindOf, repoRootAround } from './fs.ts';
 import { patchTreeRoot, upstreamTarget, withUpstream } from './project.ts';
 import type { Project, UpstreamProject } from './project.ts';
 
@@ -31,7 +30,7 @@ export function resolveOutPath(input: OutPathInput): OutPath {
   if (input.out === null) return { path: join(dirname(inPath), name) };
   if (input.out === '-') return { path: undefined };
 
-  const target = isAbsolute(input.out) ? input.out : join(anchorFor(inPath), input.out);
+  const target = isAbsolute(input.out) ? input.out : join(repoRootAround(inPath), input.out);
   if (namesDirectory(input.out, target)) return { path: join(target, name) };
   // A file named outright: for a patch it must be one `apply` and `pair` take back.
   if (input.suffix === undefined && extname(target).toLowerCase() !== PATCH_EXTENSION) {
@@ -55,15 +54,11 @@ function inUpstream(project: UpstreamProject, out: string | null, inPath: string
   return { path: join(patchTreeRoot(project, out), ...target.split('/')) + PATCH_EXTENSION, target };
 }
 
-function anchorFor(inPath: string): string {
-  return findRepoRoot(dirname(inPath)) ?? dirname(inPath);
-}
-
+/** Whether `out` names a directory to put the patch in, rather than the file itself: a
+ *  trailing slash says so outright, then what is on disk, and for a path that is not
+ *  there yet — the absence of an extension. */
 function namesDirectory(out: string, target: string): boolean {
   if (/[/\\]$/.test(out)) return true;
-  try {
-    return statSync(target).isDirectory();
-  } catch {
-    return extname(basename(out)) === '';
-  }
+  const kind = kindOf(target);
+  return kind === undefined ? extname(basename(out)) === '' : kind === 'directory';
 }

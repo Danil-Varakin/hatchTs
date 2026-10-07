@@ -1,8 +1,7 @@
-import { readFileSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import { ConfigError } from '../core/errors.ts';
 import { formatSide, isContainedPath, readHeader } from '../core/header.ts';
-import { findRepoRoot, isFile, pathWithin, toPosixPath } from './fs.ts';
+import { isFile, pathWithin, readIfReadable, repoRootAround, toPosixPath } from './fs.ts';
 import { PATCH_EXTENSION, resolveOutPath } from './out-path.ts';
 import { patchTreeRoot, upstreamCode, upstreamTarget, withUpstream } from './project.ts';
 import type { Project, UpstreamProject } from './project.ts';
@@ -13,18 +12,11 @@ import type { Project, UpstreamProject } from './project.ts';
 // With an upstream (`infra/project.ts`) `Target` is measured from the upstream root;
 // without one, from the repository around the patch.
 
-/** The root `Target` is measured from without an upstream: the repository around the
- *  patch, outside one the patch's own directory. The writer and the reader both ask here. */
-export function targetRoot(patchPath: string): string {
-  const dir = dirname(resolve(patchPath));
-  return findRepoRoot(dir) ?? dir;
-}
-
 /** What `generate` writes into `Target` of a patch at `patchPath` for `codePath` without
  *  an upstream, or undefined when the file is not under the root — a path out of it
  *  would be one no reader accepts. */
 export function targetFor(patchPath: string, codePath: string): string | undefined {
-  const inside = pathWithin(targetRoot(patchPath), resolve(codePath));
+  const inside = pathWithin(repoRootAround(patchPath), resolve(codePath));
   if (inside === undefined || inside === '') return undefined;
   return toPosixPath(inside);
 }
@@ -131,7 +123,7 @@ function codeOf(patchPath: string, settings: PairSettings, patch: string | undef
   if ('refused' in header) return refused(header.refused);
   const target = header.target;
   if (target !== undefined) {
-    const code = upstream !== undefined ? upstreamCode(upstream, target) : join(targetRoot(patchPath), ...target.split(/[\\/]/));
+    const code = upstream !== undefined ? upstreamCode(upstream, target) : join(repoRootAround(patchPath), ...target.split(/[\\/]/));
     if (code === undefined) return refused('unsafe-target');
     return { kind: 'patch', code, exists: isFile(code), how: 'target' };
   }
@@ -188,10 +180,8 @@ export function patchAt(path: string): { readonly exists: boolean; readonly targ
   return { exists: true, target: 'target' in header ? header.target ?? null : null };
 }
 
+/** No file, or one that cannot be read, has no header: `readHeader('')` is format 1 with
+ *  no fields, which `targetOf` reads as "names no Target". */
 function readOrEmpty(path: string): string {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return '';
-  }
+  return readIfReadable(path) ?? '';
 }

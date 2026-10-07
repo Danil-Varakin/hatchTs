@@ -5,6 +5,59 @@ from 0.4, patch format range —
 then what changed, breaking changes first. The rules for all three are in
 [VERSIONING.md](./VERSIONING.md); an entry is written before its tag (P6).
 
+## Unreleased
+
+### Breaking
+
+- **The command `hatch grammars` is gone.** It shipped in 0.2, fetched the grammars into
+  a user cache, and since 0.4 did nothing but warn — one minor release with the old
+  spelling still working, as F2 asks. `hatch grammars` now exits 1 as an unknown command,
+  and `hatch` no longer lists it. Breaking for the package (P3), so the release carrying
+  it is at least a minor one (P2).
+  → drop `hatch grammars` from scripts and CI; nothing replaces it, because nothing is
+  downloaded — the grammars ship inside hatch. In the repository the grammars are put in
+  place by `npm run grammars` (`scripts/fetch-grammars.ts`), which `npm test` and
+  `npm pack` already run.
+- **The flag `--download-grammars` is gone**, from `apply`, `generate` and — since its
+  options are picked out of `apply`'s (F2) — from `hatch-apply`. It shipped in 0.3, and
+  since 0.4 was accepted, did nothing and warned: the one minor release F2 asks for. It is
+  now an unknown argument (exit 1), and out of `--help`. Breaking for the package (P3).
+  The protocol param `allowDownload` is **unchanged**: still accepted, still ignored —
+  dropping it would raise `protocolMin` (R5) and break every released client, which no
+  release has a reason to do yet.
+  → remove the flag from scripts and CI; there is nothing to allow, because nothing is
+  downloaded. A client over the service may keep sending `allowDownload`.
+- **`LanguageAdapter.init()` takes no argument, and `InitOptions` is gone** from the
+  package's exports, together with `GenerateRequest.init`. Nothing had read that object
+  since 0.4: its one field, `log`, was there to report a grammar being downloaded, and
+  grammars ship inside hatch. An export of `src/index.ts` changed, so breaking (P3).
+  → a caller that wrote `adapter.init({})` writes `adapter.init()`, and one that passed
+  `init` to `generatePatch` drops it; neither did anything.
+
+### Added
+
+- **`npm run bench`** — the speed and performance cases, as a suite of their own
+  (`bench/`): `parse`, `apply`, `generate`, `probes`, `depth`, on a synthetic C++ stand
+  that is the same on every machine. `--case`, `--reps`, `--budget`, `--big`; a per-cell
+  budget so one heavy case cannot eat the run. The suite holds the stand and the cases;
+  the numbers it produces are recorded outside the package, with the stand each was taken
+  on. It is **not** part of `npm run check`: the heavy cases take minutes.
+  `npm run typecheck` covers it.
+
+### Changed
+
+- Internal, no behavior: the rule "the root a relative path is measured from — the
+  repository around the file, else its own directory" is one function, `repoRootAround`
+  in `infra/fs.ts`, which both the writer of a patch (`out-path.ts`) and its reader
+  (`pair.ts`) call; "read the file if it can be read" is `readIfReadable` there, beside
+  `readInputFile`, which keeps the opposite contract (absence is an error naming the
+  flag); and the pair "render the error, take its exit code" is `reportFatal` in
+  `infra/log.ts`, which the entry points call instead of each spelling it out. Seven
+  values that no other module used are no longer exported. `infra/fs.ts` gained `kindOf`,
+  which answers "a file, a directory, something else, or nothing there" in one `stat`, so
+  `out-path.ts` — the last module outside `fs.ts` to reach for `statSync` — no longer
+  does; `statSync` is now called in `fs.ts` alone.
+
 ## 0.4.1 — 2026-10-06
 
 **Protocol 4–4 · config schema 2–2 · patch format 1–1**

@@ -83,7 +83,7 @@ export interface RetiredField {
   readonly instead: string;
 }
 
-export const RETIRED_FIELDS: readonly RetiredField[] = [
+const RETIRED_FIELDS: readonly RetiredField[] = [
   {
     path: 'generate.mirror',
     since: 1,

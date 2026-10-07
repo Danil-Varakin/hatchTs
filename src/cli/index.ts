@@ -1,5 +1,4 @@
-import { HatchError } from '../core/errors.ts';
-import { renderError } from '../infra/log.ts';
+import { reportFatal } from '../infra/log.ts';
 import { configRange } from '../infra/config/index.ts';
 import { packageIdentity } from '../infra/version.ts';
 
@@ -15,13 +14,6 @@ const COMMANDS: ReadonlyMap<string, Command> = new Map([
   [
     'generate',
     { summary: 'synthesize a .hatch patch from two versions of a file', load: () => import('./generate.ts') },
-  ],
-  [
-    'grammars',
-    {
-      summary: 'does nothing since 0.4: grammars ship inside hatch (removed in 0.5)',
-      load: () => import('./grammars.ts'),
-    },
   ],
   ['init', { summary: 'write a hatch.config.json for the project', load: () => import('./init.ts') }],
 ]);
@@ -73,8 +65,7 @@ export async function main(argv: readonly string[]): Promise<void> {
     const module = await command.load();
     await module.main(rest);
   } catch (e) {
-    process.stderr.write(`${renderError(e)}\n`);
-    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    process.exitCode = reportFatal(e);
   }
 }
 

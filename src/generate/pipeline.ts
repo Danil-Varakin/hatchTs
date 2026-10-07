@@ -1,6 +1,6 @@
 import type { Hunk } from '../core/ast.ts';
 import type { HunkLink } from '../core/resolve.ts';
-import type { InitOptions, MapCache } from '../lang/source-map.ts';
+import type { MapCache } from '../lang/source-map.ts';
 import type { PartialLimits, Tracer } from './synth.ts';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { resolveHunks } from '../core/resolve.ts';
@@ -24,7 +24,6 @@ export interface GenerateRequest {
   readonly exact?: boolean | undefined;
   readonly bridgeGap?: number | undefined;
   readonly limits?: PartialLimits | undefined;
-  readonly init?: InitOptions | undefined;
   readonly trace?: Tracer | undefined;
   readonly onProgress?: ((done: number, total: number) => void) | undefined;
   /** After synthesis, the hunks to keep. Kept for API callers; `steering` is the way a
@@ -70,7 +69,7 @@ export async function generatePatch(request: GenerateRequest): Promise<GenerateO
         : 'the new version is the base once normalized (spacing, blank lines) — no patch to write',
     );
   }
-  await adapter.init(request.init ?? {});
+  await adapter.init();
   request.signal?.throwIfAborted();
 
   const bridgeGap = request.bridgeGap ?? 0;

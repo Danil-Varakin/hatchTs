@@ -20,11 +20,10 @@ Hatch describes a change declaratively — "insert this *after that include*,
 the parsed structure of the file, so reformatting and unrelated edits upstream
 don't invalidate the patch.
 
-Four commands:
+Three commands:
 
 - **`apply`** — apply a `.hatch` instruction file to a source file.
 - **`generate`** — diff two versions of a file and emit the `.hatch` instructions.
-- **`grammars`** — put the tree-sitter grammars in place (see Grammars below).
 - **`init`** — write a `hatch.config.json` (see Configuration below).
 
 `generate` then `apply` round-trips: applying a generated patch to the old file
@@ -267,8 +266,6 @@ under "Exit codes" below).
 --base-from-disk        --verify against the files on disk, without asking
 --config <file>         the config instead of the one up from the patch;
 --no-config             none (then --in is required)
---download-grammars     does nothing since 0.4 — grammars ship inside hatch — and
-                        warns; removed in 0.5
 --log [place]           also write a full log; every run gets its own file, mode
                         0600. A place that is a directory (or ends in /) gets a
                         generated name, otherwise it IS the name; omitted means
@@ -337,8 +334,6 @@ still fit main" without checking anything out.
                         and inner spacing are free, the set of lines is not)
 --debug,  -v            trace synthesis to stderr: every segment, each probe
                         attempt (incl. non-unique) and the chosen hunk
---download-grammars     does nothing since 0.4 — grammars ship inside hatch — and
-                        warns; removed in 0.5
 --log [place]           also write a full log: the resolved config with the origin
                         of every value, and the whole synthesis trace whether or
                         not -v is on. Every run gets its own file, mode 0600;
@@ -810,7 +805,9 @@ The grammars are not in the repository: `npm run grammars`
 <package@version>` prints the block to paste into a new language's `index.ts`.
 
 Until 0.3 grammars were fetched into a user cache by `hatch grammars` or
-`--download-grammars`. In 0.4 both still work, do nothing and say so; they are removed
+`--download-grammars`. Both are gone since 0.5, after one release (0.4) in which they
+still worked and warned (F2). Over the service the param `allowDownload` is still
+accepted and ignored
 in 0.5. `HATCH_GRAMMAR_CACHE` and `HATCH_GRAMMARS_DOWNLOAD` no longer do anything.
 
 ## Three rules fixed by decision (not derivable from syntax)
@@ -920,6 +917,37 @@ block, where the opening token is the colon.
 
 Grammars live in `grammars/*.wasm`, put there from the official tree-sitter npm packages
 by `npm run grammars`, and ship inside the package.
+
+## Project layout
+
+```
+src/
+├── bin/        the only files that run anything: hatch (CLI), service, hatch-apply
+├── core/       Hatch semantics — no knowledge of brackets, indents or tree-sitter
+├── lang/       everything language-dependent: structure (tree-sitter) + normalization
+├── generate/   diff → segments → hunks → .hatch
+├── cli/        flags, questions, git coordinates, writing the result
+├── service/    the JSON-lines wire: protocol types, request decoding, methods
+├── infra/      disk, git, config, project layout, grammars, logging
+└── index.ts    the public API of the package
+```
+
+| directory / file | what lives there |
+|---|---|
+| `src/bin/` | `hatch.ts`, `service.ts`, `hatch-apply.ts` — each only calls a `main`; no other module does anything when imported |
+| `src/core/` | the format and its semantics: `header.ts` (the `.hatch` header, one table of fields), `hatch-parser.ts` / `hatch-printer.ts`, `matcher.ts` (search with backtracking), `patcher.ts` (one edit per hunk), `apply.ts`, `resolve.ts` (where each hunk landed), `eol.ts`, `errors.ts` (each error carries its exit code) |
+| `src/lang/` | `source-map.ts` — the **only** bridge to `core/`; `canon.ts`, `build-map.ts`, `block-spans.ts`, `treesitter.ts`, `zones.ts` as shared machinery; `adapter.ts` as a closed name → adapter registry; then **one folder per language** (`cpp/`, `python/`, …), each self-contained: grammar pin, extensions, `normalize`, `blockOf` |
+| `src/generate/` | `diff.ts` (atomic change segments), `synth.ts` (candidate patterns, cheapest first, each verified by applying it), `steer.ts` (synthesis a person drives), `printer.ts`, `limits.ts`, `pipeline.ts` (the whole of `generate` in one call, on text) |
+| `src/cli/` | `index.ts` (the command map), `command.ts` (one frame: args, `--help`, log, exit), `args.ts` (hand-written parsing, no commander), `apply.ts` / `generate.ts` / `init.ts`, `git-source.ts` (the git flags, one spelling for every command), `confirm.ts`, `prompt.ts`, `editor.ts` |
+| `src/service/` | `protocol.ts` (the wire contract, written out field by field), `request.ts` (a line decoded before any of it is used), `handler.ts` (methods in a Map), `settings.ts`, `index.ts` (`serve`) |
+| `src/infra/` | `fs.ts` (the file-system rules: atomic write, the walk up, path containment), `git.ts`, `config/`, `project.ts` (whose a file is), `pair.ts` (code ↔ patch, both ways), `out-path.ts`, `grammar-store.ts`, `runtime.ts`, `version.ts`, `log.ts` (facts → text) |
+| `grammars/` | the pinned `.wasm` grammars — not in git, but in the package; put there by `scripts/fetch-grammars.ts` |
+| `scripts/` | `fetch-grammars.ts` (grammars by their pins, development only), `build-apply-bin.mjs` (`hatch-apply`: esbuild → one CJS file → Node SEA) |
+| `schemas/`, `hatch.config.schema.json` | the config schema of every version in the range, and the newest one for SchemaStore |
+| `test/` | `unit/` per module (plus `versioning`, `protocol-types`, `hygiene`), `roundtrip/`, `golden/<language>/{apply,generate}` — apply goldens also run through every `hatch-apply` binary |
+
+Why the boundaries fall where they do — and the one principle the whole design turns on —
+is [ARCHITECTURE.md](./ARCHITECTURE.md).
 
 ## Build & run
 

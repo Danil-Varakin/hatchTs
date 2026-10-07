@@ -4,7 +4,7 @@ import { buildCanon } from './canon.ts';
 import { makeSourceMap } from './build-map.ts';
 import { collectBlockSpans } from './block-spans.ts';
 import type { BlockOf } from './block-spans.ts';
-import type { SourceMap, LanguageAdapter, InitOptions } from './source-map.ts';
+import type { SourceMap, LanguageAdapter } from './source-map.ts';
 import { resolveGrammar } from '../infra/grammar-store.ts';
 import type { GrammarSource } from '../infra/grammar-store.ts';
 
@@ -25,7 +25,7 @@ export function makeAdapter(rules: LanguageRules): LanguageAdapter {
     normalize: rules.normalize,
     grammar: rules.grammar,
 
-    async init(_options: InitOptions = {}): Promise<void> {
+    async init(): Promise<void> {
       const input = await resolveGrammar(rules.grammar, rules.name);
       const key = `${rules.grammar.file}@${rules.grammar.version ?? rules.grammar.sha256 ?? 'local'}`;
       grammar = await loadGrammar(key, input);

@@ -1,11 +1,11 @@
-import { mkdirSync, openSync, writeSync, closeSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { openSync, writeSync, closeSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { AmbiguityError, GitError, HatchError, MatchError, ParseError } from '../core/errors.ts';
-import { isDirectory } from './fs.ts';
+import { ensureParent, isDirectory } from './fs.ts';
 
 // ── where a log file goes ────────────────────────────────────────────────────────
 
-export const DEFAULT_LOG_DIR = 'hatch-logs';
+const DEFAULT_LOG_DIR = 'hatch-logs';
 
 export function resolveLogPath(
   place: string | undefined,
@@ -48,7 +48,7 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 
   if (path !== undefined) {
     try {
-      mkdirSync(dirname(path), { recursive: true });
+      ensureParent(path);
       fd = openSync(path, 'w', 0o600);
     } catch (e) {
       // Not a ConfigError: nothing in any config named this path, and exit 5 would send
@@ -116,6 +116,16 @@ export interface ErrorContext {
   readonly sourcePath?: string | undefined;
   /** the patch an error in it is about */
   readonly patchPath?: string | undefined;
+}
+
+/** The last resort of an entry point that has no logger yet — a command that failed to
+ *  load, a bad argument to `hatch-apply`: the report goes to stderr and the exit code
+ *  comes from the error itself, as `Logger.fail` does it for a command that got that far.
+ *  The ONE place that pairs the two (`03-rules.md`: the core gives facts, log.ts the text).
+ *  Returns the exit code to set. */
+export function reportFatal(e: unknown, ctx: ErrorContext = {}): number {
+  process.stderr.write(`${renderError(e, ctx)}\n`);
+  return e instanceof HatchError ? e.exitCode : 1;
 }
 
 export function renderError(e: unknown, ctx: ErrorContext = {}): string {

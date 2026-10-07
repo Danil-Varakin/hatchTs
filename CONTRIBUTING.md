@@ -184,8 +184,8 @@ How a user installs it:
 npm i -g https://github.com/Danil-Varakin/hatchTs/releases/download/v<version>/hatch-<version>.tgz
 ```
 
-They get a `hatch` command. Grammars are not in the tarball, so the first run tells
-them what to do: `hatch grammars`.
+They get a `hatch` command, with every pinned grammar inside it: nothing to fetch, and
+the first run works offline.
 
 Installing straight from the repository works too
 (`npm i -g github:Danil-Varakin/hatchTs`) — that is what `prepare` is for.

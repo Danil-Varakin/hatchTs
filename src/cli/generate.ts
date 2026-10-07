@@ -12,7 +12,6 @@ import { InputClosed } from '../infra/ask.ts';
 import type { Ask } from '../infra/ask.ts';
 import { checkParent, ensureParent, readInputFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
-import { GRAMMARS_SHIP_INSIDE } from './deprecated.ts';
 import { CONFIG_FILE_NAME, basesOnGit, formatConfig, gitSourceOf, overridesFrom } from '../infra/config/index.ts';
 import type { FlagOverride, PartialSettings, ResolvedConfig } from '../infra/config/index.ts';
 import type { ErrorContext, Logger } from '../infra/log.ts';
@@ -45,7 +44,6 @@ interface Options extends GitOptions, ConfirmOptions {
   siblingDetailBase?: unknown;
   bridgeGap?: unknown;
   requireParents: boolean;
-  downloadGrammars: boolean;
   useConfig: boolean;
   printConfig: boolean;
   agreement: boolean;
@@ -89,8 +87,6 @@ ${CONFIRM_USAGE}
                           and inner spacing are free, the set of lines is not)
   --debug,  -v            trace synthesis to stderr: every segment, each probe
                           attempt (incl. non-unique) and the chosen hunk
-  --download-grammars     does nothing since 0.4 (grammars ship inside hatch) and
-                          warns; removed in 0.5
   --log [place]           also write a full log — the resolved config and the whole
                           synthesis trace, whether or not -v is on. A place that is a
                           directory (or ends in /) receives a generated name, so every
@@ -147,7 +143,6 @@ export const SPEC: ArgSpec<Options> = {
     '--debug': 'debug', '-v': 'debug',
     '--help': 'help', '-h': 'help',
     '--require-parents': 'requireParents',
-    '--download-grammars': 'downloadGrammars',
     '--print-config': 'printConfig',
   },
   negated: { '--no-config': 'useConfig' },
@@ -175,7 +170,6 @@ const INITIAL: Options = {
   head: false,
   yes: false,
   requireParents: false,
-  downloadGrammars: false,
   useConfig: true,
   printConfig: false,
   agreement: false,
@@ -309,7 +303,6 @@ async function generate(
   if (opts.in === undefined) throw new Error('missing --in <file> (new version)');
   requireOneOldSource(opts, config);
 
-  if (opts.downloadGrammars) log.note(`warning: ${GRAMMARS_SHIP_INSIDE}`);
   const settings = config.generate;
   const ask = terminalAsker(opts.yes, (m) => log.note(m), answers);
   // before anything is read: a place the patch cannot go is known without it

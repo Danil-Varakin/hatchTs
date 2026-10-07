@@ -99,7 +99,7 @@ field of params and results, error kinds and their `detail`, and every validatio
   that run (`--in`, `--in-old`, `baseText`, `newText`, `path`, `--repo-path`), where the
   config itself comes from (`--config`, `--no-config`, `--print-config`), how the run
   talks to a person (`--agreement`, `--yes`, `--help`, `--debug`, `--log`) and
-  permission to download (`--download-grammars`, `allowDownload`). A new exemption is
+  permission to download (`allowDownload`). A new exemption is
   added here, with its reason, before the option ships without a key. A key follows C2:
   schema + 1.
 

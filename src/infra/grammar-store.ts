@@ -19,7 +19,7 @@ export type { GrammarSource } from '../lang/source-map.ts';
 //   1. $HATCH_GRAMMAR_DIR — for work on the core and builds of one's own;
 //   2. grammars/ of the package.
 
-export const GRAMMAR_DIR_ENV = 'HATCH_GRAMMAR_DIR';
+const GRAMMAR_DIR_ENV = 'HATCH_GRAMMAR_DIR';
 
 /** The pinned bytes of `source`, from the first place that has its file. */
 export async function resolveGrammar(source: GrammarSource, language?: string): Promise<Uint8Array> {

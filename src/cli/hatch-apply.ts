@@ -1,6 +1,5 @@
-import { HatchError } from '../core/errors.ts';
 import { FORMAT_MIN, FORMAT_VERSION } from '../core/header.ts';
-import { renderError } from '../infra/log.ts';
+import { reportFatal } from '../infra/log.ts';
 import { packageIdentity } from '../infra/version.ts';
 import { adaptersByName } from '../lang/adapter.ts';
 import type { ArgSpec } from './args.ts';
@@ -81,7 +80,7 @@ export function binSpec(command: 'apply' | 'verify'): ArgSpec<Options> {
 }
 
 /** `--version`: what a build pins when it records which tool it used. */
-export function versionText(): string {
+function versionText(): string {
   const pins = new Map<string, string>();
   for (const adapter of adaptersByName().values()) {
     const g = adapter.grammar;
@@ -122,7 +121,6 @@ export async function main(argv: readonly string[]): Promise<void> {
       rest,
     );
   } catch (e) {
-    process.stderr.write(`${renderError(e)}\n`);
-    process.exitCode = e instanceof HatchError ? e.exitCode : 1;
+    process.exitCode = reportFatal(e);
   }
 }

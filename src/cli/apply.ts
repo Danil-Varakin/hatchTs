@@ -1,11 +1,10 @@
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseHatchFile } from '../core/hatch-parser.ts';
 import { ConfigError } from '../core/errors.ts';
 import { applyAll } from '../core/apply.ts';
 import type { AppliedEdit } from '../core/apply.ts';
 import type { HatchFile } from '../core/ast.ts';
-import { ensureParent, isFile, readInputFile, replacesFile, writeFileAtomic } from '../infra/fs.ts';
+import { ensureParent, isFile, readIfReadable, readInputFile, replacesFile, writeFileAtomic } from '../infra/fs.ts';
 import { resolveOutPath } from '../infra/out-path.ts';
 import { isPatchPath, pairOf } from '../infra/pair.ts';
 import { loadProject } from '../infra/project.ts';
@@ -13,7 +12,6 @@ import type { Project } from '../infra/project.ts';
 import { basesOnGit, gitSourceOf } from '../infra/config/index.ts';
 import type { ResolvedConfig } from '../infra/config/index.ts';
 import { fileFromGit } from '../infra/git.ts';
-import { GRAMMARS_SHIP_INSIDE } from './deprecated.ts';
 import { pickAdapter } from '../lang/adapter.ts';
 import type { LanguageAdapter } from '../lang/source-map.ts';
 import type { ErrorContext, Logger } from '../infra/log.ts';
@@ -41,7 +39,6 @@ export interface Options extends GitOptions, ConfirmOptions {
   baseFromDisk: boolean;
   dryRun: boolean;
   verify: boolean;
-  downloadGrammars: boolean;
   help: boolean;
 }
 
@@ -82,8 +79,6 @@ ${CONFIRM_USAGE}
                           asking: they are the clean base
   --config <file>         the config to use instead of the one up from the patch
   --no-config             read no config: --in is then required
-  --download-grammars     does nothing since 0.4 (grammars ship inside hatch) and
-                          warns; removed in 0.5
   --log [place]           also write a full log. A place that is a directory (or ends
                           in /) receives a generated name, so every run gets its own
                           file; any other place IS the name and is overwritten.
@@ -99,7 +94,6 @@ export const SPEC: ArgSpec<Options> = {
     '--dry-run': 'dryRun',
     '--verify': 'verify',
     '--base-from-disk': 'baseFromDisk',
-    '--download-grammars': 'downloadGrammars',
     '--help': 'help',
     '-h': 'help',
   },
@@ -122,7 +116,6 @@ export const INITIAL: Options = {
   baseFromDisk: false,
   dryRun: false,
   verify: false,
-  downloadGrammars: false,
   help: false,
 };
 
@@ -243,7 +236,6 @@ export async function runApply(opts: Options, log: Logger, seen: Seen, mode: App
   });
   const inPath = opts.in ?? codeOfPatch(opts.match, text, config, project);
   const adapter = pickAdapter({ language: opts.language, heading: file.language, path: inPath });
-  if (opts.downloadGrammars) log.note(`warning: ${GRAMMARS_SHIP_INSIDE}`);
   await adapter.init();
 
   const base = { opts, mode, inPath, file, adapter, config, log, seen };
@@ -303,7 +295,7 @@ async function applyWith(run: ApplyRun): Promise<void> {
   }
   // a file that already holds the result is left as it is: no new mtime for a build to
   // recompile it over
-  if (contentOf(target) === result) {
+  if (readIfReadable(target) === result) {
     log.info(`applied ${edits.length} hunk(s) → ${target} (already so: not written)`);
     return;
   }
@@ -311,15 +303,6 @@ async function applyWith(run: ApplyRun): Promise<void> {
   ensureParent(target);
   writeFileAtomic(target, result);
   log.info(`applied ${edits.length} hunk(s) → ${target}`);
-}
-
-function contentOf(path: string): string | undefined {
-  if (!isFile(path)) return undefined;
-  try {
-    return readFileSync(path, 'utf8');
-  } catch {
-    return undefined;
-  }
 }
 
 export interface Seen {

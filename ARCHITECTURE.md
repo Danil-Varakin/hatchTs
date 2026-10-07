@@ -26,6 +26,32 @@ cleanly — both branches of an `#if/#else` land in the tree with correct nestin
 so there is no "undefined-depth zone" for brace imbalance. The residual risk is
 `ERROR` nodes on macro-heavy code.
 
+## Where each rule lives
+
+One rule, one home. The map of the repository is in
+[README.md](./README.md#project-layout); this is the shorter question — *if I need to
+change X, which file owns it?*
+
+| the rule | its home |
+|---|---|
+| what a `.hatch` looks like: headings in column 0, the four-space gutter | `core/hatch-parser.ts` — the headings are exported from there, the printer imports them |
+| the header's fields and their order | `core/header.ts`, the `FIELDS` table: the reader, the writer and the type are all made of it |
+| the format range `FORMAT_MIN..FORMAT_VERSION` | `core/header.ts` |
+| how a pattern is walked, and what counts as ambiguous | `core/matcher.ts` |
+| where an edit cuts, and which line ending it takes | `core/patcher.ts` + `core/eol.ts` |
+| which error gets which exit code | `core/errors.ts` — the code travels with the error |
+| what "insignificant whitespace" means | `normalize` in `lang/<language>/index.ts`, never the core |
+| what counts as a block | `blockOf` in `lang/<language>/index.ts`, read off the tree-sitter tree |
+| canonical ↔ original coordinates | `lang/canon.ts`, pointwise, no standing index arrays |
+| which grammar, pinned to which sha256 | `lang/<language>/index.ts`; finding the bytes is `infra/grammar-store.ts` |
+| which name or extension means which language | `lang/adapter.ts`, a closed whitelist |
+| how a change becomes a hunk | `generate/synth.ts`; what counts as one change is `generate/diff.ts` |
+| whose a file is — which config speaks for it, where the upstream root is | `infra/project.ts`; nobody else computes a project root |
+| code ↔ patch, both ways | `infra/pair.ts` forward through `infra/out-path.ts` |
+| the file-system rules: atomic write, the walk up, path containment | `infra/fs.ts` |
+| facts → text, and the exit code of a failed run | `infra/log.ts` |
+| the wire: every field of every method | `service/protocol.ts`, borrowing nothing from the core |
+
 ## The file format has no delimiter code can contain
 
 A patch file is `# match <lang>` … `# end` / `# patch` … `# end`, and **every

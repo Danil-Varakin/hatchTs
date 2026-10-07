@@ -90,7 +90,7 @@ const GIT_FIELDS = new Set(['branch', 'commit', 'repoPath', 'eol']);
  *
  *  A coordinate misspelt over the wire is refused by name for the same reason: a client
  *  sending `branch` as `ref` would otherwise get the default and never learn why. */
-export function gitSource(value: unknown, name = 'params.baseGit'): GitSource {
+function gitSource(value: unknown, name = 'params.baseGit'): GitSource {
   if (value === null || typeof value !== 'object') throw new BadRequest(`${name} must be an object`);
   const wire = value as Record<string, unknown>;
   for (const [key, field] of Object.entries(wire)) {

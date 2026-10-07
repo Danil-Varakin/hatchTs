@@ -39,7 +39,7 @@ type FieldKey = NonNullable<(typeof FIELDS)[number][1]>;
 export const HEADER_FIELDS: readonly HeaderFieldName[] = FIELDS.map(([name]) => name);
 
 /** The place of a known field (0 is `Hatch`), or -1 for one hatch does not know. */
-export function fieldPosition(name: string): number {
+function fieldPosition(name: string): number {
   const lower = name.toLowerCase();
   return HEADER_FIELDS.findIndex((f) => f.toLowerCase() === lower);
 }

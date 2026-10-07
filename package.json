@@ -14,7 +14,7 @@
   ],
   "scripts": {
     "test": "node --test --experimental-strip-types \"test/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json && tsc -p test/tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p test/tsconfig.json && tsc -p bench/tsconfig.json",
     "check": "npm run typecheck && npm test",
     "apply": "node --experimental-strip-types src/bin/hatch.ts apply",
     "generate": "node --experimental-strip-types src/bin/hatch.ts generate",
@@ -27,7 +27,8 @@
     "pack": "npm run check && npm pack",
     "service": "node --experimental-strip-types src/bin/service.ts",
     "build:apply-bin": "node scripts/build-apply-bin.mjs",
-    "smoke:apply-bin": "node test/golden/run-binary.mjs"
+    "smoke:apply-bin": "node test/golden/run-binary.mjs",
+    "bench": "node --experimental-strip-types --no-warnings bench/main.ts"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",

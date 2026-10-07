@@ -78,17 +78,17 @@ test('an explicit path is that file, checked the same way', async () => {
   await assert.rejects(() => resolveGrammar({ ...SOURCE, path: 'relative.wasm' }), /must be absolute/);
 });
 
-test('F2: `hatch grammars` and --download-grammars still work in 0.4, do nothing and say so', () => {
-  const grammars = spawnSync(process.execPath, ['--experimental-strip-types', CLI, 'grammars', '--language', 'cpp'], { encoding: 'utf8' });
-  assert.equal(grammars.status, 0, grammars.stderr);
-  assert.match(grammars.stderr, /grammars ship inside hatch since 0\.4.*removed in 0\.5/);
+test('F2: the command `hatch grammars` and the flag --download-grammars are both gone', () => {
+  const grammars = spawnSync(process.execPath, ['--experimental-strip-types', CLI, 'grammars'], { encoding: 'utf8' });
+  assert.equal(grammars.status, 1, 'an unknown command is a usage error');
+  assert.match(grammars.stderr, /unknown command 'grammars'/);
+  assert.doesNotMatch(grammars.stderr, /known commands: [^\n]*\bgrammars\b/, 'and it is not offered back');
 
   const apply = spawnSync(
     process.execPath,
     ['--experimental-strip-types', CLI, 'apply', '--match', 'nope.hatch', '--in', 'x.cc', '--dry-run', '--download-grammars'],
     { encoding: 'utf8' },
   );
-  assert.doesNotMatch(apply.stderr, /unknown|unrecognized|usage/i, 'the flag is still known');
-  assert.equal(apply.status, 1, 'the missing patch is refused as before');
-  assert.match(apply.stderr, /no such file: nope\.hatch/, 'for that reason, not for the flag');
+  assert.equal(apply.status, 1);
+  assert.match(apply.stderr, /unknown argument: --download-grammars/);
 });

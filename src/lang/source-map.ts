@@ -8,12 +8,6 @@ export interface GrammarSource {
   readonly path?: string;
 }
 
-/** Nothing to choose any more: grammars ship inside hatch and are never downloaded
- *  (`infra/grammar-store.ts`). Kept so a caller's `init({})` reads as before. */
-export interface InitOptions {
-  readonly log?: ((message: string) => void) | undefined;
-}
-
 export interface BlockSpan {
   open: number;
   close: number;
@@ -44,7 +38,9 @@ export function mapFor(adapter: LanguageAdapter, source: string, cache?: MapCach
 }
 
 export interface LanguageAdapter {
-  init(options?: InitOptions): Promise<void>;
+  /** Loads the grammar (WASM), once. Nothing to choose: grammars ship inside hatch and
+   *  are never downloaded (`infra/grammar-store.ts`). */
+  init(): Promise<void>;
 
   buildMap(source: string): SourceMap;
 

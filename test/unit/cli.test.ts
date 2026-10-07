@@ -19,7 +19,8 @@ test('bare invocation prints the usage and succeeds', () => {
   const r = run([]);
   assert.equal(r.status, 0);
   assert.match(r.stdout, /hatch <command>/);
-  for (const name of ['apply', 'generate', 'grammars', 'init']) assert.match(r.stdout, new RegExp(`\\b${name}\\b`));
+  for (const name of ['apply', 'generate', 'init']) assert.match(r.stdout, new RegExp(`\\b${name}\\b`));
+  assert.doesNotMatch(r.stdout, /\bgrammars\b/, 'the command is gone (F2: it warned through 0.4)');
 });
 
 test('--version reports the package version AND the config schema version', () => {
@@ -40,7 +41,7 @@ test('an unknown command names the known ones and exits 1', () => {
   const r = run(['aply']);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /unknown command 'aply'/);
-  assert.match(r.stderr, /known commands: apply, generate, grammars, init/);
+  assert.match(r.stderr, /known commands: apply, generate, init/);
 });
 
 test('a name every object inherits is an unknown command, not a crash', () => {

@@ -392,17 +392,16 @@ test('stage 3: X4 — elapsedMs on the wire, the line that is not JSON included'
 
 // ── stage 4: grammars inside ──────────────────────────────────────────────────────
 
-test('stage 4: generate --download-grammars works, warns, and writes the same patch', () => {
+test('stage 4: generate --download-grammars is gone (it warned through 0.4, F2)', () => {
   const dir = temp('hatch-s4-flag-');
   try {
     repoAt(dir, { 'a.cc': OLD });
     writeFileSync(join(dir, 'a.cc'), NEW);
     const plain = hatch(dir, ['generate', '--in', 'a.cc', '--head', '--no-config', '--out', '-']);
+    assert.equal(plain.status, 0, plain.stderr);
     const flagged = hatch(dir, ['generate', '--in', 'a.cc', '--head', '--no-config', '--out', '-', '--download-grammars']);
-    assert.equal(flagged.status, 0, flagged.stderr);
-    assert.match(flagged.stderr, /grammars ship inside hatch since 0\.4/);
-    assert.doesNotMatch(plain.stderr, /grammars ship inside/);
-    assert.equal(flagged.stdout, plain.stdout);
+    assert.equal(flagged.status, 1);
+    assert.match(flagged.stderr, /unknown argument: --download-grammars/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
